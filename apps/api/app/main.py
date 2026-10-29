@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.router import api_router
 from app.api.routes import am
 from app.api.routes.channels import _process_queued_channel_events
+from app.api.routes.bots import _process_persistent_llm_events
 from app.core.config import ROOT_DIR, settings
 from app.core.db_metrics import finish_db_metrics, start_db_metrics
 from app.core.logging import configure_logging, get_logger
@@ -42,7 +43,9 @@ def _process_queue_worker_batch(worker_request: SimpleNamespace, batch_size: int
     with SessionLocal() as db:
         channel_results = _process_queued_channel_events(db, worker_request, limit=batch_size)
         db.commit()
-    return len(channel_results)
+        persistent_results = _process_persistent_llm_events(db, worker_request, limit=batch_size)
+        db.commit()
+    return len(channel_results) + len(persistent_results)
 
 
 async def _channel_queue_worker_loop() -> None:

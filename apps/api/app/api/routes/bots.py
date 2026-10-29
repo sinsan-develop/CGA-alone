@@ -77,6 +77,12 @@ from app.services.version_pins import (version_mutation, admit_version_write, ad
     assert_active_version_write, mark_external_version_write, handoff_version_write, register_sample_version,
     claim_training_version_write, training_version_write, quarantine_interrupted_training,
     MutationBusy, PinConflict, retains_persistent_history, remove_unused_version_guard)
+from app.models import ChannelLlmBinding, LlmBudgetAccount, LlmBudgetReservation, AdminLicense
+from app.schemas.persistent_llm import (TurnScope, BudgetQuote, UsageEvidence, PersistentRoomStartRequest,
+    PersistentTurnRequest, PersistentAckRequest, PersistentResetRequest, PersistentCloseRequest, PersistentRevokeRequest)
+from app.services.persistent_llm import PersistentLlmService, TurnConflict
+from app.services.openai_conversations import OpenAIConversations, BoundedJsonTransport, payload_hash
+from app.services.llm_budget import BudgetConflict, release_presubmit_budget, hold_unknown_budget
 from app.services.llm_client import LlmChatClient, LlmClientError, resolve_llm_provider_config
 from app.services.llm_intent import classify_intent_with_llm, configure_intents_with_llm
 from app.services.llm_nlu import build_llm_nlu_training_snapshot, classify_intent_with_llm_snapshot
@@ -5151,6 +5157,8 @@ def create_version(
     _refresh_version_read_snapshot(version, version_document)
     db.add(version)
     db.flush()
+    if str(bot.id) == settings.persistent_llm_sample_bot_id:
+        register_sample_version(db, version.id)
 
     after_json = _serialize_version(bot, version, db)
     _write_audit_log(
@@ -7747,7 +7755,7 @@ def copy_version(
     db.add(copied_version)
     db.flush()
     ai_config = _get_version_ai_config(bot, source_version)
-    if db.get(ChannelLlmVersionGuard, source_version.id) is not None:
+    if db.get(ChannelLlmVersionGuard, source_version.id) is not None or str(bot.id) == settings.persistent_llm_sample_bot_id:
         register_sample_version(db, copied_version.id)
         admit_version_write(db, copied_version, force=True)
     answer_vector_copy = _copy_answer_vector_index(bot, source_version, copied_version, ai_config)
@@ -7898,3 +7906,851 @@ def deactivate_version(
     db.refresh(target_version)
 
     return success_response(request, _serialize_version(bot, target_version, db))
+
+
+# 지속 LLM 샘플의 인증/예산/시나리오 연결. 일반 단발 경로는 위의 기존 handler를 유지한다.
+def _persistent_provider_transport():
+    return BoundedJsonTransport()
+
+
+def _persistent_license(db: Session, user: User):
+    from datetime import date
+    from app.services.license_policy import parse_license_date
+
+    record = db.scalar(
+        select(AdminLicense)
+        .where(
+            AdminLicense.organization_id == user.organization_id,
+            AdminLicense.status == "active",
+        )
+        .order_by(AdminLicense.updated_at.desc())
+        .with_for_update(read=True)
+    )
+    expires = (
+        parse_license_date((record.payload_json or {}).get("expires_at"))
+        if record
+        else None
+    )
+    if record is None or (expires is not None and expires < date.today()):
+        raise HTTPException(status_code=403, detail="유효한 라이선스가 필요합니다.")
+
+
+def _persistent_execution(bot_id: UUID):
+    if (
+        not settings.persistent_llm_enabled
+        or not settings.persistent_llm_execution_enabled
+        or str(bot_id) != settings.persistent_llm_sample_bot_id
+    ):
+        raise HTTPException(
+            status_code=409, detail="지속 대화 샘플 실행이 준비되지 않았습니다."
+        )
+
+
+def _persistent_policy(config=None):
+    names = (
+        "context_input_tokens",
+        "max_output_tokens",
+        "budget_amount",
+        "generation_limit",
+    )
+    policy = {name: getattr(settings, "persistent_llm_" + name) for name in names}
+    policy.update(
+        scope=settings.persistent_llm_budget_scope,
+        tariff_model=settings.persistent_llm_tariff_model,
+        tariff_version=settings.persistent_llm_tariff_version,
+        currency=settings.persistent_llm_currency,
+        input_rate=settings.persistent_llm_input_rate_units_per_million,
+        output_rate=settings.persistent_llm_output_rate_units_per_million,
+    )
+    if (
+        any(
+            type(policy[name]) is not int or not 0 < policy[name] < 2**63
+            for name in names
+        )
+        or any(
+            type(policy[name]) is not int or not 0 <= policy[name] < 2**63
+            for name in ("input_rate", "output_rate")
+        )
+        or not isinstance(policy["scope"], str)
+        or not 1 <= len(policy["scope"]) <= 100
+        or not policy["tariff_version"]
+        or len(policy["tariff_version"]) > 80
+        or not re.fullmatch(r"[A-Z]{3}", policy["currency"] or "")
+        or not policy["tariff_model"]
+        or (config is not None and policy["tariff_model"] != config.model)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="모델에 맞는 승인 실행 한도와 요금표 준비가 필요합니다.",
+        )
+    policy["amount_upper"] = (
+        policy["context_input_tokens"] * policy["input_rate"] + 999999
+    ) // 1000000 + (
+        policy["max_output_tokens"] * policy["output_rate"] + 999999
+    ) // 1000000
+    if policy["amount_upper"] >= 2**63:
+        raise HTTPException(status_code=409, detail="예약 금액 상한을 확인해야 합니다.")
+    return policy
+
+
+def _persistent_config(ai):
+    from urllib.parse import urlsplit
+
+    config = resolve_llm_provider_config(
+        _safe_text_value(ai.get("llm_provider")),
+        _safe_text_value(ai.get("llm_model")),
+        base_url=_safe_text_value(ai.get("llm_base_url")),
+    )
+    endpoint = urlsplit(config.base_url)
+    if (
+        config.provider != "chatgpt"
+        or not config.api_key
+        or endpoint.scheme != "https"
+        or not endpoint.netloc
+        or endpoint.username
+        or endpoint.password
+        or endpoint.query
+        or endpoint.fragment
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="기존 OpenAI Provider·모델·서버 인증 연결을 확인해야 합니다.",
+        )
+    return config
+
+
+def _persistent_profiles(document):
+    from app.api.routes import channels
+
+    profiles = {}
+    dialogs = {
+        str(row.get("id")): row
+        for row in document.get("dialogs", [])
+        if isinstance(row, dict)
+    }
+    for graph in document.get("dialog_flow_graphs", []):
+        if not isinstance(graph, dict) or str(graph.get("dialogId")) not in dialogs:
+            continue
+        nodes = graph.get("nodes") or []
+        links = graph.get("links") or []
+        if (
+            not isinstance(nodes, list)
+            or not isinstance(links, list)
+            or any(not isinstance(edge, dict) for edge in links)
+        ):
+            continue
+        if (
+            not nodes
+            or any(
+                not isinstance(node, dict)
+                or node.get("kind") not in {"start", "talk", "end"}
+                for node in nodes
+            )
+            or sum(node.get("kind") == "talk" for node in nodes) != 1
+            or sum(node.get("kind") == "end" for node in nodes) != 1
+            or sum(node.get("kind") == "start" for node in nodes) > 1
+            or len(links) != len(nodes) - 1
+        ):
+            continue
+        identifiers = [str(node.get("id") or "") for node in nodes]
+        if "" in identifiers or len(set(identifiers)) != len(identifiers):
+            continue
+        current = channels._first_runtime_node_id(graph)
+        visited = []
+        valid = True
+        while current:
+            if current in visited:
+                valid = False
+                break
+            visited.append(current)
+            node = next((n for n in nodes if str(n.get("id")) == current), None)
+            if node is None:
+                valid = False
+                break
+            edges = [edge for edge in links if edge.get("sourceNodeId") == current]
+            if node["kind"] == "end":
+                if edges or (node.get("config") or {}).get("message"):
+                    valid = False
+                break
+            if len(edges) != 1 or str(edges[0].get("sourcePort") or "next") != "next":
+                valid = False
+                break
+            current = str(edges[0].get("targetNodeId") or "")
+        # _first_runtime_node_id는 Start를 건너뛸 수 있어 연결이 없는 Start도 별도 확인한다.
+        reachable = set(visited) | {
+            str(n["id"]) for n in nodes if n.get("kind") == "start"
+        }
+        if (
+            not valid
+            or reachable != set(identifiers)
+            or not visited
+            or next(n for n in nodes if str(n["id"]) == visited[-1])["kind"] != "end"
+        ):
+            continue
+        talk = next(n for n in nodes if n["kind"] == "talk")
+        cfg = channels._talk_config_for_channel(
+            dict(talk.get("config") or {}), "WEBCHAT"
+        )
+        if (
+            str(cfg.get("messageType") or "text") != "text"
+            or str(cfg.get("responseType") or "none") != "none"
+        ):
+            continue
+        basic = cfg.get("basicMessages") or []
+        messages = cfg.get("messages") or []
+        if (
+            not isinstance(basic, list)
+            or not isinstance(messages, list)
+            or any(not isinstance(value, str) for value in [*basic, *messages])
+        ):
+            continue
+        template = " ".join([*basic, *messages])
+        if not template.strip():
+            continue
+        dialog = dialogs[str(graph["dialogId"])]
+        profiles[str(graph["dialogId"])] = {
+            "dialog": deepcopy(dialog),
+            "graph": deepcopy(graph),
+            "uses_llm": bool(
+                re.search(r"\{\{\s*\$?_?llm_(?:answers\b|answer_)", template)
+            ),
+        }
+    return profiles
+
+
+def _persistent_snapshot(db, bot, version, dialog_id):
+    from app.api.routes import channels
+
+    guard = db.get(ChannelLlmVersionGuard, version.id, populate_existing=True)
+    if guard is None or guard.mutation_status != "idle":
+        raise HTTPException(
+            status_code=409,
+            detail="샘플로 준비한 새 버전의 쓰기 종료 확인이 필요합니다.",
+        )
+    ai = _get_version_ai_config(bot, version)
+    if str(ai.get("nlu_type") or "ml") in {
+        "semantic",
+        "semantic_vector",
+        "semantic_external",
+    } or str(ai.get("answer_mode") or "fixed") in {"semantic_rag", "llm_rag"}:
+        raise HTTPException(
+            status_code=409,
+            detail="공유 검색 지식 불변성을 확인하기 전에는 지속 대화를 시작할 수 없습니다.",
+        )
+    defaults = deepcopy(_version_conversation_defaults(bot, version))
+    detection = (
+        defaults.get("intentDetection")
+        if isinstance(defaults.get("intentDetection"), dict)
+        else {}
+    )
+    if detection.get("preprocessModule") or detection.get("beforeSessionEndModule"):
+        raise HTTPException(
+            status_code=409,
+            detail="첫 샘플은 외부 실행 없이 텍스트 Talk와 End로 끝나는 모듈을 사용합니다.",
+        )
+    document = normalize_version_document(version.version_json)
+    profiles = _persistent_profiles(document)
+    if dialog_id not in profiles:
+        raise HTTPException(
+            status_code=409, detail="텍스트 Talk와 End로 구성한 모듈을 선택해 주세요."
+        )
+    config = _persistent_config(ai)
+    policy = _persistent_policy(config)
+    selected = {
+        "dialogs": [p["dialog"] for p in profiles.values()],
+        "dialog_flow_graphs": [p["graph"] for p in profiles.values()],
+    }
+    prompts = {
+        key: _llm_answer_system_prompt_for_version(bot, version, profile["dialog"])
+        for key, profile in profiles.items()
+    }
+    return {
+        "instructions": _llm_answer_system_prompt_for_version(bot, version, {}),
+        "module_instructions": prompts,
+        "resolved_llm_config": {
+            "provider": config.provider,
+            "model": config.model,
+            "base_url": config.base_url,
+        },
+        "ai_config": {
+            key: deepcopy(ai.get(key))
+            for key in (
+                "nlu_type",
+                "nlu_model",
+                "answer_mode",
+                "llm_provider",
+                "llm_model",
+            )
+        },
+        "document": selected,
+        "profiles": {
+            key: {
+                "name": p["dialog"].get("displayName") or p["dialog"].get("name"),
+                "uses_llm": p["uses_llm"],
+            }
+            for key, p in profiles.items()
+        },
+        "initial_dialog_id": dialog_id,
+        "rate_policy": policy,
+        "background": settings.persistent_llm_background,
+        "knowledge": {"kind": "local_inline", "version_id": str(version.id)},
+    }
+
+
+def _persistent_scope(binding):
+    return TurnScope(
+        binding.organization_id,
+        binding.group_id,
+        binding.bot_id,
+        binding.room_id,
+        binding.principal_key,
+        binding.generation,
+        binding.version_id,
+    )
+
+
+def _persistent_binding(db, bot, current_user, room_id, generation=None):
+    query = select(ChannelLlmBinding).where(
+        ChannelLlmBinding.room_id == room_id,
+        ChannelLlmBinding.bot_id == bot.id,
+        ChannelLlmBinding.user_id == current_user.id,
+        ChannelLlmBinding.organization_id == current_user.organization_id,
+        ChannelLlmBinding.group_id == current_user.group_id,
+    )
+    if generation is not None:
+        query = query.where(ChannelLlmBinding.generation == generation)
+    binding = db.scalar(query.order_by(ChannelLlmBinding.generation.desc()).limit(1))
+    if binding is None:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+    return binding
+
+
+def _persistent_access(db, scope, *, read_only=False):
+    user = db.scalar(
+        select(User)
+        .where(User.id == UUID(scope.principal_key[5:]), User.deleted_at.is_(None))
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    )
+    if (
+        user is None
+        or user.status != "active"
+        or user.organization_id != scope.org_id
+        or user.group_id != scope.group_id
+    ):
+        raise HTTPException(status_code=403, detail="대화 이용 권한을 확인해야 합니다.")
+    _persistent_license(db, user)
+    binding = db.scalar(
+        select(ChannelLlmBinding)
+        .where(
+            ChannelLlmBinding.room_id == scope.room_id,
+            ChannelLlmBinding.generation == scope.generation,
+            ChannelLlmBinding.principal_key == scope.principal_key,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if binding is not None and binding.status == "revoked":
+        raise HTTPException(
+            status_code=403, detail="관리자가 이 대화의 이용을 중지했습니다."
+        )
+    if not read_only:
+        _persistent_execution(scope.bot_id)
+
+
+def _persistent_render(db, binding, dialog_id, answer, question):
+    from app.api.routes import channels
+
+    document = deepcopy(binding.snapshot_json["document"])
+    profiles = _persistent_profiles(document)
+    if dialog_id not in profiles:
+        raise TurnConflict("고정된 모듈을 찾을 수 없습니다.")
+    graph = profiles[dialog_id]["graph"]
+    state = {
+        "graphId": str(graph["id"]),
+        "dialogId": dialog_id,
+        "variables": _answer_rag_variables("_llm", [{"text": answer, "score": 1.0}]),
+    }
+    room = db.get(ChannelRoom, binding.room_id)
+    bot = db.get(Bot, binding.bot_id)
+    channels._set_runtime_system_variables(
+        state,
+        bot=bot,
+        room=room,
+        participant_id=str(binding.user_id),
+        participant_name=room.participant_name,
+        message=question,
+    )
+    outputs, state = channels._run_runtime(
+        document, state, channels._first_runtime_node_id(graph), {}, "WEBCHAT"
+    )
+    if (
+        len(outputs) != 1
+        or outputs[0].get("type") != "text"
+        or not str(outputs[0].get("text") or "").strip()
+        or state.get("dialogEnded") is not True
+    ):
+        raise TurnConflict("서버 Talk의 최종 표출을 확인해야 합니다.")
+    room.metadata_json = {
+        **dict(room.metadata_json or {}),
+        **state,
+        "persistent_llm": {
+            "owner_id": str(binding.user_id),
+            "generation": binding.generation,
+        },
+    }
+    db.add(room)
+    db.flush()
+    return str(outputs[0]["text"])
+
+
+def _persistent_runtime_service(db, scope, *, event_id=None, read_only=False):
+    from app.services.llm_client import LlmProviderConfig
+
+    binding = db.scalar(
+        select(ChannelLlmBinding).where(
+            ChannelLlmBinding.room_id == scope.room_id,
+            ChannelLlmBinding.generation == scope.generation,
+            ChannelLlmBinding.principal_key == scope.principal_key,
+        )
+    )
+    if binding is None:
+        raise HTTPException(status_code=404, detail="채팅방을 찾을 수 없습니다.")
+
+    def usage(raw):
+        policy = binding.snapshot_json["rate_policy"]
+        evidence = raw["usage"]
+        amount = (
+            evidence["input_tokens"] * policy["input_rate"] + 999999
+        ) // 1000000 + (
+            evidence["output_tokens"] * policy["output_rate"] + 999999
+        ) // 1000000
+        return UsageEvidence(
+            amount, policy["currency"], policy["tariff_version"], str(raw["id"])
+        )
+
+    def render(answer):
+        event = db.get(ChannelQueueEvent, event_id)
+        payload = (event.parameter_json or {}).get("payload") or {}
+        turn = json.loads(payload["input"][-1]["content"])["untrusted_turn_references"]
+        return _persistent_render(
+            db,
+            binding,
+            str(turn["cga_dialog_id"]),
+            answer,
+            str(event.parameter_json["question"]),
+        )
+
+    client = None
+    if not read_only:
+        frozen = binding.snapshot_json["resolved_llm_config"]
+        credentials = _persistent_config(
+            {"llm_provider": frozen["provider"], "llm_model": frozen["model"]}
+        )
+        config = LlmProviderConfig(
+            provider=frozen["provider"],
+            model=frozen["model"],
+            base_url=frozen["base_url"],
+            api_key=credentials.api_key,
+            timeout_seconds=30,
+        )
+        client = OpenAIConversations(config, transport=_persistent_provider_transport())
+    return PersistentLlmService(
+        client,
+        usage_evaluator=usage,
+        display_transform=render,
+        access_validator=_persistent_access,
+    )
+
+
+def _persistent_accounts(db, binding):
+    from sqlalchemy import text
+
+    policy = binding.snapshot_json["rate_policy"]
+    if policy != _persistent_policy():
+        raise HTTPException(
+            status_code=409, detail="대화 시작 시의 실행 예산·요금표를 확인해야 합니다."
+        )
+    ids = []
+    for kind, key in (
+        ("experiment", policy["scope"]),
+        ("organization", policy["scope"] + ":" + str(binding.organization_id)),
+    ):
+        db.execute(
+            text("select pg_advisory_xact_lock(hashtextextended(:key,0))"),
+            {"key": "pllm-budget:" + kind + ":" + key},
+        )
+        account = db.scalar(
+            select(LlmBudgetAccount).where(
+                LlmBudgetAccount.scope_kind == kind, LlmBudgetAccount.scope_key == key
+            )
+        )
+        if account is None:
+            account = LlmBudgetAccount(
+                scope_kind=kind,
+                scope_key=key,
+                currency=policy["currency"],
+                tariff_version=policy["tariff_version"],
+                limit_amount=policy["budget_amount"],
+                limit_count=policy["generation_limit"],
+            )
+            db.add(account)
+            db.flush()
+        elif (
+            account.currency != policy["currency"]
+            or account.tariff_version != policy["tariff_version"]
+            or account.unit_scale != 1000000
+            or account.limit_amount != policy["budget_amount"]
+            or account.limit_count != policy["generation_limit"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="기존 사용량을 보존하며 실행 한도를 재검토해야 합니다.",
+            )
+        ids.append(account.id)
+    return tuple(ids)
+
+
+def _persistent_room_payload(db, binding):
+    room = db.get(ChannelRoom, binding.room_id)
+    event = db.scalar(
+        select(ChannelQueueEvent)
+        .where(ChannelQueueEvent.binding_id == binding.id)
+        .order_by(ChannelQueueEvent.created_at.desc())
+        .limit(1)
+    )
+    return {
+        "id": str(room.id),
+        "generation": binding.generation,
+        "version_id": str(binding.version_id),
+        "status": binding.status,
+        "scenario_ended": bool((room.metadata_json or {}).get("dialogEnded")),
+        "dialog_id": binding.snapshot_json.get("initial_dialog_id"),
+        "profiles": binding.snapshot_json.get("profiles", {}),
+        "current_event_id": str(event.id) if event else None,
+        "can_send": binding.status == "open"
+        and (event is None or event.phase == "committed"),
+    }
+
+
+@router.post("/{bot_id}/persistent/rooms")
+def start_persistent_room(
+    bot_id: UUID,
+    payload: PersistentRoomStartRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from uuid import uuid4
+    from app.api.routes import channels
+    from app.services.version_pins import open_pinned_dialog
+
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    _persistent_execution(bot.id)
+    if payload.room_id is not None:
+        binding = _persistent_binding(db, bot, current_user, payload.room_id)
+        _persistent_runtime_service(
+            db, _persistent_scope(binding), read_only=True
+        )._binding(db, _persistent_scope(binding), read_only=True)
+        return success_response(
+            request, {"room": _persistent_room_payload(db, binding)}
+        )
+    version = db.scalar(
+        select(BotVersion)
+        .where(
+            BotVersion.id == bot.active_version_id,
+            BotVersion.bot_id == bot.id,
+            BotVersion.status == "active",
+            BotVersion.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if version is None:
+        raise HTTPException(
+            status_code=409, detail="운영 가능한 봇 버전을 먼저 적용해 주세요."
+        )
+    snapshot = _persistent_snapshot(db, bot, version, payload.dialog_id)
+    state = channels._initial_runtime_state_for_version(bot, version, "webchat")
+    room = ChannelRoom(
+        channel_type="webchat",
+        client_room_id="persistent-" + uuid4().hex,
+        bot_id=bot.id,
+        bot_version_id=version.id,
+        participant_id=str(current_user.id),
+        participant_name=current_user.name,
+        status="open",
+        metadata_json=state,
+    )
+    db.add(room)
+    db.flush()
+    scope = TurnScope(
+        bot.organization_id,
+        bot.group_id,
+        bot.id,
+        room.id,
+        "user:" + str(current_user.id),
+        1,
+        version.id,
+    )
+    binding = open_pinned_dialog(db, scope, snapshot)
+    room.metadata_json = {
+        **state,
+        "persistent_llm": {"owner_id": str(current_user.id), "generation": 1},
+    }
+    db.commit()
+    return success_response(request, {"room": _persistent_room_payload(db, binding)})
+
+
+@router.get("/{bot_id}/persistent/rooms/{room_id}")
+def get_persistent_room(
+    bot_id: UUID,
+    room_id: UUID,
+    request: Request,
+    generation: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    binding = _persistent_binding(db, bot, current_user, room_id, generation)
+    runtime = _persistent_runtime_service(
+        db, _persistent_scope(binding), read_only=True
+    )
+    runtime._binding(db, _persistent_scope(binding), read_only=True)
+    messages = []
+    for message in db.scalars(
+        select(ChannelMessage)
+        .where(ChannelMessage.room_id == room_id, ChannelMessage.deleted_at.is_(None))
+        .order_by(ChannelMessage.created_at.asc())
+    ).all():
+        mark = (message.payload_json or {}).get("persistent_llm", {})
+        if mark.get("binding_id") == str(binding.id):
+            messages.append(
+                {
+                    "id": str(message.id),
+                    "sender": "user" if message.participant_kind == "user" else "bot",
+                    "text": message.text,
+                    "memory_committed": mark.get("canonical") is True,
+                }
+            )
+    return success_response(
+        request, {"room": _persistent_room_payload(db, binding), "messages": messages}
+    )
+
+
+@router.post("/{bot_id}/persistent/rooms/{room_id}/turns", status_code=202)
+def submit_persistent_turn(
+    bot_id: UUID,
+    room_id: UUID,
+    payload: PersistentTurnRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    _persistent_execution(bot.id)
+    binding = _persistent_binding(db, bot, current_user, room_id)
+    if binding.generation != payload.expected_generation:
+        raise HTTPException(
+            status_code=409, detail="대화가 변경되었습니다. 새 상태를 확인해 주세요."
+        )
+    scope = _persistent_scope(binding)
+    runtime = _persistent_runtime_service(db, scope)
+    profile = binding.snapshot_json.get("profiles", {}).get(payload.dialog_id)
+    if profile is None:
+        raise HTTPException(status_code=409, detail="고정 버전의 모듈을 선택해 주세요.")
+    try:
+        if not profile["uses_llm"]:
+            runtime._binding(db, scope)
+            text = _persistent_render(
+                db, binding, payload.dialog_id, "", payload.question
+            )
+            result = runtime.admit_fixed_turn(
+                db,
+                scope,
+                payload.message_key,
+                payload.question,
+                server_text=text,
+                dialog_id=payload.dialog_id,
+            )
+        else:
+            context = {"cga_dialog_id": payload.dialog_id, "references": []}
+            materialized = runtime.materialize_turn(
+                db,
+                scope,
+                payload.question,
+                turn_context=context,
+                output_tokens=binding.snapshot_json["rate_policy"]["max_output_tokens"],
+            )
+            accounts = _persistent_accounts(db, binding)
+            policy = binding.snapshot_json["rate_policy"]
+            quote = BudgetQuote(
+                accounts,
+                policy["currency"],
+                policy["tariff_version"],
+                policy["amount_upper"],
+                policy["context_input_tokens"],
+                policy["max_output_tokens"],
+                payload_hash(materialized),
+            )
+            result = runtime.admit_turn(
+                db,
+                scope,
+                payload.message_key,
+                payload.question,
+                turn_context=context,
+                quote=quote,
+            )
+        return success_response(request, result)
+    except (TurnConflict, BudgetConflict, PinConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+def _persistent_event_for_user(db, bot, user, room_id, event_id):
+    event = db.get(ChannelQueueEvent, event_id)
+    if (
+        event is None
+        or event.bot_id != bot.id
+        or event.room_id != room_id
+        or event.operation_kind != "persistent_llm"
+    ):
+        raise HTTPException(status_code=404, detail="대화 요청을 찾을 수 없습니다.")
+    binding = db.get(ChannelLlmBinding, event.binding_id)
+    if (
+        binding is None
+        or binding.user_id != user.id
+        or binding.organization_id != user.organization_id
+        or binding.group_id != user.group_id
+    ):
+        raise HTTPException(status_code=404, detail="대화 요청을 찾을 수 없습니다.")
+    return binding, event
+
+
+@router.get("/{bot_id}/persistent/rooms/{room_id}/turns/{event_id}")
+def get_persistent_turn(
+    bot_id: UUID,
+    room_id: UUID,
+    event_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    binding, event = _persistent_event_for_user(
+        db, bot, current_user, room_id, event_id
+    )
+    try:
+        result = _persistent_runtime_service(
+            db, _persistent_scope(binding), read_only=True
+        ).view_turn(db, _persistent_scope(binding), event.id)
+    except TurnConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return success_response(request, result)
+
+
+@router.post(
+    "/{bot_id}/persistent/rooms/{room_id}/turns/{event_id}/ack", status_code=202
+)
+def ack_persistent_turn(
+    bot_id: UUID,
+    room_id: UUID,
+    event_id: UUID,
+    payload: PersistentAckRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    _persistent_execution(bot.id)
+    binding, event = _persistent_event_for_user(
+        db, bot, current_user, room_id, event_id
+    )
+    try:
+        result = _persistent_runtime_service(
+            db, _persistent_scope(binding), read_only=True
+        ).ack_display(
+            db,
+            _persistent_scope(binding),
+            event.id,
+            message_id=payload.message_id,
+            content_hash=payload.content_hash,
+        )
+    except TurnConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return success_response(request, result)
+
+
+def _process_persistent_llm_events(db, request, *, limit=10):
+    if (
+        not settings.persistent_llm_enabled
+        or not settings.persistent_llm_execution_enabled
+    ):
+        return []
+    try:
+        target = UUID(settings.persistent_llm_sample_bot_id)
+    except ValueError:
+        return []
+    events = db.scalars(
+        select(ChannelQueueEvent)
+        .where(
+            ChannelQueueEvent.bot_id == target,
+            ChannelQueueEvent.operation_kind == "persistent_llm",
+            ChannelQueueEvent.deleted_at.is_(None),
+            ChannelQueueEvent.phase.in_(("reserved", "delivery_confirmed")),
+        )
+        .order_by(ChannelQueueEvent.created_at.asc())
+        .limit(limit)
+    ).all()
+    results = []
+    for candidate in events:
+        identifier = candidate.id
+        binding = db.get(ChannelLlmBinding, candidate.binding_id)
+        if binding is None:
+            continue
+        scope = _persistent_scope(binding)
+        try:
+            runtime = _persistent_runtime_service(db, scope, event_id=identifier)
+            result = (
+                runtime.process_turn(db, scope, identifier)
+                if candidate.phase == "reserved"
+                else runtime.sync_turn(db, scope, identifier)
+            )
+        except Exception:
+            db.rollback()
+            event = db.get(ChannelQueueEvent, identifier, populate_existing=True)
+            if event is None or event.phase == "committed":
+                continue
+            reservations = db.scalars(
+                select(LlmBudgetReservation).where(
+                    LlmBudgetReservation.event_id == identifier
+                )
+            ).all()
+            if (
+                event.submitted_at is None
+                and reservations
+                and all(row.state == "reserved" for row in reservations)
+            ):
+                release_presubmit_budget(db, identifier)
+                event.phase = "access_blocked"
+                event.status = "failed"
+            else:
+                if reservations and all(
+                    row.state in {"reserved", "submitted", "unknown"}
+                    for row in reservations
+                ):
+                    hold_unknown_budget(db, identifier)
+                event.phase = "unknown"
+                event.status = "unknown"
+            event.error_message = "대화 실행 권한·설정 또는 결과 확인이 필요합니다. 자동 재생성하지 않습니다."
+            db.commit()
+            result = {
+                "event_id": str(event.id),
+                "phase": event.phase,
+                "status": event.status,
+            }
+        results.append(result)
+    return results
