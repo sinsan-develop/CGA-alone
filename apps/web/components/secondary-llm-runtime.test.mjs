@@ -31,9 +31,9 @@ test("시뮬레이터는 지정된 모듈 ID만 실행하고 이전 결과를 �
 });
 
 
-async function nativeRuntimeHarness(phase="ok", failure=false, waiting=false) {
- const shared=await subject();const visible=[];let stored;let calls=0;let fallbacks=0;
- const graph={nodes:[{id:"function",kind:"function",title:"API",config:{}},{id:"talk",kind:"talk",title:"답변",config:{responseType:waiting?"relay":"none"}},{id:"end",kind:"end",title:"종료",config:{message:"",endSessionImmediately:false}}]};
+async function nativeRuntimeHarness(phase="ok", failure=false, waiting=false, immediate=false) {
+ const shared=await subject();const visible=[];let stored;let calls=0;let fallbacks=0;let fallbackVariables;
+ const graph={nodes:[{id:"function",kind:"function",title:"API",config:{}},{id:"talk",kind:"talk",title:"답변",config:{responseType:waiting?"relay":"none"}},{id:"end",kind:"end",title:"종료",config:{message:"",endSessionImmediately:immediate}}]};
  const variables={input:"원래 질문",kept:"보존"};
  const runtime={dialog:{id:"module",name:"모듈",dialogType:0},graph,nextNodeId:"function",variables,ended:false,secondaryConfig:config};
  const run=nativeFunction("continueRuntime",{
@@ -45,13 +45,13 @@ async function nativeRuntimeHarness(phase="ok", failure=false, waiting=false) {
  shouldWaitForTalkResponse:cfg=>cfg.responseType==="relay",restoreRuntimeReturn:()=>null,
  versionSettings:{conversationDefaults:{intentDetection:{beforeSessionEndModule:""}}},
  evaluateSecondaryOutcome:shared.evaluateSecondaryOutcome,resolveRuntimeVariableValue:(vars,key)=>vars[key],
- finishSecondaryFallback:()=>{fallbacks++;stored=null;},intentFallbackCountRef:{current:1},
+ finishSecondaryFallback:(id,vars)=>{fallbacks++;fallbackVariables=vars;stored=null;},intentFallbackCountRef:{current:1},
  setMessages:update=>visible.push(...update([])),setRuntime:value=>{stored=value;},
  SIMULATOR_RUNTIME_MESSAGES:{systemError:"실행 오류"},getStudioRuntimeMessage:(lang,text)=>text,
  formatStudioRuntimeMessage:(lang,text)=>text,uiLanguage:"ko",runtimeLanguage:"ko",
  makeMessage:(sender,text)=>({sender,text}),
  });
- await run(runtime,"a1");return {visible,get stored(){return stored;},get calls(){return calls;},get fallbacks(){return fallbacks;},run};
+ await run(runtime,"a1");return {visible,get stored(){return stored;},get calls(){return calls;},get fallbacks(){return fallbacks;},get fallbackVariables(){return fallbackVariables;},run};
 }
 for(const phase of ["ok","no","unexpected"])test(`실제 continueRuntime 결과 판정 ${phase}`,async()=>{
  const r=await nativeRuntimeHarness(phase);
@@ -83,4 +83,34 @@ for (const engine of ["ml","semantic"])for(const outcome of ["hit","miss","failu
  assert.equal(await start("원래 질문",{kept:"보존"}),true);assert.equal(primary,1);
  assert.equal(secondary,outcome==="miss"?1:0);assert.equal(local,outcome==="hit"?1:0);
  if(outcome==="failure")assert.equal(visible[0].text,"실행 오류");
+});
+
+test("선택 버전의 2차 설정을 기본 봇 설정보다 우선해서 읽는다",async()=>{
+ const s=await subject();assert.equal(typeof s.secondaryConfigForVersion,"function");
+ const other={...config,module_id:"other"};
+ assert.deepEqual(s.secondaryConfigForVersion({}, {ai_config:{secondary_llm:config}}),config);
+ assert.deepEqual(s.secondaryConfigForVersion({secondary_llm:other},{ai_config:{secondary_llm:config}}),config);
+ assert.equal(s.secondaryConfigForVersion({bot_kind:"hub",secondary_llm:config},{ai_config:{secondary_llm:config}}),undefined);
+ assert.equal(s.secondaryConfigForVersion({},{}),undefined);
+});
+
+for(const phase of ["ok","no","unexpected"])test(`다른 의도에서 원래 2차 Talk 복귀 후 판정 ${phase}`,async()=>{
+ const r=await nativeRuntimeHarness(phase,false,true);
+ const queue=nativeFunction("queueRuntimeReturn",{}),restore=nativeFunction("restoreRuntimeReturn",{});
+ const other={id:"other",name:"다른 의도",dialogType:1};
+ const stack=queue(r.stored,other);
+ const restored=restore({dialog:other,graph:{nodes:[]},nextNodeId:"",variables:r.stored.variables,ended:true,returnStack:stack});
+ assert.deepEqual(restored.secondaryConfig,config);assert.equal(restored.secondaryError,false);
+ await r.run({...restored,waitingTalkNodeId:undefined},"a1");
+ assert.equal(r.calls,1);
+ if(phase==="ok")assert.equal(r.stored.secondaryConfig,undefined);
+ if(phase==="no")assert.equal(r.fallbacks,1);
+ if(phase==="unexpected")assert.equal(r.visible.at(-1).text,"실행 오류");
+});
+
+for(const phase of ["ok","no","unexpected"])test(`시뮬레이터 즉시 세션 종료의 변수 초기화 ${phase}`,async()=>{
+ const r=await nativeRuntimeHarness(phase,false,false,true);assert.equal(r.calls,1);
+ if(phase==="ok")assert.deepEqual(r.stored.variables,{});
+ if(phase==="no")assert.deepEqual(r.fallbackVariables,{});
+ if(phase==="unexpected"){assert.equal(r.stored,null);assert.equal(r.visible.at(-1).text,"실행 오류");}
 });

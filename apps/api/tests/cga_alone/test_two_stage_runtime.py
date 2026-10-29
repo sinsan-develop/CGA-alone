@@ -349,3 +349,28 @@ def test_existing_hub_initial_graph_is_preserved(native_secondary_document):
     bot = SimpleNamespace(id="bot", data_json={"bot_kind":"hub"})
     version = SimpleNamespace(id="version", name="v1", version_json=native_secondary_document)
     assert channels._initial_runtime_state_for_version(bot, version)["graphId"] == "secondary-graph"
+
+
+@pytest.mark.parametrize("phase", ["ok", "not-found", "unexpected"])
+@pytest.mark.parametrize("pending", [False, True])
+def test_secondary_session_end_judges_before_clearing_variables(native_secondary_document, monkeypatch, phase, pending):
+    from types import SimpleNamespace
+    from app.api.routes import channels
+    calls=fake_answer_http(monkeypatch,phase=phase)
+    graph=native_secondary_document["dialog_flow_graphs"][0]
+    graph["nodes"][-1]["config"]["endSessionImmediately"]=True
+    if pending:
+        graph["nodes"].insert(1,{"id":"followup","kind":"talk","config":{"messageType":"text","basicMessages":["추가 설명"],"responseType":"relay","responseVariableName":"followup"}})
+        graph["links"][0]["targetNodeId"]="followup"
+        graph["links"].append({"sourceNodeId":"followup","sourcePort":"next","targetNodeId":"function"})
+    bot=SimpleNamespace(id="bot",data_json={})
+    version=SimpleNamespace(id="version",name="v1",version_json=native_secondary_document)
+    result=channels._handle_local_intent_miss(native_secondary_document,{"variables":{"$input":"질문","$kept":"보존"}},bot,version,{"system_error":"실행 오류"},"WEBCHAT")
+    if pending:
+        assert result.status=="pending" and not calls
+        outputs,state=channels._handle_runtime_message(native_secondary_document,result.state,"추가 설명",{},"WEBCHAT")
+        result=channels._finish_secondary_runtime(native_secondary_document,state,bot,version,outputs,{"system_error":"실행 오류"},"WEBCHAT")
+    assert result.status=={"ok":"answered","not-found":"unrecognized","unexpected":"error"}[phase]
+    assert len(calls)==1 and result.state.get("sessionEnded") is True and result.state["variables"]=={}
+    if phase=="ok":assert result.outputs[0]["text"]=="답변: 외부 생성 답변"
+    if phase=="not-found":assert result.outputs==[]

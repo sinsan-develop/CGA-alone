@@ -7,7 +7,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from "next/navigat
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { useI18n } from "@/components/language-provider";
-import { evaluateSecondaryOutcome, prepareSecondaryVariables, secondaryOutcomeMapping, type SecondaryModuleConfig } from "@/lib/secondary-llm";
+import { evaluateSecondaryOutcome, prepareSecondaryVariables, secondaryOutcomeMapping, secondaryConfigForVersion, type SecondaryModuleConfig } from "@/lib/secondary-llm";
 import { normalizeAnswerMode } from "@/lib/answer-options";
 import { getBotVersionSettings, type MessageItemConfig } from "@/lib/bot-settings";
 import { isSimulatorRichFormLocalFilePath, normalizeSimulatorRichFormAssetUrl } from "./simulator-rich-form-assets";
@@ -173,6 +173,8 @@ type RuntimeState = {
 };
 
 type RuntimeReturnFrame = {
+  secondaryConfig?: SecondaryModuleConfig;
+  secondaryError?: boolean;
   dialog: VersionDialogAsset;
   graph: DialogFlowGraph;
   nextNodeId: string;
@@ -291,6 +293,8 @@ function queueRuntimeReturn(currentRuntime: RuntimeState | null, targetDialog: V
     graph: currentRuntime.graph,
     nextNodeId: currentRuntime.nextNodeId,
     waitingTalkNodeId: currentRuntime.waitingTalkNodeId,
+    secondaryConfig: currentRuntime.secondaryConfig,
+    secondaryError: currentRuntime.secondaryError,
   });
   return stack;
 }
@@ -306,6 +310,8 @@ function restoreRuntimeReturn(currentRuntime: RuntimeState): RuntimeState | null
     graph: frame.graph,
     nextNodeId: frame.nextNodeId,
     waitingTalkNodeId: frame.waitingTalkNodeId,
+    secondaryConfig: frame.secondaryConfig,
+    secondaryError: frame.secondaryError,
     variables: currentRuntime.variables,
     ended: false,
     sessionEnded: false,
@@ -3766,7 +3772,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   );
   const apiAssets = useMemo(() => normalizeApiAssets(versionDocument.apis), [versionDocument.apis]);
   const versionSettings = useMemo(() => getBotVersionSettings(bot ?? {}), [bot]);
-  const secondaryConfig = bot?.data_json?.bot_kind === "hub" ? undefined : bot?.data_json?.secondary_llm;
+  const secondaryConfig = secondaryConfigForVersion(bot?.data_json, versionDocument.system_config);
   const runtimeLanguage = normalizeSupportedLanguage(bot?.data_json?.language);
   const runtimeCopy = SIMULATOR_CATALOGS[runtimeLanguage];
   const nluModel = useMemo(
@@ -4907,6 +4913,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         const variables = sessionEnded && !nextRuntime.secondaryConfig ? {} : nextRuntime.variables;
         const restoredRuntime = !sessionEnded ? restoreRuntimeReturn({ ...nextRuntime, variables }) : null;
         if (restoredRuntime) {
+          secondaryError = restoredRuntime.secondaryError === true;
           appendAnalysisLog(analysisId, {
             cardType: FLOW_CARD_LABELS[node.kind],
             cardName: node.title,
@@ -4973,7 +4980,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         {waiting: Boolean(nextRuntime.waitingTalkNodeId), executionError: secondaryError}, resolveRuntimeVariableValue);
       writeSimulatorLog("info", "simulator.secondary_result", {analysisId, status: result.status, moduleId: config.module_id});
       if (result.status === "unrecognized") {
-        finishSecondaryFallback(analysisId, nextRuntime.variables, config);
+        finishSecondaryFallback(analysisId, nextRuntime.sessionEnded ? {} : nextRuntime.variables, config);
         return;
       }
       if (result.status === "error") {

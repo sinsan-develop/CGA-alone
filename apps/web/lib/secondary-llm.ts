@@ -47,3 +47,16 @@ export function prepareSecondaryVariables<T extends Record<string, string>>(
   for (const alias of aliases) delete result[alias];
   return result;
 }
+
+/** 선택 버전의 AI 설정은 봇 기본값보다 우선한다. 일반/허브의 기존 경로는 유지한다. */
+export function secondaryConfigForVersion(botData: unknown, systemConfig: unknown): SecondaryModuleConfig | undefined {
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const bot = record(botData);
+  if (bot.bot_kind === "hub") return undefined;
+  const ai = record(record(systemConfig).ai_config);
+  const source = Object.hasOwn(ai, "secondary_llm") ? ai.secondary_llm : bot.secondary_llm;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return undefined;
+  const config = record(source);
+  const mapping = secondaryOutcomeMapping(config);
+  return {module_id: typeof config.module_id === "string" ? config.module_id.trim() : "", ...(mapping ? {outcome: mapping} : {})};
+}

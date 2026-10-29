@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.secondary_llm import SecondaryOutcome, run_secondary_module, resume_secondary_outcome
+from app.services.secondary_llm import SecondaryOutcome, run_secondary_module, resume_secondary_outcome, capture_secondary_terminal_result
 
 import json
 from io import BytesIO
@@ -3198,6 +3198,8 @@ def _run_runtime(
                 data={"endSessionImmediately": end_immediately},
             )
             _log_runtime_event(item)
+            if end_immediately:
+                capture_secondary_terminal_result(state)
             apply_end_card_state(state, end_session_immediately=end_immediately)
             return outputs, state
 

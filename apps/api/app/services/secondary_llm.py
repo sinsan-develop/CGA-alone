@@ -87,8 +87,21 @@ def _new_execution_error(state, cursor):
     return any(isinstance(event, dict) and event.get("level") == "error" for event in events[start:])
 
 
+def capture_secondary_terminal_result(state):
+    """기존 End 변수 초기화 전에 판정값 하나만 일시 보존한다."""
+    scope = state.get("__secondaryLlm")
+    mapping = outcome_mapping(scope.get("config")) if isinstance(scope, dict) else None
+    if mapping:
+        name = mapping["variableName"]
+        scope["terminal_variables"] = {name: deepcopy(get_variable(state.get("variables") or {}, name))}
+
+
 def _finish(config, state, outputs, *, execution_error=False):
-    result = evaluate_secondary_outcome(config, state, outputs, execution_error=execution_error)
+    scope = state.get("__secondaryLlm")
+    terminal_variables = scope.get("terminal_variables") if isinstance(scope, dict) else None
+    decision_state = {**state, "variables": terminal_variables} if state.get("sessionEnded") is True and isinstance(terminal_variables, dict) else state
+    result = evaluate_secondary_outcome(config, decision_state, outputs, execution_error=execution_error)
+    result.state = state
     if result.status != "pending":
         state.pop("__secondaryLlm", None)
     return result
@@ -108,7 +121,8 @@ def run_secondary_module(document, state, config, *, run_module, default_message
     try:
         outputs, next_state, ran = run_module(document, state, frozen["module_id"], default_messages, channel_code)
         if ran:
-            next_state["__secondaryLlm"] = {"config": frozen, "event_cursor": cursor}
+            scope = next_state.get("__secondaryLlm")
+            next_state["__secondaryLlm"] = {**(scope if isinstance(scope, dict) else {}), "config": frozen, "event_cursor": cursor}
         return _finish(frozen, next_state, outputs, execution_error=not ran or _new_execution_error(next_state, cursor))
     except Exception:
         return _finish(frozen, state, [], execution_error=True)
