@@ -303,5 +303,15 @@
     "path": "apps/api/app/api/routes/webchat.py",
     "stage": "S03",
     "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존"
+  },
+  {
+    "path": "apps/api/app/services/room_turn.py",
+    "stage": "S05",
+    "reason": "승인된 독립 S05 DB 방별 원자 선점·대기 소유·세대별 쓰기/해제 fence·기존 대기 timeout 핵심, API소비/인증변경 없음"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_room_turn.py",
+    "stage": "S05",
+    "reason": "실제 PG 두 연결의 동일방경합/다른방병렬·세대·대기만료·종료해제 검증, exact소유QA정리"
   }
 ]
