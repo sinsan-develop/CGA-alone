@@ -17,6 +17,7 @@ import {
 } from "@/lib/studio-bots-api";
 import {
   normalizeConfigurationScoring,
+  normalizeSecondaryLlmConfig,
   type ConfigurationScoringConfig,
   type StudioBotDataJson,
   type VectorConnectionConfig,
@@ -49,6 +50,7 @@ import {
 } from "@/lib/llm-options";
 import { translateAiOptionText } from "@/lib/i18n/ai-options";
 import { BOT_CREATE_CATALOGS, formatBotCreateText } from "@/lib/i18n/bot-create";
+import { getBotDialogs } from "@/lib/dialog-assets";
 import { BOT_SETTINGS_CATALOGS } from "@/lib/i18n/bot-settings";
 
 const PROFILE_OPTIONS = [
@@ -180,6 +182,7 @@ function BotEditSection({
   const [profileKey, setProfileKey] = useState<"gray" | "accent" | "outline">("accent");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
+  const [secondaryModuleId, setSecondaryModuleId] = useState("");
 
   useEffect(() => {
     const aiConfig = getSelectedAiConfig(bot);
@@ -187,6 +190,7 @@ function BotEditSection({
     setName(bot.name);
     setLanguage(normalizeSupportedLanguage(aiConfig.language));
     setNluType(nextType);
+    setSecondaryModuleId(normalizeSecondaryLlmConfig(aiConfig.secondary_llm).module_id);
     setNluModel(normalizeNluModel(nextType, aiConfig.nlu_model ?? aiConfig.nlu_engine));
     setAnswerMode(normalizeAnswerMode(aiConfig.answer_mode));
     const nextLlmProvider = normalizeLlmProvider(aiConfig.llm_provider);
@@ -205,6 +209,8 @@ function BotEditSection({
     text: createCopy.textType,
   });
   const llmModelOptions = LLM_MODEL_OPTIONS_BY_PROVIDER[llmProvider];
+  const secondaryModules = getBotDialogs(bot).filter((dialog) => dialog.dialogType === 0);
+  const secondaryModuleMissing = Boolean(secondaryModuleId) && !secondaryModules.some((dialog) => dialog.id === secondaryModuleId);
   const nluModelOptions = NLU_MODEL_OPTIONS_BY_TYPE[nluType] ?? [];
   const nluModelDescription = getNluModelDescription(nluType, nluModel);
   const aiCombinationRows = buildBotAiCombinationRows();
@@ -251,6 +257,7 @@ function BotEditSection({
       };
       const payload = {
         settings_scope: bot.active_version?.id ?? versionName,
+        secondary_llm: normalizeSecondaryLlmConfig({ module_id: secondaryModuleId }),
         name: name.trim(),
         description: description.trim() || undefined,
         profile_key: profileKey,
@@ -390,6 +397,20 @@ function BotEditSection({
               </div>
 
             </div>
+
+            {bot.data_json?.bot_kind !== "hub" ? (
+              <div className="bot-settings-grid">
+                <label className="bot-settings-card">
+                  <span>{copy.secondaryLlmModule}</span>
+                  <select className="bot-settings-card__select" value={secondaryModuleId} onChange={(event) => setSecondaryModuleId(event.target.value)}>
+                    <option value="">{copy.secondaryLlmNone}</option>
+                    {secondaryModuleMissing ? <option value={secondaryModuleId}>{copy.secondaryLlmMissing}</option> : null}
+                    {secondaryModules.map((module) => <option key={module.id} value={module.id}>{module.displayName || module.name}</option>)}
+                  </select>
+                  <small className="bot-settings-card__hint">{copy.secondaryLlmHint}</small>
+                </label>
+              </div>
+            ) : null}
 
             {usesLlmEngine ? (
               <div className="bot-settings-grid bot-settings-grid--4 bot-settings-grid--llm">

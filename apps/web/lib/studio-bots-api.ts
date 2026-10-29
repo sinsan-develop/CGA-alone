@@ -757,6 +757,7 @@ export type CreateBotPayload = {
 };
 
 export type UpdateBotPayload = {
+  secondary_llm?: { module_id: string };
   name?: string;
   description?: string;
   status?: string;

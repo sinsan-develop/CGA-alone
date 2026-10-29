@@ -61,8 +61,8 @@
   },
   {
     "path": "apps/api/app/api/routes/bots.py",
-    "stage": "S02/P01/P03",
-    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결; P03 열린 지속 방의 자동 운영버전 종료 제외; P03 실제JWT room/turn/ACK·고정버전 text Talk/End·예산계층·전용worker와 새샘플버전 사전guard"
+    "stage": "S02/P01/P03/S03",
+    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결; P03 열린 지속 방의 자동 운영버전 종료 제외; P03 실제JWT room/turn/ACK·고정버전 text Talk/End·예산계층·전용worker와 새샘플버전 사전guard; 승인된 S03 버전 AI 모듈 참조 저장 및 운영 지정 전 같은 버전 모듈 검사"
   },
   {
     "path": "apps/api/app/api/routes/hubs.py",
@@ -141,8 +141,8 @@
   },
   {
     "path": "apps/web/lib/studio-bots-api.ts",
-    "stage": "S02",
-    "reason": "2026-10-29 신산님 승인: 본인 허브 한정 최소 후보 조회의 전용 DTO/호출 연결"
+    "stage": "S02/S03",
+    "reason": "2026-10-29 신산님 승인: 본인 허브 한정 최소 후보 조회의 전용 DTO/호출 연결; 승인된 S03 기존 PATCH 설정 payload에 모듈 ID 전달"
   },
   {
     "path": "apps/web/components/bot-hub-home.tsx",
@@ -226,8 +226,8 @@
   },
   {
     "path": "apps/api/app/api/routes/channels.py",
-    "stage": "P03",
-    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존"
+    "stage": "P03/S03",
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
@@ -263,5 +263,40 @@
     "path": "apps/web/lib/api.ts",
     "stage": "P03",
     "reason": "독립검토 확정미접수422 입력잠금 보완: 기존 same-origin Error 메시지/인증처리/재시도는 유지하고 HTTP status만 내부 오류 metadata에 보존"
+  },
+  {
+    "path": "apps/api/app/schemas/bot.py",
+    "stage": "S03",
+    "reason": "승인된 S03 secondary_llm.module_id를 기존 BotUpdate/버전 AI 저장 경로에 전달"
+  },
+  {
+    "path": "apps/api/app/services/bot_ai_policy.py",
+    "stage": "S03",
+    "reason": "승인된 S03 local ML/시멘틱 및 제작자 지정 2차 모듈의 공통 운영 준비 검사"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_secondary_llm_config.py",
+    "stage": "S03",
+    "reason": "승인된 S03 초안/저장/ID/운영/잘못된 모듈·로컬엔진 회귀"
+  },
+  {
+    "path": "apps/web/lib/bot-settings.ts",
+    "stage": "S03",
+    "reason": "승인된 S03 버전 AI 모듈 ID 타입 및 정규화"
+  },
+  {
+    "path": "apps/web/components/bot-settings-page.tsx",
+    "stage": "S03",
+    "reason": "승인된 S03 기존 AI 설정 카드 안의 모듈 선택만 추가, 메뉴/공용 CSS/편집기 불변"
+  },
+  {
+    "path": "apps/web/lib/i18n/bot-settings.ts",
+    "stage": "S03",
+    "reason": "승인된 S03 새 모듈 선택 문구의 기존 7개 언어 보존"
+  },
+  {
+    "path": "apps/web/components/secondary-llm-config.test.mjs",
+    "stage": "S03",
+    "reason": "승인된 S03 미구성 초안과 안정 모듈 ID 정규화 검증"
   }
 ]

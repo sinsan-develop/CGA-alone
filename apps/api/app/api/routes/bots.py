@@ -95,6 +95,7 @@ from app.services.nlu.deep_learning_lite import (
     tokenize_texts_for_deep_learning_lite,
     train_and_save_deep_learning_lite_model,
 )
+from app.services.bot_ai_policy import secondary_llm_block_reason
 from app.services.scenario_validation import attach_scenario_validation, save_blocking_scenario_items, scenario_validation_error_detail, scenario_validation_from_version
 from app.services.vector_search import (
     AnswerVectorSearchClient,
@@ -226,6 +227,7 @@ def _build_bot_json(payload: BotCreateRequest) -> dict[str, object]:
 
 
 AI_CONFIG_KEYS = {
+    "secondary_llm",
     "language",
     "nlu_engine",
     "nlu_type",
@@ -7810,6 +7812,14 @@ def activate_version(
                 "scenario_validation": scenario_validation,
             },
         )
+
+    secondary_reason = secondary_llm_block_reason(
+        target_version.version_json,
+        _get_version_ai_config(bot, target_version),
+        bot_kind=str((bot.data_json or {}).get("bot_kind") or "bot"),
+    )
+    if secondary_reason:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=secondary_reason)
 
     before_json = {
         "active_version_id": str(bot.active_version_id) if bot.active_version_id else None,

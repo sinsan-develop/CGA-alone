@@ -98,6 +98,10 @@ MODELS_BY_LLM_PROVIDER: dict[str, set[str]] = {
 }
 
 
+class SecondaryLlmConfig(BaseModel):
+    module_id: str = Field(default="", max_length=150)
+
+
 class BotNluAnswerConfigMixin(BaseModel):
     nlu_type: NluType | None = None
     nlu_model: NluModel | None = None
@@ -148,6 +152,7 @@ class BotCreateRequest(BotNluAnswerConfigMixin):
 
 
 class BotUpdateRequest(BotNluAnswerConfigMixin):
+    secondary_llm: SecondaryLlmConfig | None = None
     name: str | None = Field(default=None, min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=2000)
     status: str | None = Field(default=None, min_length=1, max_length=20)

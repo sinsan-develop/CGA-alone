@@ -221,6 +221,7 @@ export type BotVersionSettings = {
 };
 
 export type StudioBotDataJson = {
+  secondary_llm?: { module_id: string };
   bot_kind?: "bot" | "hub";
   bot_mode?: "text" | "voice";
   profile_key?: "gray" | "accent" | "outline";
@@ -556,4 +557,10 @@ export function getBotVersionSettings(bot: {
     rules: normalizeRules(merged.rules),
     smalltalk: normalizeSmalltalkSettingsValue(merged.smalltalk),
   };
+}
+
+
+export function normalizeSecondaryLlmConfig(value: unknown): { module_id: string } {
+  const config = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return { module_id: typeof config.module_id === "string" ? config.module_id.trim() : "" };
 }
