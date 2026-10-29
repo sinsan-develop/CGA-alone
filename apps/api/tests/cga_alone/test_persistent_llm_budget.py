@@ -213,3 +213,47 @@ def test_duplicate_submit_cannot_authorize_second_paid_post(persistent_context):
         assert mark_turn_submitted(db, events[0]) is True
         db.commit()
         assert mark_turn_submitted(db, events[0]) is False
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["actual_overrun", "currency", "unit", "tariff", "amount_limit", "count_limit"],
+)
+def test_reserved_but_unsubmitted_turn_rechecks_account_safety(
+    change, persistent_context
+):
+    c = persistent_context
+    ids, events, quote = setup(c)
+    with Session(c.engine) as db:
+        reserve_turn_budget(db, events[0], quote)
+        reserve_turn_budget(db, events[1], quote)
+        db.commit()
+        if change == "actual_overrun":
+            assert mark_turn_submitted(db, events[0]) is True
+            db.commit()
+            settle_turn_budget(
+                db,
+                events[0],
+                UsageEvidence(40, "USD", "test-v1", "overrun-before-next-submit"),
+            )
+        else:
+            account = db.get(LlmBudgetAccount, ids[0])
+            if change == "currency":
+                account.currency = "KRW"
+            elif change == "unit":
+                account.unit_scale = 1000
+            elif change == "tariff":
+                account.tariff_version = "test-v2"
+            elif change == "amount_limit":
+                account.limit_amount = 50
+            elif change == "count_limit":
+                account.limit_count = 1
+        db.commit()
+        with pytest.raises(BudgetConflict):
+            mark_turn_submitted(db, events[1])
+        db.rollback()
+        event = db.get(ChannelQueueEvent, events[1])
+        assert event.submitted_at is None and event.phase == "reserved"
+        # 호출 전 실패가 입증된 이 예약만 환급할 수 있고 이미 제출한 요청은 건드리지 않는다.
+        release_presubmit_budget(db, events[1])
+        db.commit()

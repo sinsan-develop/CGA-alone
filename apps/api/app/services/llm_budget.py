@@ -142,11 +142,24 @@ def _locked_reservations(db, event_id):
 
 
 def mark_turn_submitted(db: Session, event_id):
-    event, rows, _ = _locked_reservations(db, event_id)
+    event, rows, accounts = _locked_reservations(db, event_id)
     if event.submitted_at is not None:
         return False
     if any(r.state != "reserved" for r in rows):
         raise BudgetConflict("제출할 수 없는 예약입니다.")
+    # 예약 후 다른 방의 초과 정산·정책 변경도 최초 유료 제출 전에 반영한다.
+    for row in rows:
+        account = accounts[row.account_id]
+        frozen = (row.usage_json or {}).get("quote", {})
+        if (
+            account.blocked
+            or account.currency != frozen.get("currency")
+            or account.tariff_version != frozen.get("tariff_version")
+            or account.unit_scale != frozen.get("unit_scale")
+            or account.spent_amount + account.reserved_amount > account.limit_amount
+            or account.spent_count + account.reserved_count > account.limit_count
+        ):
+            raise BudgetConflict("제출 전 공용 예산·요금표·차단 상태가 변경되었습니다.")
     event.submitted_at = datetime.now(timezone.utc)
     event.phase = "submitted"
     for row in rows:

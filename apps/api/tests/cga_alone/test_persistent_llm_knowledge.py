@@ -113,3 +113,24 @@ def test_copy_retrain_preserves_source_document_model_and_instructions(
             tmp_path / str(c.bot_id) / str(target_id) / "deep_learning_lite.json"
         ).exists()
         assert binding.snapshot_json["instructions"] == "원본 고정 지침"
+
+
+@pytest.mark.parametrize(
+    "nlu_type", ["semantic", "semantic_external", "semantic_vector"]
+)
+@pytest.mark.parametrize(
+    "hint", [{}, {"knowledge": {"immutable": True, "kind": "local"}}]
+)
+def test_unproven_semantic_nlu_cannot_bypass_server_profile(
+    nlu_type, hint, persistent_context
+):
+    c = persistent_context
+    with Session(c.engine) as db:
+        db.get(Bot, c.bot_id).data_json = {
+            "nlu_type": nlu_type,
+            "answer_mode": "fixed",
+            "vector_connections": {"intent": {"index_name": "unproven-shared"}},
+        }
+        db.commit()
+        with pytest.raises(PinConflict):
+            open_pinned_dialog(db, c.scope, hint)

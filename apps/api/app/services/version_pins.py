@@ -84,11 +84,21 @@ def open_pinned_dialog(
         if isinstance(snapshot.get("knowledge"), dict)
         else None
     )
-    if ai_config.get("answer_mode") in {"semantic_rag", "llm_rag"} or source_kind in {
-        "external_rag",
-        "wiki",
-        "mutable_vector",
-    }:
+    unproven_semantic = str(ai_config.get("nlu_type") or "").strip() in {
+        "semantic",
+        "semantic_external",
+        "semantic_vector",
+    }
+    if (
+        unproven_semantic
+        or ai_config.get("answer_mode") in {"semantic_rag", "llm_rag"}
+        or source_kind
+        in {
+            "external_rag",
+            "wiki",
+            "mutable_vector",
+        }
+    ):
         raise PinConflict(
             "공유 검색 지식의 불변성을 검증하는 어댑터가 준비되기 전에는 지속 대화를 활성화할 수 없습니다."
         )
