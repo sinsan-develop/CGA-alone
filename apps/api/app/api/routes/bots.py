@@ -39,7 +39,7 @@ from app.models import (
     BotHubMember,
     BotVersion,
     ChannelMessage,
-    ChannelQueueEvent,
+    ChannelQueueEvent, ChannelLlmVersionGuard,
     ChannelRoom,
     EditLock,
     Group,
@@ -73,6 +73,10 @@ from app.services.aidot_package_compatibility import (
     aidot_package_summary,
     version_document_to_aidot_bot_package,
 )
+from app.services.version_pins import (version_mutation, admit_version_write, admit_bot_version_writes,
+    assert_active_version_write, mark_external_version_write, handoff_version_write, register_sample_version,
+    claim_training_version_write, training_version_write, quarantine_interrupted_training,
+    MutationBusy, PinConflict, retains_persistent_history, remove_unused_version_guard)
 from app.services.llm_client import LlmChatClient, LlmClientError, resolve_llm_provider_config
 from app.services.llm_intent import classify_intent_with_llm, configure_intents_with_llm
 from app.services.llm_nlu import build_llm_nlu_training_snapshot, classify_intent_with_llm_snapshot
@@ -1154,6 +1158,7 @@ def _train_rag_answer_vector_index(
     ai_config: dict[str, object],
     documents: list[dict[str, object]],
 ) -> dict[str, object] | None:
+    mark_external_version_write(version.id)
     documents = _filter_rag_answer_documents(documents)
     if not documents:
         return None
@@ -1769,6 +1774,7 @@ def _export_answer_vector_index(bot: Bot, version: BotVersion, ai_config: dict[s
 
 
 def _import_answer_vector_index(bot: Bot, version: BotVersion, ai_config: dict[str, object], payload: object) -> dict[str, object] | None:
+    mark_external_version_write(version.id)
     if not isinstance(payload, dict) or not _is_rag_answer_mode(ai_config):
         return None
     config = answer_vector_config(ai_config)
@@ -1792,6 +1798,7 @@ def _import_answer_vector_index(bot: Bot, version: BotVersion, ai_config: dict[s
 
 
 def _copy_answer_vector_index(bot: Bot, source_version: BotVersion, target_version: BotVersion, ai_config: dict[str, object]) -> dict[str, object] | None:
+    mark_external_version_write(target_version.id)
     if not _is_rag_answer_mode(ai_config):
         return None
     config = answer_vector_config(ai_config)
@@ -2481,6 +2488,7 @@ def _calculate_semantic_vector_evaluation(
 
 
 def _train_semantic_intent_vector_index(bot: Bot, version: BotVersion, ai_config: dict[str, object]) -> dict[str, object]:
+    mark_external_version_write(version.id)
     config = intent_vector_config(ai_config)
     vector_documents = _build_intent_vector_documents(version.version_json)
     if not vector_documents:
@@ -2725,6 +2733,12 @@ def _answer_embedding_config_fingerprint(ai_config: dict[str, object]) -> tuple[
 
 
 def _hard_delete_bot_version(db: Session, version: BotVersion) -> None:
+    if retains_persistent_history(db, version):
+        if version.deleted_at is None:
+            version.deleted_at = datetime.now(timezone.utc)
+            db.add(version)
+        return
+    remove_unused_version_guard(db, version)
     version_room_ids = select(ChannelRoom.id).where(ChannelRoom.bot_version_id == version.id)
     db.execute(
         delete(ChannelQueueEvent).where(
@@ -2772,7 +2786,6 @@ def _next_bot_version_no(db: Session, bot_id: UUID) -> int:
     max_version = db.scalar(
         select(func.max(BotVersion.version_no)).where(
             BotVersion.bot_id == bot_id,
-            BotVersion.deleted_at.is_(None),
         )
     ) or 0
     return max_version + 1
@@ -3079,6 +3092,7 @@ def _refresh_version_read_snapshot(version: BotVersion, version_json: dict[str, 
 
 
 def _assign_version_document(version: BotVersion, version_json: dict[str, object]) -> None:
+    assert_active_version_write(version)
     version.version_json = version_json
     _refresh_version_read_snapshot(version, version_json)
 
@@ -3177,6 +3191,7 @@ def _get_version_or_404(db: Session, bot_id: UUID, version_id: UUID) -> BotVersi
             status_code=status.HTTP_404_NOT_FOUND,
             detail="버전을 찾을 수 없습니다.",
         )
+    admit_version_write(db, version)
     return version
 
 
@@ -4812,6 +4827,7 @@ def get_bot(
 
 
 @router.patch("/{bot_id}")
+@version_mutation("bot_settings")
 def update_bot(
     bot_id: UUID,
     payload: BotUpdateRequest,
@@ -4837,6 +4853,14 @@ def update_bot(
                 detail="AI 설정을 저장할 버전을 찾을 수 없습니다.",
             )
         ai_updates = {key: value for key, value in ai_updates.items() if key not in LOCKED_AI_CONFIG_KEYS}
+
+    write_target_version = ai_target_version
+    if write_target_version is None and "settings_json" in updates and isinstance(settings_scope, str) and settings_scope.strip():
+        write_target_version = _get_version_by_scope(db, bot.id, settings_scope)
+    if write_target_version is not None:
+        admit_version_write(db, write_target_version)
+    elif ai_updates or "settings_json" in updates or "bot_kind" in updates:
+        admit_bot_version_writes(db, bot)
 
     immutable_bot_keys = ("language", "nlu_type", "nlu_engine", "nlu_model", "answer_mode")
     for key in immutable_bot_keys:
@@ -5009,6 +5033,7 @@ def update_bot(
 
 
 @router.delete("/{bot_id}")
+@version_mutation("bot_delete")
 def delete_bot(
     bot_id: UUID,
     request: Request,
@@ -5016,6 +5041,7 @@ def delete_bot(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     bot = _get_bot_or_404(db, bot_id, current_user)
+    admit_bot_version_writes(db, bot)
     active_version = None
     if bot.active_version_id:
         active_version = db.scalar(
@@ -5170,6 +5196,7 @@ def get_version_dialogs(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/dialogs")
+@version_mutation("edit")
 def update_version_dialogs(
     bot_id: UUID,
     version_id: UUID,
@@ -5245,6 +5272,7 @@ def get_version_dialog_flow(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/dialogs/{dialog_id}/flow")
+@version_mutation("edit")
 def update_version_dialog_flow(
     bot_id: UUID,
     version_id: UUID,
@@ -5315,6 +5343,7 @@ def get_version_entities(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/entities")
+@version_mutation("edit")
 def update_version_entities(
     bot_id: UUID,
     version_id: UUID,
@@ -5375,6 +5404,7 @@ def get_version_dictionary(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/dictionary")
+@version_mutation("edit")
 def update_version_dictionary(
     bot_id: UUID,
     version_id: UUID,
@@ -5435,6 +5465,7 @@ def get_version_apis(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/apis")
+@version_mutation("edit")
 def update_version_apis(
     bot_id: UUID,
     version_id: UUID,
@@ -5533,6 +5564,7 @@ def get_version_configure(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/configure")
+@version_mutation("edit")
 def update_version_configure(
     bot_id: UUID,
     version_id: UUID,
@@ -5601,6 +5633,7 @@ def get_version_retraining(
 
 
 @router.patch("/{bot_id}/versions/{version_id}/retraining")
+@version_mutation("edit")
 def update_version_retraining(
     bot_id: UUID,
     version_id: UUID,
@@ -5653,6 +5686,7 @@ def update_version_retraining(
 
 
 @router.patch("/{bot_id}/versions/{version_id}")
+@version_mutation("edit")
 def update_version(
     bot_id: UUID,
     version_id: UUID,
@@ -5730,6 +5764,7 @@ def update_version(
 
 
 @router.post("/{bot_id}/versions/{version_id}/answers/rag/embed")
+@version_mutation("rag_write")
 def embed_version_rag_answers(
     bot_id: UUID,
     version_id: UUID,
@@ -5762,6 +5797,7 @@ def embed_version_rag_answers(
 
 
 @router.post("/{bot_id}/versions/{version_id}/answers/rag/embed-pdf")
+@version_mutation("rag_write")
 async def embed_version_rag_answer_pdf(
     bot_id: UUID,
     version_id: UUID,
@@ -5812,6 +5848,7 @@ async def embed_version_rag_answer_pdf(
 
 
 @router.post("/{bot_id}/versions/{version_id}/answers/rag/configure")
+@version_mutation("rag_write")
 def configure_version_rag_answers(
     bot_id: UUID,
     version_id: UUID,
@@ -5848,6 +5885,7 @@ def configure_version_rag_answers(
 
 
 @router.post("/{bot_id}/versions/{version_id}/answers/rag/configure-pdf")
+@version_mutation("rag_write")
 async def configure_version_rag_answer_pdf(
     bot_id: UUID,
     version_id: UUID,
@@ -5970,6 +6008,7 @@ def _prepare_natural_hub_training_document(db: Session, bot: Bot, version: BotVe
     db.flush()
 
 
+@version_mutation("training")
 def _run_version_nlu_training(
     bot_id: UUID,
     version_id: UUID,
@@ -6205,6 +6244,7 @@ def _run_version_nlu_training(
     try:
         validation_settings = _get_validation_settings(bot, version)
         version_settings = _get_version_settings(bot, version)
+        mark_external_version_write(version.id)
         result = train_and_save_deep_learning_lite_model(
             version,
             imbalance_oversampling=validation_settings.get("imbalanceOversampling") is True,
@@ -6358,6 +6398,7 @@ def _set_nlu_training_queue_status(
     "/{bot_id}/versions/{version_id}/nlu/train",
     status_code=status.HTTP_202_ACCEPTED,
 )
+@version_mutation("training_queue")
 def enqueue_version_nlu_training(
     bot_id: UUID,
     version_id: UUID,
@@ -6388,6 +6429,7 @@ def enqueue_version_nlu_training(
     if existing is not None:
         return success_response(request, _public_hub_payload(bot, _serialize_nlu_training_job(existing)))
 
+    _get_version_or_404(db, bot.id, version_id)
     payload_json = payload.model_dump(mode="json") if payload is not None else {}
     queue_event = ChannelQueueEvent(
         room_id=None,
@@ -6412,6 +6454,7 @@ def enqueue_version_nlu_training(
     )
     db.add(queue_event)
     db.flush()
+    handoff_version_write(db, version_id, queue_event.id)
     _write_audit_log(
         db,
         request,
@@ -6475,6 +6518,11 @@ def recover_interrupted_nlu_training_events(db: Session) -> int:
         )
     ).all()
     for queue_event in events:
+        if quarantine_interrupted_training(db, queue_event):
+            _set_nlu_training_queue_status(queue_event, "failed", error_message="샘플 버전 writer의 종료 확인이 필요합니다.",
+                result_json={**dict(queue_event.result_json or {}), "recovery_reason": "sample_version_writer_unknown"})
+            db.add(queue_event)
+            continue
         previous_result = dict(queue_event.result_json or {})
         _set_nlu_training_queue_status(
             queue_event,
@@ -6519,6 +6567,18 @@ def _process_nlu_training_queue_event(
         db.commit()
         return _serialize_nlu_training_job(queue_event)
 
+    try:
+        mutation_token = claim_training_version_write(db, queue_event)
+    except MutationBusy:
+        db.rollback()
+        return _serialize_nlu_training_job(queue_event)
+    except PinConflict as error:
+        db.rollback()
+        _set_nlu_training_queue_status(queue_event, "failed", error_message=str(error))
+        db.add(queue_event)
+        db.commit()
+        return _serialize_nlu_training_job(queue_event)
+
     started_at = datetime.now(timezone.utc)
     _set_nlu_training_queue_status(
         queue_event,
@@ -6543,14 +6603,15 @@ def _process_nlu_training_queue_event(
     try:
         payload_value = parameter_json.get("payload")
         payload = VersionNluTrainRequest.model_validate(payload_value) if isinstance(payload_value, dict) and payload_value else None
-        response = _run_version_nlu_training(
-            bot_id=queue_event.bot_id,
-            version_id=queue_event.bot_version_id,
-            request=worker_request,
-            payload=payload,
-            current_user=current_user,
-            db=db,
-        )
+        with training_version_write(db, mutation_token):
+            response = _run_version_nlu_training(
+                bot_id=queue_event.bot_id,
+                version_id=queue_event.bot_version_id,
+                request=worker_request,
+                payload=payload,
+                current_user=current_user,
+                db=db,
+            )
         manifest = _compact_nlu_training_manifest(response.get("data") if isinstance(response, dict) else None)
         completed_at = datetime.now(timezone.utc)
         queue_event = db.get(ChannelQueueEvent, queue_event_id)
@@ -7495,6 +7556,7 @@ def export_aidot_bot_package(
 
 
 @router.post("/{bot_id}/versions/{version_id}/aidot-package")
+@version_mutation("import")
 def import_aidot_bot_package(
     bot_id: UUID,
     version_id: UUID,
@@ -7571,6 +7633,7 @@ def import_aidot_bot_package(
 
 
 @router.post("/{bot_id}/versions/{version_id}/answers/rag/import-index")
+@version_mutation("rag_write")
 def import_version_rag_answer_index(
     bot_id: UUID,
     version_id: UUID,
@@ -7598,6 +7661,7 @@ def import_version_rag_answer_index(
 
 
 @router.delete("/{bot_id}/versions/{version_id}")
+@version_mutation("delete")
 def delete_version(
     bot_id: UUID,
     version_id: UUID,
@@ -7653,6 +7717,7 @@ def delete_version(
 
 
 @router.post("/{bot_id}/versions/{version_id}/copy")
+@version_mutation("copy")
 def copy_version(
     bot_id: UUID,
     version_id: UUID,
@@ -7680,6 +7745,9 @@ def copy_version(
     db.add(copied_version)
     db.flush()
     ai_config = _get_version_ai_config(bot, source_version)
+    if db.get(ChannelLlmVersionGuard, source_version.id) is not None:
+        register_sample_version(db, copied_version.id)
+        admit_version_write(db, copied_version, force=True)
     answer_vector_copy = _copy_answer_vector_index(bot, source_version, copied_version, ai_config)
 
     _write_audit_log(
