@@ -118,5 +118,15 @@
     "path": "apps/web/components/bot-management-page.tsx",
     "stage": "S02",
     "reason": "승인 R01: 본인 봇이 있으면 두번째 생성 진입 UI만 숨김"
+  },
+  {
+    "path": "apps/api/app/api/routes/edit_locks.py",
+    "stage": "S02",
+    "reason": "독립 검토 Important: 승인 R02의 타인 봇 편집 잠금/상태/heartbeat/release/force-release 소유 우회 차단. 기존 역할 조건·본인 잠금 동작 유지"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_edit_lock_owner_scope.py",
+    "stage": "S02",
+    "reason": "독립 검토 Important: 승인 R02의 타인 봇 편집 잠금/상태/heartbeat/release/force-release 소유 우회 차단. 기존 역할 조건·본인 잠금 동작 유지"
   }
 ]
