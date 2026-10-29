@@ -326,8 +326,12 @@ def test_legacy_webchat_runs_native_secondary_and_reuses_room(secondary_bot, nat
     monkeypatch.setattr(channels, "_select_dialog_for_bot", lambda *a, **kw: (None, 0.0))
     monkeypatch.setattr(webchat, "_select_dialog_for_bot", lambda *a, **kw: (None, 0.0))
     calls = fake_answer_http(monkeypatch)
+    credential = None
     def send(text):
-        return webchat.create_webchat_room_message(str(bot.id), "existing-client-room", webchat.WebchatMessageRequest(message=text), _request(), "s04-qa-key")["data"]
+        nonlocal credential
+        result = webchat.create_webchat_room_message(str(bot.id), "existing-client-room", webchat.WebchatMessageRequest(message=text), _request(), "s04-qa-key", credential)["data"]
+        credential = result.get("conversationToken") or credential
+        return result
     first = send("질문")
     assert first["roomId"] == "existing-client-room"
     assert first["botMessage"]["text"] == ("추가 설명" if pending else "답변: 외부 생성 답변")

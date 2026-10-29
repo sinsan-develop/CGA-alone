@@ -227,7 +227,7 @@
   {
     "path": "apps/api/app/api/routes/channels.py",
     "stage": "P03/S03·S04",
-    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존"
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음)"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
@@ -302,7 +302,7 @@
   {
     "path": "apps/api/app/api/routes/webchat.py",
     "stage": "S03·S04",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존"
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음)"
   },
   {
     "path": "apps/api/app/services/secondary_llm.py",
@@ -323,5 +323,15 @@
     "path": "apps/web/components/secondary-llm-runtime.test.mjs",
     "stage": "S04",
     "reason": "승인 S04 client 결과값·오류/pending·기존 변수 보존 회귀"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_webchat_credentials.py",
+    "stage": "S04",
+    "reason": "신산님 승인 대화 자격 증명의 실제 PG·HTTP header·타인/위조/만료·공용채널/큐 우회·보호marker 보존 회귀"
+  },
+  {
+    "path": "apps/api/app/api/routes/am.py",
+    "stage": "S04",
+    "reason": "승인Webchat자격증명방만 기존AM직접조회/종료우회차단, 일반/기존허브경로유지"
   }
 ]

@@ -3,6 +3,8 @@ from __future__ import annotations
 from app.services.secondary_llm import SecondaryOutcome, run_secondary_module, resume_secondary_outcome, capture_secondary_terminal_result
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from io import BytesIO
 from copy import deepcopy
 import random
@@ -784,9 +786,37 @@ def _is_persistent_room(db: Session, room_id: UUID | None) -> bool:
     return db.scalar(select(ChannelLlmBinding.id).where(ChannelLlmBinding.room_id == room_id).limit(1)) is not None
 
 
+
+# Webchat 자격 증명을 검증한 서버 호출 범위에서만 한 방을 허용한다.
+_webchat_room_capability: ContextVar[UUID | None] = ContextVar("webchat_room_capability", default=None)
+
+
+def _is_credential_room(room: ChannelRoom) -> bool:
+    return str(getattr(room, "client_room_id", None) or "").startswith("wc-auth:") or "__webchatAccess" in _as_dict(getattr(room, "metadata_json", None))
+
+
+def _credential_room_ids():
+    return select(ChannelRoom.id).where(
+        ChannelRoom.client_room_id.like("wc-auth:%") | ChannelRoom.metadata_json.has_key("__webchatAccess")
+    )
+
+
+@contextmanager
+def _webchat_room_access(room_id: UUID):
+    token = _webchat_room_capability.set(room_id)
+    try:
+        yield
+    finally:
+        _webchat_room_capability.reset(token)
+
+
 def _assert_legacy_room_access(db: Session, room_id: UUID | None) -> None:
     if _is_persistent_room(db, room_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="채팅방을 찾을 수 없습니다.")
+    room = db.get(ChannelRoom, room_id) if room_id else None
+    if room is not None and _is_credential_room(room):
+        if _webchat_room_capability.get() != room.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="채팅방을 찾을 수 없습니다.")
 
 
 def _verify_channel_key(api_key: str | None) -> None:
@@ -4153,6 +4183,9 @@ def _apply_active_version_to_room(
         },
     )
     _log_runtime_event(item)
+    credential = _as_dict(room.metadata_json).get("__webchatAccess")
+    if isinstance(credential, dict):
+        runtime_state["__webchatAccess"] = deepcopy(credential)
     room.metadata_json = runtime_state
     if hasattr(room, "_sa_instance_state"):
         flag_modified(room, "metadata_json")
@@ -5940,6 +5973,7 @@ def _process_queued_channel_events(
         ChannelQueueEvent.channel_type.not_in(NON_CHANNEL_QUEUE_TYPES),
         ChannelQueueEvent.operation_kind == "channel",
         (ChannelQueueEvent.room_id.is_(None)) | (ChannelQueueEvent.room_id.not_in(_persistent_room_ids())),
+        (ChannelQueueEvent.room_id.is_(None)) | (ChannelQueueEvent.room_id.not_in(_credential_room_ids())),
     ]
     query = select(ChannelQueueEvent)
     if organization_id is not None:
@@ -6261,7 +6295,7 @@ def list_channel_rooms(
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
     with SessionLocal() as db:
-        conditions = [ChannelRoom.channel_type == channel, ChannelRoom.deleted_at.is_(None), ChannelRoom.id.not_in(_persistent_room_ids())]
+        conditions = [ChannelRoom.channel_type == channel, ChannelRoom.deleted_at.is_(None), ChannelRoom.id.not_in(_persistent_room_ids()), ChannelRoom.id.not_in(_credential_room_ids())]
         if participant_id:
             conditions.append(ChannelRoom.participant_id == participant_id)
         rooms = db.scalars(
