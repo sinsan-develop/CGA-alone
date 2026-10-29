@@ -13,10 +13,12 @@ import { getStudioPageLabel, STUDIO_PAGE_CATALOGS } from "@/lib/i18n/studio-page
 import {
   activateStudioBotVersion,
   fetchStudioBots,
+  fetchStudioHubCandidates,
   fetchStudioBotVersions,
   fetchStudioHub,
   trainStudioBotVersionNlu,
   type StudioBotApiItem,
+  type StudioHubCandidate,
   type StudioHub,
 } from "@/lib/studio-bots-api";
 
@@ -34,6 +36,7 @@ export function BotHubHome({ hubId }: Props) {
   const copy = STUDIO_PAGE_CATALOGS[uiLanguage];
   const [hub, setHub] = useState<StudioHub | null>(null);
   const [botsById, setBotsById] = useState<Record<string, StudioBotApiItem>>({});
+  const [candidatesById, setCandidatesById] = useState<Record<string, StudioHubCandidate>>({});
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [training, setTraining] = useState(false);
@@ -53,10 +56,11 @@ export function BotHubHome({ hubId }: Props) {
         if (disposed) return;
         setHub(loadedHub);
 
-        void fetchStudioBots(session.access_token)
-          .then((bots) => {
+        void Promise.all([fetchStudioBots(session.access_token), fetchStudioHubCandidates(session.access_token, hubId)])
+          .then(([bots, candidates]) => {
             if (disposed) return;
             setBotsById(Object.fromEntries(bots.map((bot) => [bot.id, bot])));
+            setCandidatesById(Object.fromEntries(candidates.map((candidate) => [candidate.id, candidate])));
           })
           .catch(() => {
             // 구성 봇의 상세 표시는 보조 정보이며, 허브 화면 자체는 계속 표시한다.
@@ -81,7 +85,7 @@ export function BotHubHome({ hubId }: Props) {
       return;
     }
 
-    const readyMemberCount = hub.members.filter((member) => botsById[member.bot_id]?.active_version?.is_trained).length;
+    const readyMemberCount = hub.members.filter((member) => candidatesById[member.bot_id]?.is_trained).length;
     if (readyMemberCount < 2) {
       setMessage(getStudioRuntimeMessage(uiLanguage, "자연어 입력형 봇 허브는 학습 완료된 운영 버전의 하위 봇이 2개 이상 필요합니다."));
       return;
@@ -162,7 +166,7 @@ export function BotHubHome({ hubId }: Props) {
                     <td>{member.display_name || member.name || bot?.name || "-"}</td>
                     <td>{bot?.description || "-"}</td>
                     <td>{version?.name || "-"}</td>
-                    <td>{version?.is_trained ? getStudioRuntimeMessage(uiLanguage, "학습 완료") : member.has_operating_version ? getStudioRuntimeMessage(uiLanguage, "운영") : getStudioRuntimeMessage(uiLanguage, "운영 버전 없음")}</td>
+                    <td>{(version?.is_trained || candidatesById[member.bot_id]?.is_trained) ? getStudioRuntimeMessage(uiLanguage, "학습 완료") : member.has_operating_version ? getStudioRuntimeMessage(uiLanguage, "운영") : getStudioRuntimeMessage(uiLanguage, "운영 버전 없음")}</td>
                     <td>{version?.updated_at ? new Date(version.updated_at).toLocaleString("ko-KR") : "-"}</td>
                     <td>{member.use_as_small_talk ? getStudioRuntimeMessage(uiLanguage, "사용") : getStudioRuntimeMessage(uiLanguage, "미사용")}</td>
                   </tr>

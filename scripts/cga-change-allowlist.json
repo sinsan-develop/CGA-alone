@@ -143,5 +143,10 @@
     "path": "apps/web/lib/studio-bots-api.ts",
     "stage": "S02",
     "reason": "2026-10-29 신산님 승인: 본인 허브 한정 최소 후보 조회의 전용 DTO/호출 연결"
+  },
+  {
+    "path": "apps/web/components/bot-hub-home.tsx",
+    "stage": "S02",
+    "reason": "승인된 허브 최소 후보 계약을 기존 홈 학습 준비·상태 표시에 연결: 실제 WSL UI에서 남은 동일 회귀 재현"
   }
 ]
