@@ -98,6 +98,10 @@ MODELS_BY_LLM_PROVIDER: dict[str, set[str]] = {
 }
 
 
+class SecondaryLlmConfig(BaseModel):
+    module_id: str = Field(default="", max_length=150)
+
+
 class BotNluAnswerConfigMixin(BaseModel):
     nlu_type: NluType | None = None
     nlu_model: NluModel | None = None
@@ -148,6 +152,7 @@ class BotCreateRequest(BotNluAnswerConfigMixin):
 
 
 class BotUpdateRequest(BotNluAnswerConfigMixin):
+    secondary_llm: SecondaryLlmConfig | None = None
     name: str | None = Field(default=None, min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=2000)
     status: str | None = Field(default=None, min_length=1, max_length=20)
@@ -159,6 +164,13 @@ class BotUpdateRequest(BotNluAnswerConfigMixin):
     introduction: str | None = Field(default=None, max_length=2000)
     settings_scope: str | None = Field(default=None, min_length=1, max_length=120)
     settings_json: dict[str, Any] | None = None
+
+
+    @model_validator(mode="after")
+    def require_secondary_version_scope(self):
+        if "secondary_llm" in self.model_fields_set and not (self.settings_scope or "").strip():
+            raise ValueError("2차 LLM 모듈 설정을 저장할 버전을 지정해주세요.")
+        return self
 
 
 class VersionCreateRequest(BaseModel):

@@ -36,7 +36,7 @@ from app.services.hub_runtime import (
     resolve_hub_member,
 )
 from app.services.default_messages import DEFAULT_MESSAGE_FALLBACKS, get_default_message_text
-from app.services.bot_ai_policy import runtime_block_reason
+from app.services.bot_ai_policy import runtime_block_reason, secondary_llm_block_reason
 from app.services.llm_client import LlmChatClient, LlmClientError, resolve_llm_provider_config
 from app.services.llm_nlu import classify_intent_with_llm_snapshot
 from app.services.nlu.deep_learning_lite import classify_deep_learning_lite_model, score_deep_learning_lite_model
@@ -1796,7 +1796,10 @@ def _runtime_block_reason(bot: Bot, version: BotVersion) -> str | None:
     diagnostics = scenario_validation_from_version(version.version_json)
     if int(diagnostics.get("error_count") or 0) > 0:
         return scenario_validation_block_reason(diagnostics)
-    return None
+    return secondary_llm_block_reason(
+        version.version_json, _version_ai_config(bot, version),
+        bot_kind=str((bot.data_json or {}).get("bot_kind") or "bot"),
+    )
 
 
 def _ensure_runtime_supported(bot: Bot, version: BotVersion) -> None:
@@ -6070,7 +6073,6 @@ def create_channel_room(
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
     with SessionLocal() as db:
-        bot, version, group = _get_active_bot_version(db, payload.bot_id, channel)
         existing_room = None
         if payload.client_room_id:
             existing_room = db.scalar(
@@ -6080,6 +6082,9 @@ def create_channel_room(
                     ChannelRoom.deleted_at.is_(None),
                 )
             )
+        if existing_room is not None:
+            _assert_legacy_room_access(db, existing_room.id)
+        bot, version, group = _get_active_bot_version(db, payload.bot_id, channel)
         request_languages = _message_language_candidates(
             payload.language,
             request.headers.get("accept-language"),
@@ -6087,7 +6092,6 @@ def create_channel_room(
             existing_room,
         )
         if existing_room is not None:
-            _assert_legacy_room_access(db, existing_room.id)
             existing_metadata = _as_dict(existing_room.metadata_json)
             existing_metadata["language"] = request_languages[0]
             existing_room.metadata_json = existing_metadata
