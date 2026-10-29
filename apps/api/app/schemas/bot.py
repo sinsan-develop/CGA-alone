@@ -166,6 +166,13 @@ class BotUpdateRequest(BotNluAnswerConfigMixin):
     settings_json: dict[str, Any] | None = None
 
 
+    @model_validator(mode="after")
+    def require_secondary_version_scope(self):
+        if "secondary_llm" in self.model_fields_set and not (self.settings_scope or "").strip():
+            raise ValueError("2차 LLM 모듈 설정을 저장할 버전을 지정해주세요.")
+        return self
+
+
 class VersionCreateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=2000)

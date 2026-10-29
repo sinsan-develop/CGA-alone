@@ -94,3 +94,56 @@ def test_copy_version_keeps_secondary_reference_inside_copied_document(secondary
 def test_existing_hub_routing_does_not_require_answer_module():
     from app.services.bot_ai_policy import secondary_llm_block_reason
     assert secondary_llm_block_reason({}, bot_kind="hub") is None
+
+
+@pytest.mark.parametrize("state", ["missing", "deleted", "valid", "hub"])
+def test_direct_webchat_obeys_same_secondary_preparation(secondary_bot, monkeypatch, state):
+    from contextlib import contextmanager
+    from fastapi.testclient import TestClient
+    from app.api.routes import webchat
+    from app.core.config import settings
+    from app.main import app
+    from app.models import AdminChannel
+    bot, version, document, user, db = secondary_bot
+    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1"}
+    bots._assign_version_document(version, document)
+    db.flush()
+    bots.activate_version(bot.id, version.id, _request(), current_user=user, db=db)
+    if state == "missing":document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":""}
+    if state == "deleted":document["dialogs"] = []
+    if state == "hub":
+        bot.data_json = {**bot.data_json, "bot_kind":"hub"}
+        document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":""}
+    bots._assign_version_document(version, document)
+    db.add(AdminChannel(organization_id=bot.organization_id, code="WEBCHAT", name="QA Webchat", status="active"))
+    db.flush()
+    @contextmanager
+    def session():
+        yield db
+    monkeypatch.setattr(webchat, "SessionLocal", session)
+    monkeypatch.setattr(settings, "webchat_api_key", "s03-qa-key")
+    calls=[]
+    def classify(*args, **kwargs):
+        calls.append(True)
+        return None, 0
+    monkeypatch.setattr(webchat, "_select_dialog_for_bot", classify)
+    client=TestClient(app)
+    try:
+        response=client.post(f"/api/v1/webchat/bots/{bot.id}/rooms/qa-room/messages", headers={"X-Aidot-Webchat-Key":"s03-qa-key"}, json={"message":"검증 질문"})
+    finally:
+        client.close()
+    if state in {"missing", "deleted"}:
+        assert response.status_code == 409
+        assert "2차" in response.text
+        assert calls == []
+    else:
+        assert response.status_code == 200
+        assert calls == [True]
+
+@pytest.mark.parametrize("scope", [None, "   "])
+def test_secondary_update_without_version_scope_is_explicitly_rejected(scope):
+    from pydantic import ValidationError
+    payload={"secondary_llm":{"module_id":"module-1"}}
+    if scope is not None:payload["settings_scope"]=scope
+    with pytest.raises(ValidationError, match="버전"):
+        BotUpdateRequest(**payload)

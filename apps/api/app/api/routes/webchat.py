@@ -16,7 +16,7 @@ from app.core.responses import success_response
 from app.core.version_documents import normalize_version_document
 from app.models import AdminChannel, Bot, BotVersion, Group
 from app.services.default_messages import resolve_default_message_text
-from app.services.bot_ai_policy import runtime_block_reason
+from app.services.bot_ai_policy import runtime_block_reason, secondary_llm_block_reason
 from app.services.llm_client import LlmClientError
 from app.services.llm_nlu import classify_intent_with_llm_snapshot
 from app.services.scenario_validation import scenario_validation_block_reason, scenario_validation_from_version
@@ -145,7 +145,10 @@ def _runtime_block_reason(bot: Bot, version: BotVersion) -> str | None:
     diagnostics = scenario_validation_from_version(version.version_json)
     if int(diagnostics.get("error_count") or 0) > 0:
         return scenario_validation_block_reason(diagnostics)
-    return None
+    return secondary_llm_block_reason(
+        version.version_json, _version_ai_config(bot, version),
+        bot_kind=str((bot.data_json or {}).get("bot_kind") or "bot"),
+    )
 
 
 def _ensure_runtime_supported(bot: Bot, version: BotVersion) -> None:

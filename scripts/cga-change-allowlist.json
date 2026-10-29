@@ -298,5 +298,10 @@
     "path": "apps/web/components/secondary-llm-config.test.mjs",
     "stage": "S03",
     "reason": "승인된 S03 미구성 초안과 안정 모듈 ID 정규화 검증"
+  },
+  {
+    "path": "apps/api/app/api/routes/webchat.py",
+    "stage": "S03",
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존"
   }
 ]
