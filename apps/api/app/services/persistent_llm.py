@@ -520,9 +520,12 @@ class PersistentLlmService:
             or event.lease_expires_at > datetime.now(timezone.utc)
         ):
             return False
+        previous_phase = event.phase
         event.lease_fence += 1
         event.lease_owner = None
         event.lease_expires_at = None
+        # 예산 조회는 populate_existing을 사용하므로 autoflush=False에서도 fence를 먼저 보존한다.
+        db.flush()
         rows = db.scalars(
             select(LlmBudgetReservation).where(
                 LlmBudgetReservation.event_id == event.id
@@ -539,6 +542,7 @@ class PersistentLlmService:
             (
                 "needs_reconcile"
                 if (event.result_json or {}).get("append_attempted")
+                or previous_phase == "memory_syncing"
                 else "unknown"
             ),
             "unknown",

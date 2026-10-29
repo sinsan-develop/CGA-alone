@@ -192,41 +192,52 @@ def _seed(engine, private_path):
     return ctx, packet, (context_generator, http_generator, patch)
 
 
-def _configure(ctx, packet, state_path):
+def _configure(ctx, packet, state_path, *, patch=None):
     import importlib
     from app.api.deps import get_db
     from app.api.routes import bots, channels
     from app.main import app
     from app.services.llm_client import LlmChatClient
 
+    assign = patch.setattr if patch is not None else setattr
     sessions = sessionmaker(bind=ctx.engine, autoflush=False)
     for module in (
+        importlib.import_module("app.db.session"),
+        importlib.import_module("app.api.routes.am"),
+        importlib.import_module("app.api.routes.webchat"),
+        importlib.import_module("app.services.default_messages"),
         channels,
         importlib.import_module("app.main"),
         importlib.import_module("app.api.deps"),
     ):
-        module.SessionLocal = sessions
+        assign(module, "SessionLocal", sessions)
 
     def database():
         with sessions() as db:
             yield db
 
-    app.dependency_overrides[get_db] = database
+    if patch is None:
+        app.dependency_overrides[get_db] = database
+    else:
+        patch.setitem(app.dependency_overrides, get_db, database)
     for name, value in packet["policy"].items():
         if not name.startswith("persistent_llm_"):
             raise ValueError("QA 정책 범위 오류")
-        setattr(settings, name, value)
+        assign(settings, name, value)
     assert settings.persistent_llm_sample_bot_id == str(ctx.bot_id)
     assert settings.persistent_llm_tariff_model == CONFIG.model
-    os.environ["AIDOT_CHATGPT_API_KEY"] = CONFIG.api_key
-    os.environ["AIDOT_CHATGPT_BASE_URL"] = CONFIG.base_url
+    environment = patch.setenv if patch is not None else os.environ.__setitem__
+    environment("AIDOT_CHATGPT_API_KEY", CONFIG.api_key)
+    environment("AIDOT_CHATGPT_BASE_URL", CONFIG.base_url)
     transport = DurableQaTransport(state_path)
-    bots._persistent_provider_transport = lambda: transport
+    assign(bots, "_persistent_provider_transport", lambda: transport)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("QA에서는 기존 단발/NLU/외부 모델 호출이 금지됩니다.")
 
-    LlmChatClient.chat = forbidden
+    assign(LlmChatClient, "chat", forbidden)
+    # 기존 semantic 설정은 vector worker에서 별도 임베딩을 유발할 수 있다.
+    assign(importlib.import_module("app.services.vector_search"), "_post_json", forbidden)
     return app
 
 

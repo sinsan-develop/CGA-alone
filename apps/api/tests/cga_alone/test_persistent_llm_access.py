@@ -1355,7 +1355,7 @@ def test_existing_worker_recovers_only_expired_submitted_without_model_retry(
     )
     assert sent.status_code == 202
     event_id = UUID(sent.json()["data"]["event_id"])
-    with Session(c.engine) as db:
+    with Session(c.engine, autoflush=False) as db:
         assert mark_turn_submitted(db, event_id)
         event = db.get(ChannelQueueEvent, event_id)
         event.lease_owner = "synthetic-dead-worker"
@@ -1364,7 +1364,7 @@ def test_existing_worker_recovers_only_expired_submitted_without_model_retry(
         )
         fence = event.lease_fence
         db.commit()
-    with Session(c.engine) as db:
+    with Session(c.engine, autoflush=False) as db:
         bots._process_persistent_llm_events(db, _request(), limit=10)
         event = db.get(ChannelQueueEvent, event_id, populate_existing=True)
         assert event.phase == ("unknown" if expired else "submitted")

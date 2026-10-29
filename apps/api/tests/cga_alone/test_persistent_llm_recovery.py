@@ -674,7 +674,7 @@ with Session(engine,autoflush=False) as db:
             rows=db.scalars(select(LlmBudgetReservation).where(LlmBudgetReservation.event_id==event.id)).all()
             settled=bool(rows) and all(row.state=='settled' for row in rows)
         original_commit()
-        if (crash=='after_submit' and phase=='submitted') or (crash=='usage_committed' and settled) or (crash=='display_committed' and phase=='pending_delivery') or (crash=='ack_committed' and phase=='delivery_confirmed') or (crash=='canonical_committed' and phase=='committed'):
+        if (crash=='after_submit' and phase=='submitted') or (crash=='usage_committed' and settled) or (crash=='display_committed' and phase=='pending_delivery') or (crash=='ack_committed' and phase=='delivery_confirmed') or (crash=='canonical_committed' and phase=='committed') or (crash=='sync_claimed' and phase=='memory_syncing' and not (event.result_json or {}).get('append_attempted')):
             os._exit(77)
     db.commit=commit
     if operation=='process':result=service.process_turn(db,scope,event_key)
@@ -944,7 +944,7 @@ def test_qa_server_refuses_service_database_or_privileged_role(database, role, s
 
 
 def test_qa_server_restores_same_identity_and_file_provider_then_cleans(
-    test_engine, migrated_test_database, tmp_path
+    test_engine, migrated_test_database, tmp_path, monkeypatch
 ):
     from tests.cga_alone.persistent_llm_qa_server import (
         _seed,
@@ -963,7 +963,7 @@ def test_qa_server_restores_same_identity_and_file_provider_then_cleans(
     remote = tmp_path / "provider-state.json"
     c, packet, generators = _seed(test_engine, private)
     try:
-        _configure(c, packet, remote)
+        _configure(c, packet, remote, patch=generators[2])
         with TestClient(app) as client:
             login = client.post(
                 "/api/v1/auth/login",
@@ -984,7 +984,7 @@ def test_qa_server_restores_same_identity_and_file_provider_then_cleans(
                     c = _context(
                         test_engine, json.loads(private.read_text(encoding="utf-8"))
                     )
-                    _configure(c, packet, remote)
+                    _configure(c, packet, remote, patch=generators[2])
                 sent = client.post(
                     base + f"/rooms/{room}/turns",
                     headers=headers,
@@ -1309,6 +1309,8 @@ def test_qa_server_preserve_mode_never_reports_failed_start_as_success(
     monkeypatch.setattr(qa, "create_engine", lambda *args, **kwargs: test_engine)
     monkeypatch.setattr(qa.os, "_exit", exit_now)
     monkeypatch.setattr(uvicorn, "run", failed_start)
+    configure = qa._configure
+    monkeypatch.setattr(qa, "_configure", lambda ctx, packet, state: configure(ctx, packet, state, patch=generators[2]))
     try:
         with pytest.raises(RecordedExit) as result:
             qa.main()
@@ -1321,3 +1323,138 @@ def test_qa_server_preserve_mode_never_reports_failed_start_as_success(
             except StopIteration:
                 pass
         patch.undo()
+
+
+def test_expired_submit_fences_late_live_worker_with_production_session(protocol):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from datetime import datetime, timezone, timedelta
+    c, transport, service, _, _ = protocol
+    barrier = Barrier(2)
+    with Session(c.engine, autoflush=False) as db:
+        event_id = admit(protocol, db)
+    original = transport.__call__
+    def paused(method, url, payload, headers, timeout):
+        raw = original(method, url, payload, headers, timeout)
+        if method == "POST" and url.endswith("/responses"):
+            barrier.wait(timeout=15)
+            barrier.wait(timeout=15)
+        return raw
+    service.client.transport = paused
+    def work():
+        with Session(c.engine, autoflush=False) as db:
+            return service.process_turn(db, c.scope, event_id)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(work)
+        barrier.wait(timeout=15)
+        try:
+            with Session(c.engine, autoflush=False) as db:
+                event = db.get(ChannelQueueEvent, UUID(event_id))
+                old_fence = event.lease_fence
+                event.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                db.commit()
+                recovered = service.reconcile_turn(db, c.scope, event_id)
+                fenced = db.get(ChannelQueueEvent, UUID(event_id)).lease_fence
+        finally:
+            barrier.wait(timeout=15)
+        view = future.result(timeout=15)
+    assert fenced == old_fence + 1
+    assert recovered["phase"] == view["phase"] == "unknown"
+    assert view["message"] is None and transport.generations == 1
+    with Session(c.engine) as db:
+        event = db.get(ChannelQueueEvent, UUID(event_id))
+        assert event.provider_response_id and event.result_json["late_provider_receipt"]["usage"]
+        assert db.get(ChannelLlmBinding, event.binding_id).committed_turn_count == 0
+        assert not list(db.scalars(select(ChannelMessage).where(ChannelMessage.room_id == c.room_id, ChannelMessage.participant_kind == "bot")))
+
+
+def test_fixed_answer_crash_before_append_recovers_without_generation(protocol, tmp_path):
+    from datetime import datetime, timezone, timedelta
+    c, _, service, _, _ = protocol
+    state = tmp_path / "fixed-remote.json"
+    with Session(c.engine, autoflush=False) as db:
+        initial = admit(protocol, db)
+    process_worker(c, initial, state, "process")
+    process_worker(c, initial, state, "confirm")
+    with Session(c.engine, autoflush=False) as db:
+        fixed = service.admit_fixed_turn(db, c.scope, "fixed-1", "고정 질문", server_text="서버 고정 답변", dialog_id="fixed-dialog")["event_id"]
+    process_worker(c, fixed, state, "ack")
+    process_worker(c, fixed, state, "sync", "sync_claimed", expected=77)
+    with Session(c.engine, autoflush=False) as db:
+        event = db.get(ChannelQueueEvent, UUID(fixed))
+        assert event.phase == "memory_syncing" and not event.result_json.get("append_attempted")
+        assert not event.provider_response_id
+        event.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+    view = process_worker(c, fixed, state, "recover")
+    remote = json.loads(state.read_text(encoding="utf-8"))
+    assert view["phase"] == "committed"
+    assert remote["generations"] == 1 and remote["appends"] == 2
+    assert [row["content"][0]["text"] for row in remote["items"][-2:]] == ["고정 질문", "서버 고정 답변"]
+    preserve_process_evidence(c, fixed, state, "fixed-sync-claimed")
+
+
+def test_qa_configuration_rebinds_every_existing_database_alias(persistent_context, monkeypatch, tmp_path):
+    import importlib
+    from types import SimpleNamespace
+    from tests.cga_alone.persistent_llm_qa_server import _configure
+    from app.api.routes import am
+    c = persistent_context
+    modules = [importlib.import_module(name) for name in ("app.db.session", "app.api.routes.am", "app.api.routes.webchat", "app.services.default_messages", "app.api.routes.channels", "app.main", "app.api.deps")]
+    reached = []
+    def forbidden():
+        reached.append("service")
+        raise AssertionError("서비스 DB 접근 금지")
+    for module in modules:
+        monkeypatch.setattr(module, "SessionLocal", forbidden)
+    packet = {"policy": {"persistent_llm_sample_bot_id": str(c.bot_id), "persistent_llm_tariff_model": CONFIG.model}}
+    # 기존 전역 별칭도 테스트 종료 때 원복한다.
+    from app.services.llm_client import LlmChatClient
+    from app.api.routes import bots
+    monkeypatch.setattr(LlmChatClient, "chat", LlmChatClient.chat)
+    monkeypatch.setattr(bots, "_persistent_provider_transport", bots._persistent_provider_transport)
+    from app.core.config import settings
+    for key in packet["policy"]:
+        monkeypatch.setattr(settings, key, getattr(settings, key))
+    _configure(c, packet, tmp_path / "qa.json", patch=monkeypatch)
+    from tests.integration.test_bot_persistence_regression import _request
+    from app.models import ChannelRoom
+    monkeypatch.setattr(am, "_verify_channel_key", lambda *args: None)
+    monkeypatch.setattr(am, "_resolve_bot_id", lambda *args: str(c.bot_id))
+    monkeypatch.setattr(am, "_resolve_room", lambda *args: SimpleNamespace(id=c.room_id))
+    am.end_am_session(str(c.bot_id), am.AmSessionEndRequest(roomId=str(c.room_id)), _request(), None)
+    with am.SessionLocal() as db:
+        assert db.get(ChannelRoom, c.room_id).status == "closed"
+    for module in modules:
+        assert module.SessionLocal.kw["bind"] is c.engine
+    assert reached == []
+
+
+def test_qa_configuration_blocks_vector_embedding_before_network(persistent_context, monkeypatch, tmp_path):
+    from tests.cga_alone.persistent_llm_qa_server import _configure
+    from app.services import vector_search
+    from app.services.llm_client import LlmChatClient
+    from app.api.routes import bots
+    from app.core.config import settings
+    import importlib
+    c = persistent_context
+    for name in ("app.db.session", "app.api.routes.am", "app.api.routes.webchat", "app.services.default_messages", "app.api.routes.channels", "app.main", "app.api.deps"):
+        module = importlib.import_module(name)
+        monkeypatch.setattr(module, "SessionLocal", module.SessionLocal)
+    monkeypatch.setattr(LlmChatClient, "chat", LlmChatClient.chat)
+    monkeypatch.setattr(bots, "_persistent_provider_transport", bots._persistent_provider_transport)
+    monkeypatch.setattr(vector_search, "_post_json", vector_search._post_json)
+    for key in ("persistent_llm_sample_bot_id", "persistent_llm_tariff_model"):
+        monkeypatch.setattr(settings, key, getattr(settings, key))
+    reached = []
+    def forbidden_network(*args, **kwargs):
+        reached.append(True)
+        raise RuntimeError("실제 전송 경계에 도달")
+    # 전송의 가장 낮은 실제 connect 경계에 대역을 둔다.
+    monkeypatch.setattr(vector_search.HTTPConnection, "connect", forbidden_network)
+    packet = {"policy": {"persistent_llm_sample_bot_id": str(c.bot_id), "persistent_llm_tariff_model": CONFIG.model}}
+    _configure(c, packet, tmp_path / "qa.json", patch=monkeypatch)
+    client = vector_search.IntentVectorSearchClient(vector_search.VectorDbConfig(True, "http://127.0.0.1:9/intent/search", "qa"))
+    with pytest.raises(AssertionError, match="QA"):
+        client.configure_intents(bot_id=str(c.bot_id), version_id=str(c.version_id), utterances=["질문"], target_count=1, target_count_policy="fixed", dictionary_terms=[], entity_terms=[], scoring={})
+    assert reached == []
