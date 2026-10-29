@@ -203,5 +203,15 @@
     "path": "apps/api/tests/cga_alone/test_persistent_llm_migration.py",
     "stage": "P01",
     "reason": "승인된 전용 QA0029 가역·기존 큐 인덱스/행 보존 및 비어 있지 않은 원장 downgrade 거부 검증"
+  },
+  {
+    "path": "apps/api/app/services/openai_conversations.py",
+    "stage": "P02",
+    "reason": "승인된 canonical 이력·분리 Responses·무재시도/시간제한/취소 REST protocol 및 HTTP 대역 검증"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_persistent_llm_provider.py",
+    "stage": "P02",
+    "reason": "승인된 canonical 이력·분리 Responses·무재시도/시간제한/취소 REST protocol 및 HTTP 대역 검증"
   }
 ]
