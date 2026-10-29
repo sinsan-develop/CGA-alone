@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
-import hashlib, json
+import hashlib, json, re
 from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -60,10 +60,13 @@ def _result(event, **values):
 
 
 class PersistentLlmService:
-    def __init__(self, client, *, usage_evaluator, display_transform=None):
+    def __init__(
+        self, client, *, usage_evaluator, display_transform=None, access_validator=None
+    ):
         self.client = client
         self.usage_evaluator = usage_evaluator
         self.display_transform = display_transform or (lambda text: text)
+        self.access_validator = access_validator
 
     def _binding(self, db, scope, *, read_only=False):
         # lock 순서: 버전 -> 기존 방 -> binding -> event -> 정렬 예산 계정.
@@ -109,13 +112,19 @@ class PersistentLlmService:
             or bot.group_id != scope.group_id
             or version.bot_id != scope.bot_id
             or room.bot_id != scope.bot_id
-            or room.bot_version_id != scope.version_id
+            or (
+                room.bot_version_id != scope.version_id
+                and not (read_only and binding.status == "closed")
+            )
             or binding.organization_id != scope.org_id
             or binding.group_id != scope.group_id
             or binding.bot_id != scope.bot_id
             or binding.version_id != scope.version_id
             or binding.user_id != user.id
-            or room.deleted_at is not None
+            or (
+                room.deleted_at is not None
+                and not (read_only and binding.status == "closed")
+            )
         ):
             raise TurnConflict("대화의 인증 범위가 일치하지 않습니다.")
         if not read_only and (
@@ -124,6 +133,8 @@ class PersistentLlmService:
             or version.deleted_at is not None
         ):
             raise TurnConflict("열린 대화만 사용할 수 있습니다.")
+        if self.access_validator is not None:
+            self.access_validator(db, scope, read_only=read_only)
         return binding, room
 
     def _event(self, db, scope, event_id, *, read_only=False):
@@ -214,10 +225,21 @@ class PersistentLlmService:
             or len(question) > 20000
         ):
             raise TurnConflict("질문이 비어 있거나 입력 상한을 넘었습니다.")
+        instructions = binding.snapshot_json.get("instructions")
+        modules = binding.snapshot_json.get("module_instructions")
+        if isinstance(modules, dict):
+            dialog_id = (
+                turn_context.get("cga_dialog_id")
+                if isinstance(turn_context, dict)
+                else None
+            )
+            if dialog_id not in modules:
+                raise TurnConflict("고정 버전에서 허용한 모듈이 필요합니다.")
+            instructions = modules[dialog_id]
         payload = build_detached_payload(
             self.client.config,
             self._history(db, binding),
-            instructions=binding.snapshot_json.get("instructions"),
+            instructions=instructions,
             question=question,
             turn_context=turn_context,
             output_tokens=output_tokens,
@@ -312,6 +334,118 @@ class PersistentLlmService:
             db.add(event)
             db.flush()
             reserve_turn_budget(db, event.id, quote)
+            db.commit()
+            return self._view(event)
+        except Exception:
+            db.rollback()
+            raise
+
+    def admit_fixed_turn(
+        self, db, scope, message_key, question, *, server_text, dialog_id
+    ):
+        """서버가 기존 시나리오에서 계산한 고정 Talk만 접수한다. 클라이언트 답변은 받지 않는다."""
+        try:
+            binding, room = self._binding(db, scope)
+            if (
+                not isinstance(message_key, str)
+                or not 1 <= len(message_key) <= 120
+                or not isinstance(question, str)
+                or not question.strip()
+                or not isinstance(server_text, str)
+                or not server_text.strip()
+            ):
+                raise TurnConflict("확정된 질문·서버 Talk·메시지 키가 필요합니다.")
+            digest = hashlib.sha256(
+                json.dumps(
+                    {"question": question, "dialog_id": dialog_id, "kind": "fixed"},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            existing = db.scalar(
+                select(ChannelQueueEvent).where(
+                    ChannelQueueEvent.binding_id == binding.id,
+                    ChannelQueueEvent.client_message_key == message_key,
+                )
+            )
+            if existing is not None:
+                if existing.request_hash != digest:
+                    raise TurnConflict("같은 메시지 키의 내용이 달라졌습니다.")
+                return self._view(existing)
+            if db.scalar(
+                select(ChannelQueueEvent.id)
+                .where(
+                    ChannelQueueEvent.binding_id == binding.id,
+                    ChannelQueueEvent.operation_kind == "persistent_llm",
+                    ChannelQueueEvent.phase != "committed",
+                )
+                .limit(1)
+            ) is not None or binding.provider_state not in {"uninitialized", "ready"}:
+                raise TurnConflict("이전 답변의 확정 또는 복구가 필요합니다.")
+            binding.provider_config_ref = self._check_config(binding)
+            receipt = {
+                "persistent_llm": {
+                    "binding_id": str(binding.id),
+                    "generation": binding.generation,
+                    "canonical": False,
+                }
+            }
+            request = ChannelMessage(
+                room_id=room.id,
+                channel_type=room.channel_type,
+                participant_id=str(binding.user_id),
+                participant_kind="user",
+                participant_name=room.participant_name,
+                text=question,
+                payload_json=deepcopy(receipt),
+            )
+            response = ChannelMessage(
+                room_id=room.id,
+                channel_type=room.channel_type,
+                participant_id=str(binding.bot_id),
+                participant_kind="bot",
+                participant_name="답변 봇",
+                text=server_text,
+                payload_json=deepcopy(receipt),
+            )
+            db.add_all([request, response])
+            db.flush()
+            event = ChannelQueueEvent(
+                room_id=room.id,
+                request_message_id=request.id,
+                channel_type=room.channel_type,
+                bot_id=binding.bot_id,
+                bot_version_id=binding.version_id,
+                participant_id=str(binding.user_id),
+                operation_kind="persistent_llm",
+                binding_id=binding.id,
+                client_message_key=message_key,
+                request_hash=digest,
+                phase="pending_delivery",
+                status="processing",
+                parameter_json={
+                    "question": question,
+                    "cga_dialog_id": dialog_id,
+                    "kind": "fixed",
+                },
+                result_json={},
+            )
+            db.add(event)
+            db.flush()
+            content_hash = hashlib.sha256(
+                (
+                    str(binding.id) + str(event.id) + str(response.id) + server_text
+                ).encode()
+            ).hexdigest()
+            _result(
+                event,
+                display={
+                    "id": str(response.id),
+                    "text": server_text,
+                    "hash": content_hash,
+                },
+            )
+            _phase(event, "pending_delivery", "processing")
             db.commit()
             return self._view(event)
         except Exception:
@@ -436,7 +570,12 @@ class PersistentLlmService:
             return self._unknown(db, scope, event_id, fence=fence)
 
     def _persist_response(self, db, scope, event_id, fence, raw):
-        _, event = self._owned(db, scope, event_id, fence)
+        try:
+            _, event = self._owned(db, scope, event_id, fence)
+        except Exception:
+            # 현재 출력 권한이 없어도 이미 제출한 요청의 ID/사용량은 서버 원장에 보존한다.
+            self._persist_late_response(db, scope, event_id, fence, raw)
+            raise
         identifier = raw.get("id")
         if not isinstance(identifier, str) or not identifier or len(identifier) > 200:
             raise ProviderProtocolError("응답 ID가 필요합니다.")
@@ -444,6 +583,150 @@ class PersistentLlmService:
         _result(event, provider_receipt=deepcopy(raw))
         _phase(event, "generated")
         db.commit()
+
+    def _receipt_event(self, db, scope, event_id):
+        """출력 권한과 분리된 서버 receipt 저장. 원래 접수한 FK/주체 범위는 모두 대조한다."""
+        version = db.scalar(
+            select(BotVersion)
+            .where(BotVersion.id == scope.version_id)
+            .with_for_update()
+        )
+        room = db.scalar(
+            select(ChannelRoom).where(ChannelRoom.id == scope.room_id).with_for_update()
+        )
+        binding = db.scalar(
+            select(ChannelLlmBinding)
+            .where(
+                ChannelLlmBinding.room_id == scope.room_id,
+                ChannelLlmBinding.principal_key == scope.principal_key,
+                ChannelLlmBinding.generation == scope.generation,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        event = db.scalar(
+            select(ChannelQueueEvent)
+            .where(ChannelQueueEvent.id == _uuid(event_id))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            version is None
+            or room is None
+            or binding is None
+            or event is None
+            or version.bot_id != scope.bot_id
+            or room.bot_id != scope.bot_id
+            or binding.bot_id != scope.bot_id
+            or binding.version_id != scope.version_id
+            or binding.organization_id != scope.org_id
+            or binding.group_id != scope.group_id
+            or binding.principal_key != "user:" + str(binding.user_id)
+            or event.binding_id != binding.id
+            or event.room_id != scope.room_id
+            or event.bot_id != scope.bot_id
+            or event.bot_version_id != scope.version_id
+            or event.operation_kind != "persistent_llm"
+        ):
+            raise TurnConflict("원래 접수한 요청의 receipt 범위가 일치하지 않습니다.")
+        return binding, event
+
+    def _persist_late_response(self, db, scope, event_id, fence, raw):
+        db.rollback()
+        identifier = raw.get("id") if isinstance(raw, dict) else None
+        if not isinstance(identifier, str) or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,200}", identifier
+        ):
+            return
+        binding, event = self._receipt_event(db, scope, event_id)
+        minimal = {
+            "id": identifier,
+            "status": raw.get("status"),
+            "usage": deepcopy(raw.get("usage")),
+            "request_fence": fence,
+        }
+        _result(event, late_provider_receipt=minimal)
+        if (
+            event.provider_response_id is not None
+            and event.provider_response_id != identifier
+        ):
+            if event.phase != "committed":
+                _phase(event, "needs_reconcile", "unknown")
+            db.commit()
+            return
+        event.provider_response_id = identifier
+        if event.phase in {
+            "committed",
+            "cancelled",
+            "revoked",
+            "invalid_response",
+            "failed",
+            "access_blocked",
+        }:
+            db.commit()
+            return
+        denied = False
+        try:
+            if self.access_validator is not None:
+                self.access_validator(db, scope, read_only=False)
+        except Exception:
+            denied = True
+        stopped = (
+            binding.status == "revoked"
+            or event.cancel_requested_at is not None
+            or denied
+        )
+        if not stopped:
+            # 새 fence의 정상 실행 상태는 이전 실행이 덮어쓰지 않는다.
+            db.commit()
+            return
+        _phase(event, "unknown", "unknown")
+        db.commit()
+        try:
+            binding, event = self._receipt_event(db, scope, event_id)
+            usage = raw.get("usage")
+            if (
+                raw.get("status") not in {"completed", "cancelled", "failed"}
+                or not isinstance(usage, dict)
+                or any(
+                    type(usage.get(key)) is not int or usage[key] < 0
+                    for key in ("input_tokens", "output_tokens")
+                )
+            ):
+                raise ProviderProtocolError("중지된 요청의 확정 사용량이 필요합니다.")
+            settle_turn_budget(db, event.id, self.usage_evaluator(raw))
+            _phase(
+                event,
+                (
+                    "revoked"
+                    if binding.status == "revoked"
+                    else (
+                        "cancelled"
+                        if event.cancel_requested_at is not None
+                        else "access_blocked"
+                    )
+                ),
+                "failed",
+            )
+            event.error_message = (
+                "중지된 요청의 결과는 표출하지 않고 확인된 사용량만 기록했습니다."
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            binding, event = self._receipt_event(db, scope, event_id)
+            rows = db.scalars(
+                select(LlmBudgetReservation).where(
+                    LlmBudgetReservation.event_id == event.id
+                )
+            ).all()
+            if rows and all(
+                row.state in {"reserved", "submitted", "unknown"} for row in rows
+            ):
+                hold_unknown_budget(db, event.id)
+            _phase(event, "unknown", "unknown")
+            event.error_message = "중지된 요청의 사용량 확인이 필요합니다."
+            db.commit()
 
     def _apply_response(self, db, scope, event_id, fence):
         _, event = self._owned(db, scope, event_id, fence)
@@ -646,6 +929,16 @@ class PersistentLlmService:
         fence = event.lease_fence
         _phase(event, "memory_syncing", "processing")
         conversation_id = binding.provider_conversation_id
+        create_conversation = (
+            conversation_id is None and binding.provider_state == "uninitialized"
+        )
+        if conversation_id is None and not create_conversation:
+            _phase(event, "needs_reconcile", "unknown")
+            db.commit()
+            return self._view(event)
+        if create_conversation:
+            binding.provider_state = "creating"
+        binding_id = binding.id
         history = self._history(db, binding)
         pair = [
             ("user", event.parameter_json["question"]),
@@ -653,6 +946,15 @@ class PersistentLlmService:
         ]
         db.commit()
         try:
+            if create_conversation:
+                conversation_id = self.client.create_conversation(
+                    binding_id, request_id="create-" + str(event.id)
+                )
+                binding, event = self._owned(db, scope, event_id, fence)
+                binding.provider_conversation_id = conversation_id
+                binding.provider_state = "ready"
+                binding.memory_prefix_hash = canonical_hash([])
+                db.commit()
             remote = self.client.list_items(conversation_id)
             binding, event = self._owned(db, scope, event_id, fence)
             if (
@@ -717,6 +1019,12 @@ class PersistentLlmService:
 
     def reconcile_turn(self, db, scope, event_id):
         _, event = self._event(db, scope, event_id)
+        if event.phase == "validated":
+            # 검증된 답변의 표출 실패는 저장된 원문으로 재개한다. 생성/조회 재호출이 아니다.
+            event.lease_fence += 1
+            fence = event.lease_fence
+            db.commit()
+            return self.prepare_display(db, scope, event_id, fence=fence)
         if event.phase in {
             "delivery_confirmed",
             "memory_syncing",
@@ -753,15 +1061,33 @@ class PersistentLlmService:
             _phase(event, "needs_reconcile", "unknown")
             db.commit()
             return self._view(event)
-        if event.submitted_at is None:
-            release_presubmit_budget(db, event.id)
+        rows = db.scalars(
+            select(LlmBudgetReservation).where(
+                LlmBudgetReservation.event_id == event.id
+            )
+        ).all()
+        raw = (event.result_json or {}).get("provider_receipt", {})
+        proven_completed = (
+            raw.get("status") == "completed"
+            and rows
+            and all(row.state == "settled" for row in rows)
+        )
+        fixed_without_generation = (event.parameter_json or {}).get(
+            "kind"
+        ) == "fixed" and event.submitted_at is None
+        if event.submitted_at is None or proven_completed:
+            if event.submitted_at is None and rows:
+                release_presubmit_budget(db, event.id)
+            elif not proven_completed and not fixed_without_generation:
+                db.commit()
+                return self._unknown(db, scope, event_id, fence=fence)
             _phase(event, "cancelled", "failed")
             db.commit()
             return self._view(event)
         raw = (event.result_json or {}).get("provider_receipt", {})
         identifier = event.provider_response_id
         db.commit()
-        if not identifier or raw.get("background") is not True:
+        if not identifier or raw.get("background") is not True or self.client is None:
             return self._unknown(db, scope, event_id, fence=fence)
         try:
             cancelled = self.client.cancel_response(

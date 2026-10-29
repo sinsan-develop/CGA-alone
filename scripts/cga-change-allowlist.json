@@ -61,8 +61,8 @@
   },
   {
     "path": "apps/api/app/api/routes/bots.py",
-    "stage": "S02/P01",
-    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결"
+    "stage": "S02/P01/P03",
+    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결; P03 열린 지속 방의 자동 운영버전 종료 제외; P03 실제JWT room/turn/ACK·고정버전 text Talk/End·예산계층·전용worker와 새샘플버전 사전guard"
   },
   {
     "path": "apps/api/app/api/routes/hubs.py",
@@ -81,8 +81,8 @@
   },
   {
     "path": "apps/api/tests/cga_alone/conftest.py",
-    "stage": "P01/P02",
-    "reason": "승인된 실제PG 지속대화 합성 fixture 및 request/answer 메시지 포함 정확한 소유 자료 정리"
+    "stage": "P01/P02/P03",
+    "reason": "승인된 실제PG 지속대화 합성 fixture 및 request/answer 메시지 포함 정확한 소유 자료 정리; P03 active pointer·소유 감사 target 정리 및 실패시 소유receipt 보존"
   },
   {
     "path": "apps/api/tests/cga_alone/test_one_bot_creation.py",
@@ -161,8 +161,8 @@
   },
   {
     "path": "apps/api/app/schemas/persistent_llm.py",
-    "stage": "P01",
-    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증"
+    "stage": "P01/P01/P03",
+    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; 서버 내부 계약 및 인증된 room/turn/ACK/reset/close 요청 DTO, 임의 participant/answer 필드 거부"
   },
   {
     "path": "apps/api/app/services/version_pins.py",
@@ -216,12 +216,52 @@
   },
   {
     "path": "apps/api/app/services/persistent_llm.py",
-    "stage": "P02",
-    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증"
+    "stage": "P02/P02/P03",
+    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증; 기존 room/message/queue의 표출 확정·복구와 P03 인증검사 hook/닫힌 세대 조회/고정Q&A 무생성 canonical 연결"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_recovery.py",
     "stage": "P02",
     "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증"
+  },
+  {
+    "path": "apps/api/app/api/routes/channels.py",
+    "stage": "P03",
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
+    "stage": "P03",
+    "reason": "승인된 P03 실제PG 보호방/인증 범위·legacy worker/버전전환 경계 검증"
+  },
+  {
+    "path": "apps/api/app/core/config.py",
+    "stage": "P03",
+    "reason": "승인된 단일 지속 샘플 기본OFF 및 실제 실행 전 모델/예산/횟수/요금표 미설정 gate"
+  },
+  {
+    "path": "apps/api/app/main.py",
+    "stage": "P03",
+    "reason": "승인된 기존 queue worker에 persistent operation 전용 처리 연결, 일반 worker 분리 유지"
+  },
+  {
+    "path": "apps/web/components/simulator-page.tsx",
+    "stage": "P03",
+    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화"
+  },
+  {
+    "path": "apps/web/components/persistent-llm-runtime.test.mjs",
+    "stage": "P03",
+    "reason": "승인된 P03 렌더링 확인·잠금/중복 전송·재접속 범위·새 대화 및 단발 모드 회귀"
+  },
+  {
+    "path": "apps/web/lib/i18n/studio-runtime-native.ts",
+    "stage": "P03",
+    "reason": "승인된 P03 새 시뮬레이터 조작/상태 문구의 기존 6개 번역 경로 보존; 기존 문구/번역 불변"
+  },
+  {
+    "path": "apps/web/lib/api.ts",
+    "stage": "P03",
+    "reason": "독립검토 확정미접수422 입력잠금 보완: 기존 same-origin Error 메시지/인증처리/재시도는 유지하고 HTTP status만 내부 오류 metadata에 보존"
   }
 ]

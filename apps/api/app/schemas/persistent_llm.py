@@ -39,3 +39,47 @@ class UsageEvidence:
     currency: str
     tariff_version: str
     receipt_ref: str
+
+
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class PersistentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PersistentRoomStartRequest(PersistentRequest):
+    dialog_id: str = Field(min_length=1, max_length=150)
+    room_id: UUID | None = None
+
+
+class PersistentTurnRequest(PersistentRequest):
+    expected_generation: int = Field(ge=1)
+    message_key: str = Field(min_length=1, max_length=120)
+    question: str = Field(min_length=1, max_length=4000)
+    dialog_id: str = Field(min_length=1, max_length=150)
+
+
+class PersistentAckRequest(PersistentRequest):
+    message_id: UUID
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class PersistentResetRequest(PersistentRequest):
+    expected_generation: int = Field(ge=1)
+    confirm_reset: Literal[True]
+    dialog_id: str = Field(min_length=1, max_length=150)
+
+
+class PersistentCloseRequest(PersistentRequest):
+    expected_generation: int = Field(ge=1)
+
+
+class PersistentRevokeRequest(PersistentRequest):
+    reason: str = Field(min_length=1, max_length=2000)
+    version_id: UUID | None = None
+
+
+class PersistentCancelRequest(PersistentRequest):
+    pass

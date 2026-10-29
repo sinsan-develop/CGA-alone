@@ -31,6 +31,21 @@ class Settings(BaseSettings):
     cors_origin_regex: str = r"https?://(localhost|127\.0\.0\.1):\d+"
     login_history_retention_days: int = 90
     webchat_api_key: str = ""
+    # 지속 LLM 첫 샘플은 모델/횟수/예산 확인 전 실제 실행을 허용하지 않는다.
+    persistent_llm_enabled: bool = False
+    persistent_llm_execution_enabled: bool = False
+    persistent_llm_sample_bot_id: str = ""
+    persistent_llm_budget_scope: str = ""
+    persistent_llm_tariff_model: str = ""
+    persistent_llm_tariff_version: str = ""
+    persistent_llm_currency: str = ""
+    persistent_llm_context_input_tokens: int = 0
+    persistent_llm_max_output_tokens: int = 0
+    persistent_llm_budget_amount: int = 0
+    persistent_llm_generation_limit: int = 0
+    persistent_llm_input_rate_units_per_million: int | None = None
+    persistent_llm_output_rate_units_per_million: int | None = None
+    persistent_llm_background: bool = False
     channel_queue_worker_enabled: bool = True
     channel_queue_worker_interval_seconds: float = 2.0
     channel_queue_worker_batch_size: int = 10

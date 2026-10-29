@@ -195,7 +195,7 @@ export async function apiSameOriginRequest<T>(
 
   if (response.status === 401) {
     redirectToLogin();
-    throw new Error("로그인이 필요합니다.");
+    throw Object.assign(new Error("로그인이 필요합니다."), { status: response.status });
   }
 
   if (!response.ok) {
@@ -203,7 +203,7 @@ export async function apiSameOriginRequest<T>(
       payload && "detail" in payload && payload.detail
         ? formatApiErrorDetail(payload.detail)
         : "요청 처리 중 오류가 발생했습니다.";
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: response.status });
   }
 
   if (!payload || !("data" in payload)) {
