@@ -488,3 +488,123 @@ def test_render_transform_failure_uses_saved_result_after_repair(protocol):
             t.items[1]["content"][0]["text"] == view["message"]["text"]
             and t.generations == 1
         )
+
+
+def test_cancel_races_validation_using_two_pg_sessions(protocol, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.services import persistent_llm as runtime
+
+    c, t, s, _, _ = protocol
+    barrier = Barrier(2)
+    original = runtime.validated_answer
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+
+    def cancel_in_second_session():
+        barrier.wait(timeout=10)
+        with Session(c.engine) as other:
+            s.cancel_turn(other, c.scope, event)
+        barrier.wait(timeout=10)
+
+    def validation_boundary(raw):
+        barrier.wait(timeout=10)
+        barrier.wait(timeout=10)
+        return original(raw)
+
+    monkeypatch.setattr(runtime, "validated_answer", validation_boundary)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(cancel_in_second_session)
+        with Session(c.engine) as db:
+            view = s.process_turn(db, c.scope, event)
+            future.result(timeout=10)
+            assert view["phase"] in {"cancelled", "unknown"} and view["message"] is None
+            assert not list(
+                db.scalars(
+                    select(ChannelMessage).where(
+                        ChannelMessage.room_id == c.room_id,
+                        ChannelMessage.participant_kind == "bot",
+                    )
+                )
+            )
+    assert t.generations == 1 and t.appends == 0
+
+
+def test_display_commit_then_read_failure_reuses_same_message_receipt(
+    protocol, monkeypatch
+):
+    c, t, s, _, _ = protocol
+    original = s._view
+    fail_once = [True]
+
+    def failed_read(event):
+        if fail_once[0] and event.phase == "pending_delivery":
+            fail_once[0] = False
+            raise RuntimeError("synthetic read failure after display commit")
+        return original(event)
+
+    monkeypatch.setattr(s, "_view", failed_read)
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+        first = s.process_turn(db, c.scope, event)
+        assert first["phase"] == "unknown" and first["message"] is not None
+        preserved = deepcopy(first["message"])
+    with Session(c.engine) as db:
+        restored = s.reconcile_turn(db, c.scope, event)
+        assert (
+            restored["phase"] == "pending_delivery" and restored["message"] == preserved
+        )
+        messages = list(
+            db.scalars(
+                select(ChannelMessage).where(
+                    ChannelMessage.room_id == c.room_id,
+                    ChannelMessage.participant_kind == "bot",
+                )
+            )
+        )
+        assert len(messages) == 1 and str(messages[0].id) == preserved["id"]
+        confirm(protocol, db, event)
+        assert t.generations == 1 and t.appends == 1
+
+
+def test_ack_receipt_is_durable_and_bound_to_server_message(protocol):
+    c, t, s, _, _ = protocol
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+        view = s.process_turn(db, c.scope, event)
+        s.ack_display(
+            db,
+            c.scope,
+            event,
+            message_id=view["message"]["id"],
+            content_hash=view["message"]["hash"],
+        )
+    with Session(c.engine) as db:
+        row = db.get(ChannelQueueEvent, UUID(event))
+        assert row.result_json["delivery_receipt"] == {
+            "id": view["message"]["id"],
+            "hash": view["message"]["hash"],
+            "principal": c.scope.principal_key,
+        }
+        assert s.sync_turn(db, c.scope, event)["phase"] == "committed"
+
+
+@pytest.mark.parametrize("mode", ["timeout_before", "timeout_after"])
+def test_cancel_cannot_erase_ambiguous_memory_append(protocol, mode):
+    from app.services.version_pins import close_pinned_dialog, PinConflict
+
+    c, t, s, binding_id, _ = protocol
+    t.append_mode = mode
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+        s.process_turn(db, c.scope, event)
+        assert confirm(protocol, db, event)["phase"] == "needs_reconcile"
+        assert s.cancel_turn(db, c.scope, event)["phase"] == "needs_reconcile"
+        reconciled = s.reconcile_turn(db, c.scope, event)
+        if mode == "timeout_after":
+            assert reconciled["phase"] == "committed"
+        else:
+            assert reconciled["phase"] == "needs_reconcile"
+            with pytest.raises(PinConflict):
+                close_pinned_dialog(db, binding_id)
+        assert t.appends == 1 and t.generations == 1

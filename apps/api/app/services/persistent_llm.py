@@ -463,6 +463,15 @@ class PersistentLlmService:
             db.commit()
         except Exception:
             return self._unknown(db, scope, event_id, fence=fence)
+        # 형식 검사는 부작용 없는 계산이다. 정산 commit 이후 쓰기는 반드시 다시 fence를 획득한다.
+        answer = None
+        invalid = False
+        if raw.get("status") not in {"cancelled", "failed"}:
+            try:
+                answer = validated_answer(raw)
+            except ProviderProtocolError:
+                invalid = True
+        binding, event = self._owned(db, scope, event_id, fence)
         if event.cancel_requested_at is not None or raw.get("status") in {
             "cancelled",
             "failed",
@@ -479,21 +488,80 @@ class PersistentLlmService:
             )
             db.commit()
             return self._view(event)
-        try:
-            answer = validated_answer(raw)
-        except ProviderProtocolError:
+        if (event.result_json or {}).get("display"):
+            return self._reuse_display(db, binding, event)
+        if invalid:
             _phase(event, "invalid_response", "failed")
             db.commit()
             return self._view(event)
         _result(event, validated_answer=answer)
         _phase(event, "validated")
         db.commit()
-        return self.prepare_display(db, scope, event_id)
+        return self.prepare_display(db, scope, event_id, fence=fence)
 
-    def prepare_display(self, db, scope, event_id):
+    def _display_message(self, db, binding, event):
+        display = (event.result_json or {}).get("display")
+        if not isinstance(display, dict):
+            raise TurnConflict("저장된 표출 receipt가 필요합니다.")
+        message = db.get(
+            ChannelMessage, _uuid(display.get("id")), populate_existing=True
+        )
+        if (
+            message is None
+            or message.deleted_at is not None
+            or message.room_id != binding.room_id
+            or message.participant_kind != "bot"
+            or message.participant_id != str(binding.bot_id)
+            or message.text != display.get("text")
+            or (message.payload_json or {}).get("persistent_llm", {}).get("binding_id")
+            != str(binding.id)
+        ):
+            raise TurnConflict("저장된 표출 메시지 범위를 확인해야 합니다.")
+        digest = hashlib.sha256(
+            (str(binding.id) + str(event.id) + str(message.id) + message.text).encode()
+        ).hexdigest()
+        if digest != display.get("hash"):
+            raise TurnConflict("저장된 표출 hash가 일치하지 않습니다.")
+        return message, display
+
+    def _expected_ack(self, binding, display):
+        return {
+            "id": display["id"],
+            "hash": display["hash"],
+            "principal": binding.principal_key,
+        }
+
+    def _reuse_display(self, db, binding, event):
+        _, display = self._display_message(db, binding, event)
+        ack = (event.result_json or {}).get("delivery_receipt")
+        attempted = (event.result_json or {}).get("append_attempted") is True
+        if (ack is not None and ack != self._expected_ack(binding, display)) or (
+            attempted and ack is None
+        ):
+            raise TurnConflict("표출 확인 receipt의 대조가 필요합니다.")
+        _phase(
+            event,
+            (
+                "needs_reconcile"
+                if attempted
+                else "delivery_confirmed" if ack else "pending_delivery"
+            ),
+            "processing",
+        )
+        event.error_message = None
+        db.commit()
+        return self._view(event)
+
+    def prepare_display(self, db, scope, event_id, *, fence=None):
         binding, event = self._event(db, scope, event_id)
+        if (
+            fence is not None and event.lease_fence != fence
+        ) or event.cancel_requested_at is not None:
+            return self._view(event)
         if event.phase != "validated":
             return self._view(event)
+        if (event.result_json or {}).get("display"):
+            return self._reuse_display(db, binding, event)
         try:
             text = self.display_transform(event.result_json["validated_answer"])
             if not isinstance(text, str) or not text.strip():
@@ -537,23 +605,7 @@ class PersistentLlmService:
             or display["hash"] != content_hash
         ):
             raise TurnConflict("표출 확인이 서버 메시지와 다릅니다.")
-        message = db.get(ChannelMessage, _uuid(message_id))
-        digest = (
-            hashlib.sha256(
-                (
-                    str(binding.id) + str(event.id) + str(message.id) + message.text
-                ).encode()
-            ).hexdigest()
-            if message
-            else ""
-        )
-        if (
-            not message
-            or message.room_id != binding.room_id
-            or message.deleted_at is not None
-            or digest != content_hash
-        ):
-            raise TurnConflict("표출 메시지가 달라졌습니다.")
+        self._display_message(db, binding, event)
         if event.phase in {
             "delivery_confirmed",
             "memory_syncing",
@@ -563,6 +615,7 @@ class PersistentLlmService:
             return self._view(event)
         if event.phase != "pending_delivery":
             raise TurnConflict("표출 확인 단계가 아닙니다.")
+        _result(event, delivery_receipt=self._expected_ack(binding, display))
         _phase(event, "delivery_confirmed")
         db.commit()
         return self._view(event)
@@ -578,8 +631,17 @@ class PersistentLlmService:
         }:
             return self._view(event)
         display = (event.result_json or {}).get("display")
-        if not display:
-            raise TurnConflict("확인된 표출문이 필요합니다.")
+        if not display or (event.result_json or {}).get(
+            "delivery_receipt"
+        ) != self._expected_ack(binding, display):
+            raise TurnConflict(
+                "인증 주체와 서버 메시지에 고정된 표출 확인 receipt가 필요합니다."
+            )
+        self._display_message(db, binding, event)
+        if event.cancel_requested_at is not None and not (event.result_json or {}).get(
+            "append_attempted"
+        ):
+            return self._view(event)
         event.lease_fence += 1
         fence = event.lease_fence
         _phase(event, "memory_syncing", "processing")
@@ -597,6 +659,7 @@ class PersistentLlmService:
                 len(remote) == len(history)
                 and remote == history
                 and not event.result_json.get("append_attempted")
+                and event.cancel_requested_at is None
             ):
                 _result(event, append_attempted=True)
                 db.commit()
@@ -685,6 +748,11 @@ class PersistentLlmService:
         event.cancel_requested_at = datetime.now(timezone.utc)
         event.lease_fence += 1
         fence = event.lease_fence
+        if (event.result_json or {}).get("append_attempted"):
+            # 취소는 이미 제출한 이력 저장의 불명을 없애지 않는다. 이후에는 GET 대조만 허용한다.
+            _phase(event, "needs_reconcile", "unknown")
+            db.commit()
+            return self._view(event)
         if event.submitted_at is None:
             release_presubmit_budget(db, event.id)
             _phase(event, "cancelled", "failed")
