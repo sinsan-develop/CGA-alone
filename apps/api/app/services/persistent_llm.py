@@ -1019,6 +1019,12 @@ class PersistentLlmService:
 
     def reconcile_turn(self, db, scope, event_id):
         _, event = self._event(db, scope, event_id)
+        if event.phase == "validated":
+            # 검증된 답변의 표출 실패는 저장된 원문으로 재개한다. 생성/조회 재호출이 아니다.
+            event.lease_fence += 1
+            fence = event.lease_fence
+            db.commit()
+            return self.prepare_display(db, scope, event_id, fence=fence)
         if event.phase in {
             "delivery_confirmed",
             "memory_syncing",

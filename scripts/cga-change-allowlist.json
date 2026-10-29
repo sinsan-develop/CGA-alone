@@ -258,5 +258,10 @@
     "path": "apps/web/lib/i18n/studio-runtime-native.ts",
     "stage": "P03",
     "reason": "승인된 P03 새 시뮬레이터 조작/상태 문구의 기존 6개 번역 경로 보존; 기존 문구/번역 불변"
+  },
+  {
+    "path": "apps/web/lib/api.ts",
+    "stage": "P03",
+    "reason": "독립검토 확정미접수422 입력잠금 보완: 기존 same-origin Error 메시지/인증처리/재시도는 유지하고 HTTP status만 내부 오류 metadata에 보존"
   }
 ]

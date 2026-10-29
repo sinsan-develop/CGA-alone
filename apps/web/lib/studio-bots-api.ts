@@ -2332,3 +2332,11 @@ export function persistentTranscriptNeedsRefresh(snapshot: PersistentTranscript,
   const pair = snapshot.messages.filter(message => message.event_id === turn.event_id);
   return snapshot.room.current_event_id !== turn.event_id || pair.length !== 2 || pair.some(message => !message.memory_committed);
 }
+
+export function isPersistentSubmissionRejected(error: unknown) {
+  const status = error && typeof error === "object" && "status" in error ? error.status : null;
+  return typeof status === "number" && [400, 401, 403, 404, 409, 422].includes(status);
+}
+export function isPersistentQuestionValid(question: string) {
+  return question.trim().length > 0 && question.trim().length <= 4000;
+}

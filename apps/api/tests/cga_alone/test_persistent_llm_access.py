@@ -1204,3 +1204,128 @@ def test_force_revoke_keeps_closed_generations_closed_and_denies_old_history(
         ).all()
         assert [row.status for row in rows] == ["closed", "revoked"]
     assert transport.generations == 1
+
+
+@pytest.mark.parametrize("stored_validated", [False, True])
+def test_http_background_reconcile_renders_original_talk_once(
+    authenticated_http, monkeypatch, stored_validated
+):
+    from uuid import UUID
+    from app.models import ChannelLlmBinding
+
+    c, client, a, _, transport, _ = authenticated_http
+    monkeypatch.setattr(settings, "persistent_llm_background", True)
+    transport.response_mode = "background"
+    base, room = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room)
+    assert view["phase"] == "response_pending" and view["message"] is None
+    if stored_validated:
+        with Session(c.engine) as db:
+            row = db.get(ChannelQueueEvent, UUID(event))
+            runtime = bots._persistent_runtime_service(
+                db,
+                bots._persistent_scope(db.get(ChannelLlmBinding, row.binding_id)),
+                event_id=row.id,
+            )
+            monkeypatch.setattr(
+                runtime,
+                "display_transform",
+                lambda answer: (_ for _ in ()).throw(
+                    RuntimeError("synthetic display outage")
+                ),
+            )
+            runtime.reconcile_turn(
+                db,
+                bots._persistent_scope(db.get(ChannelLlmBinding, row.binding_id)),
+                row.id,
+            )
+            assert db.get(ChannelQueueEvent, row.id).phase == "validated"
+    result = client.post(
+        base + f"/rooms/{room}/turns/{event}/reconcile", headers=a, json={}
+    )
+    assert result.status_code == 200
+    final = result.json()["data"]
+    assert (
+        final["phase"] == "pending_delivery"
+        and final["message"]["text"] == "답변: 보여줄 답변"
+    )
+    assert (
+        http_confirm(authenticated_http, base, room, event, final)["phase"]
+        == "committed"
+    )
+    assert transport.generations == 1
+
+
+def test_stale_end_cannot_archive_room_of_new_generation(
+    authenticated_http, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import select
+    from uuid import UUID
+    from app.services import version_pins
+    from app.models import ChannelLlmBinding, User
+
+    c, client, a, _, transport, _ = authenticated_http
+    base, room = http_open(authenticated_http)
+    barrier = Barrier(2)
+    original = version_pins.close_pinned_dialog
+
+    def held_close(db, binding_id):
+        if db.info.get("stale_end"):
+            barrier.wait(timeout=10)
+            barrier.wait(timeout=10)
+        return original(db, binding_id)
+
+    monkeypatch.setattr(version_pins, "close_pinned_dialog", held_close)
+
+    def end():
+        from fastapi import HTTPException
+
+        with Session(c.engine, autoflush=False) as db:
+            db.info["stale_end"] = True
+            try:
+                result = bots.close_persistent_room(
+                    c.bot_id,
+                    UUID(room),
+                    bots.PersistentCloseRequest(expected_generation=1),
+                    _request(),
+                    db.get(User, c.user_id),
+                    db,
+                )
+                return 200
+            except HTTPException as error:
+                return error.status_code
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(end)
+        barrier.wait(timeout=10)
+        try:
+            reset = client.post(
+                base + f"/rooms/{room}/new",
+                headers=a,
+                json={
+                    "expected_generation": 1,
+                    "confirm_reset": True,
+                    "dialog_id": "pllm-module",
+                },
+            )
+            assert reset.status_code == 200
+        finally:
+            barrier.wait(timeout=10)
+        status = future.result(timeout=10)
+    assert status == 409
+    with Session(c.engine) as db:
+        active = db.scalar(
+            select(ChannelLlmBinding).where(
+                ChannelLlmBinding.room_id == UUID(room),
+                ChannelLlmBinding.generation == 2,
+            )
+        )
+        assert (
+            active.status == "open"
+            and db.get(ChannelRoom, UUID(room)).deleted_at is None
+        )
+    result = client.get(base + f"/rooms/{room}", headers=a)
+    assert result.status_code == 200 and result.json()["data"]["room"]["can_send"]
+    assert transport.generations == 0

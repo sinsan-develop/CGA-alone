@@ -35,7 +35,7 @@ import {
   fetchStudioPersistentConfig, fetchStudioPersistentRooms, fetchStudioPersistentRoom, fetchStudioPersistentTurn,
   startStudioPersistentRoom, submitStudioPersistentTurn, ackStudioPersistentTurn, resetStudioPersistentRoom,
   closeStudioPersistentRoom, manageStudioPersistentTurn, persistentRoomStorageKey, canSendPersistentTurn,
-  persistentDisplayReceipt, persistentTranscriptNeedsRefresh, type PersistentConfig, type PersistentRoom, type PersistentTurn, type PersistentTranscript,
+  persistentDisplayReceipt, persistentTranscriptNeedsRefresh, isPersistentSubmissionRejected, isPersistentQuestionValid, type PersistentConfig, type PersistentRoom, type PersistentTurn, type PersistentTranscript,
   generateStudioBotVersionLlmAnswer,
   refreshStudioBotSelectedVersion,
   searchStudioBotVersionRagAnswers,
@@ -3591,7 +3591,7 @@ function PersistentSimulator({botId, session, config, embedded = false, onClose,
   }
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (busyRef.current || locked || !room || !input.trim() || !profiles[dialogId]) return;
+    if (busyRef.current || locked || !room || !isPersistentQuestionValid(input) || !profiles[dialogId]) return;
     busyRef.current = true; setBusy(true); setError("");
     const messageKey = crypto.randomUUID();
     // 전송 전 키를 저장한다. timeout 뒤 모델 POST를 자동 반복하지 않는다.
@@ -3599,7 +3599,16 @@ function PersistentSimulator({botId, session, config, embedded = false, onClose,
     try {
       const result = await submitStudioPersistentTurn(token, botId, room.id, {expected_generation:room.generation,message_key:messageKey,question:input.trim(),dialog_id:dialogId});
       if (live.current) { remember(room); setUncertainKey(""); setInput(""); setTurn(result); }
-    } catch (cause) { if (live.current) setError(`${cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "전송 실패")} ${getStudioRuntimeMessage(uiLanguage, "결과를 조회해 확인해 주세요. 자동 재전송하지 않습니다.")}`); }
+    } catch (cause) {
+      if (live.current) {
+        const message = cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "전송 실패");
+        if (isPersistentSubmissionRejected(cause)) {
+          remember(room); setUncertainKey(""); setError(message);
+        } else {
+          setError(`${message} ${getStudioRuntimeMessage(uiLanguage, "결과를 조회해 확인해 주세요. 자동 재전송하지 않습니다.")}`);
+        }
+      }
+    }
     finally { busyRef.current = false; if (live.current) { setBusy(false); setRevision(value => value + 1); } }
   }
   const display = turn?.phase === "pending_delivery" && room?.status === "open" ? turn.message : null;
@@ -3619,8 +3628,8 @@ function PersistentSimulator({botId, session, config, embedded = false, onClose,
         {!room ? <p>{getStudioRuntimeMessage(uiLanguage, "모듈을 선택한 뒤 대화를 시작해 주세요.")}</p> : null}
       </div></div>
       <form className="simulator-composer simulator-composer--messenger" onSubmit={submit}>
-        <textarea className="textarea-control textarea-control--flat" aria-label={getStudioRuntimeMessage(uiLanguage, "질문")} placeholder={getStudioRuntimeMessage(uiLanguage, "봇에게 질문해 주세요")} value={input} disabled={locked} onChange={event => setInput(event.target.value)} onKeyDown={event => {if(event.key === "Enter" && !event.shiftKey){event.preventDefault();void submit();}}} />
-        <button className="primary-action" type="submit" disabled={locked || !input.trim()}>{getStudioRuntimeMessage(uiLanguage, "전송")}</button>
+        <textarea className="textarea-control textarea-control--flat" aria-label={getStudioRuntimeMessage(uiLanguage, "질문")} maxLength={4000} placeholder={getStudioRuntimeMessage(uiLanguage, "봇에게 질문해 주세요")} value={input} disabled={locked} onChange={event => setInput(event.target.value)} onKeyDown={event => {if(event.key === "Enter" && !event.shiftKey){event.preventDefault();void submit();}}} />
+        <button className="primary-action" type="submit" disabled={locked || !isPersistentQuestionValid(input)}>{getStudioRuntimeMessage(uiLanguage, "전송")}</button>
       </form>
     </div></div>
     <aside className="simulator-analysis"><div className="simulator-analysis__header"><strong>{getStudioRuntimeMessage(uiLanguage, "대화 상태")}</strong></div><div className="simulator-analysis__block">

@@ -9028,6 +9028,13 @@ def close_persistent_room(
         )
     try:
         close_pinned_dialog(db, binding.id)
+        # helper가 version→room→binding을 잠근 뒤 최신 generation을 다시 대조한다.
+        latest = _persistent_binding(db, bot, current_user, room_id)
+        if latest.id != binding.id or latest.generation != payload.expected_generation:
+            raise HTTPException(
+                status_code=409,
+                detail="대화가 변경되었습니다. 새 상태를 확인해 주세요.",
+            )
         room = db.get(ChannelRoom, room_id)
         channels._archive_room_for_new_session(db, room, "persistent_user_closed")
         _write_audit_log(
@@ -9238,7 +9245,7 @@ def reconcile_persistent_turn(
     )
     try:
         result = _persistent_runtime_service(
-            db, _persistent_scope(binding)
+            db, _persistent_scope(binding), event_id=event.id
         ).reconcile_turn(
             db,
             _persistent_scope(binding),

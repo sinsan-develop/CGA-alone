@@ -76,3 +76,20 @@ test("worker가 두 조회 사이에 확정하면 오래된 기록으로 완료 
   assert.equal(refresh({room:{...room,can_send:true},messages:messages.map(row=>({...row,memory_committed:true}))},turn),false);
   assert.equal(refresh({room,messages},{...turn,phase:"pending_delivery"}),false);
 });
+
+test("확정 미접수만 잠금을 풀고 timeout·5xx·상태불명은 보존한다", () => {
+  const rejected=subject("isPersistentSubmissionRejected");
+  for (const status of [400,401,403,404,409,422]) assert.equal(rejected({status}),true);
+  for (const error of [{status:408},{status:500},{status:502},{status:504},new Error("timeout"),null]) assert.equal(rejected(error),false);
+  const valid=subject("isPersistentQuestionValid");
+  assert.equal(valid("x".repeat(4000)),true);assert.equal(valid("x".repeat(4001)),false);assert.equal(valid("  "),false);
+});
+test("same-origin 확정 거부의 HTTP 상태를 보존하고 재전송하지 않는다", async () => {
+  const source=ts.createSourceFile("api.ts",fs.readFileSync(new URL("../lib/api.ts",import.meta.url),"utf8"),ts.ScriptTarget.Latest,true);
+  const node=source.statements.find(row=>ts.isFunctionDeclaration(row)&&row.name?.text==="apiSameOriginRequest");
+  const code=ts.transpileModule(node.getText(source).replace(/^export /,""),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  let calls=0;
+  const fn=vm.runInNewContext(`${code}; apiSameOriginRequest`,{fetch:async()=>{calls++;return new Response(JSON.stringify({detail:"rejected"}),{status:422});},buildHeaders:()=>({}),performance,API_SLOW_REQUEST_THRESHOLD_MS:0,formatApiErrorDetail:value=>value,redirectToLogin:()=>{}});
+  await assert.rejects(fn("/submit",{method:"POST"},"jwt"),error=>error.status===422&&error.message==="rejected");
+  assert.equal(calls,1);
+});
