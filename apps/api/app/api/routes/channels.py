@@ -770,6 +770,23 @@ def _channel_health_summary() -> list[dict[str, Any]]:
     return summaries
 
 
+def _persistent_room_ids():
+    from app.models import ChannelLlmBinding
+    return select(ChannelLlmBinding.room_id)
+
+
+def _is_persistent_room(db: Session, room_id: UUID | None) -> bool:
+    if room_id is None:
+        return False
+    from app.models import ChannelLlmBinding
+    return db.scalar(select(ChannelLlmBinding.id).where(ChannelLlmBinding.room_id == room_id).limit(1)) is not None
+
+
+def _assert_legacy_room_access(db: Session, room_id: UUID | None) -> None:
+    if _is_persistent_room(db, room_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="채팅방을 찾을 수 없습니다.")
+
+
 def _verify_channel_key(api_key: str | None) -> None:
     expected_key = settings.webchat_api_key.strip()
     if not expected_key:
@@ -4101,6 +4118,12 @@ def _apply_active_version_to_room(
     channel: str,
 ) -> str:
     previous_version_id = str(room.bot_version_id)
+    if hasattr(room, "_sa_instance_state"):
+        from sqlalchemy.orm import object_session
+        from app.models import ChannelLlmBinding
+        room_db = object_session(room)
+        if room_db is not None and room_db.scalar(select(ChannelLlmBinding.id).where(ChannelLlmBinding.room_id == room.id, ChannelLlmBinding.status != "closed").limit(1)) is not None:
+            return previous_version_id
     runtime_state = _initial_runtime_state_for_version(bot, version, channel)
     room.bot_version_id = version.id
     _set_runtime_system_variables(
@@ -5184,6 +5207,9 @@ def _process_channel_queue_event(
     channel: str,
     queue_event: ChannelQueueEvent,
 ) -> dict[str, Any]:
+    if (getattr(queue_event, "operation_kind", None) or "channel") != "channel":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="채널 작업을 찾을 수 없습니다.")
+    _assert_legacy_room_access(db, queue_event.room_id)
     channel_code = _channel_template_code(channel)
     room = db.get(ChannelRoom, queue_event.room_id) if queue_event.room_id else None
     bot = db.get(Bot, queue_event.bot_id)
@@ -5851,6 +5877,8 @@ def _process_queued_channel_events(
         ChannelQueueEvent.status == "queued",
         ChannelQueueEvent.deleted_at.is_(None),
         ChannelQueueEvent.channel_type.not_in(NON_CHANNEL_QUEUE_TYPES),
+        ChannelQueueEvent.operation_kind == "channel",
+        (ChannelQueueEvent.room_id.is_(None)) | (ChannelQueueEvent.room_id.not_in(_persistent_room_ids())),
     ]
     query = select(ChannelQueueEvent)
     if organization_id is not None:
@@ -6059,6 +6087,7 @@ def create_channel_room(
             existing_room,
         )
         if existing_room is not None:
+            _assert_legacy_room_access(db, existing_room.id)
             existing_metadata = _as_dict(existing_room.metadata_json)
             existing_metadata["language"] = request_languages[0]
             existing_room.metadata_json = existing_metadata
@@ -6170,7 +6199,7 @@ def list_channel_rooms(
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
     with SessionLocal() as db:
-        conditions = [ChannelRoom.channel_type == channel, ChannelRoom.deleted_at.is_(None)]
+        conditions = [ChannelRoom.channel_type == channel, ChannelRoom.deleted_at.is_(None), ChannelRoom.id.not_in(_persistent_room_ids())]
         if participant_id:
             conditions.append(ChannelRoom.participant_id == participant_id)
         rooms = db.scalars(
@@ -6192,6 +6221,7 @@ def get_channel_room(
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
     with SessionLocal() as db:
+        _assert_legacy_room_access(db, room_id)
         room = db.scalar(
             select(ChannelRoom).where(
                 ChannelRoom.id == room_id,
@@ -6245,6 +6275,7 @@ def delete_channel_room(
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
     with SessionLocal() as db:
+        _assert_legacy_room_access(db, room_id)
         room = db.scalar(
             select(ChannelRoom).where(
                 ChannelRoom.id == room_id,
@@ -6277,6 +6308,7 @@ def create_channel_room_message(
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
     with SessionLocal() as db:
+        _assert_legacy_room_access(db, room_id)
         room = db.scalar(
             select(ChannelRoom).where(
                 ChannelRoom.id == room_id,

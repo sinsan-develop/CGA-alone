@@ -4223,12 +4223,14 @@ def _close_open_channel_rooms_for_version_change(
 ) -> int:
     if previous_version_id is None or previous_version_id == next_version_id:
         return 0
+    from app.models import ChannelLlmBinding
     rooms = db.scalars(
         select(ChannelRoom).where(
             ChannelRoom.bot_id == bot.id,
             ChannelRoom.bot_version_id == previous_version_id,
             ChannelRoom.status == "open",
             ChannelRoom.deleted_at.is_(None),
+            ChannelRoom.id.not_in(select(ChannelLlmBinding.room_id).where(ChannelLlmBinding.status != "closed")),
         )
     ).all()
     now = datetime.now(timezone.utc)

@@ -61,8 +61,8 @@
   },
   {
     "path": "apps/api/app/api/routes/bots.py",
-    "stage": "S02/P01",
-    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결"
+    "stage": "S02/P01/P03",
+    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결; P03 열린 지속 방의 자동 운영버전 종료 제외"
   },
   {
     "path": "apps/api/app/api/routes/hubs.py",
@@ -81,8 +81,8 @@
   },
   {
     "path": "apps/api/tests/cga_alone/conftest.py",
-    "stage": "P01/P02",
-    "reason": "승인된 실제PG 지속대화 합성 fixture 및 request/answer 메시지 포함 정확한 소유 자료 정리"
+    "stage": "P01/P02/P03",
+    "reason": "승인된 실제PG 지속대화 합성 fixture 및 request/answer 메시지 포함 정확한 소유 자료 정리; P03 active pointer·소유 감사 target 정리 및 실패시 소유receipt 보존"
   },
   {
     "path": "apps/api/tests/cga_alone/test_one_bot_creation.py",
@@ -223,5 +223,15 @@
     "path": "apps/api/tests/cga_alone/test_persistent_llm_recovery.py",
     "stage": "P02",
     "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증"
+  },
+  {
+    "path": "apps/api/app/api/routes/channels.py",
+    "stage": "P03",
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
+    "stage": "P03",
+    "reason": "승인된 P03 실제PG 보호방/인증 범위·legacy worker/버전전환 경계 검증"
   }
 ]
