@@ -81,8 +81,8 @@
   },
   {
     "path": "apps/api/tests/cga_alone/conftest.py",
-    "stage": "S02",
-    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+    "stage": "P01/P02",
+    "reason": "승인된 실제PG 지속대화 합성 fixture 및 request/answer 메시지 포함 정확한 소유 자료 정리"
   },
   {
     "path": "apps/api/tests/cga_alone/test_one_bot_creation.py",
@@ -203,5 +203,25 @@
     "path": "apps/api/tests/cga_alone/test_persistent_llm_migration.py",
     "stage": "P01",
     "reason": "승인된 전용 QA0029 가역·기존 큐 인덱스/행 보존 및 비어 있지 않은 원장 downgrade 거부 검증"
+  },
+  {
+    "path": "apps/api/app/services/openai_conversations.py",
+    "stage": "P02",
+    "reason": "승인된 canonical 이력·분리 Responses·무재시도/시간제한/취소 REST protocol 및 HTTP 대역 검증"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_persistent_llm_provider.py",
+    "stage": "P02",
+    "reason": "승인된 canonical 이력·분리 Responses·무재시도/시간제한/취소 REST protocol 및 HTTP 대역 검증"
+  },
+  {
+    "path": "apps/api/app/services/persistent_llm.py",
+    "stage": "P02",
+    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_persistent_llm_recovery.py",
+    "stage": "P02",
+    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증"
   }
 ]
