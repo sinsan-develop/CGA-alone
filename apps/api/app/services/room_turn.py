@@ -4,7 +4,7 @@ actor_id는 호출자가 서버 인증/참가자 바인딩으로 확인한 주�
 이 helper는 인증을 대신하거나 body participantId를 신뢰하지 않는다.
 각 함수는 caller transaction에서 flush만 한다. 선점 transaction은 즉시
 commit/종료하고 외부 API를 호출한다. 답변 저장은 lock_current_room_turn으로
-재확인한 짧은 transaction 안에서 수행한다. timeout/복구와 runtime 소비는 별도다.
+재확인한 짧은 transaction 안에서 수행한다. lease 길이·갱신 실행과 runtime 소비는 caller 책임이다.
 """
 from __future__ import annotations
 
@@ -75,8 +75,8 @@ def _waiting_expiry(db: Session,room: ChannelRoom) -> str | None:
         return (now+timedelta(seconds=120)).isoformat()
 
 
-def _waiting_expired(db: Session,turn: dict) -> bool:
-    expires=turn.get("waiting_expires_at")
+def _expired(db: Session,turn: dict,key: str) -> bool:
+    expires=turn.get(key)
     if expires is None:return False
     deadline=datetime.fromisoformat(expires)
     if deadline.tzinfo is None:raise ValueError("대기 만료 시각은 timezone이 필요합니다.")
@@ -104,7 +104,7 @@ def claim_room_turn(db: Session,room: ChannelRoom,actor_id: str,addressed: bool)
             reason="version_changed"
         else:
             try:
-                expired=active["phase"]=="waiting_input" and _waiting_expired(db,active)
+                expired=_expired(db,active,"waiting_expires_at" if active["phase"]=="waiting_input" else "processing_expires_at")
             except (ValueError,TypeError):
                 return RoomTurnDecision(False,None,"invalid_turn")
             if expired:reason="expired"
@@ -112,7 +112,7 @@ def claim_room_turn(db: Session,room: ChannelRoom,actor_id: str,addressed: bool)
             elif active["phase"]=="running":return RoomTurnDecision(False,None,"processing")
             else:reason="continued"
     generation=str(uuid4())
-    metadata[_TURN_KEY]={"actor_id":actor_id,"generation":generation,"phase":"running","bot_id":str(current.bot_id),"bot_version_id":str(current.bot_version_id),"waiting_expires_at":None}
+    metadata[_TURN_KEY]={"actor_id":actor_id,"generation":generation,"phase":"running","bot_id":str(current.bot_id),"bot_version_id":str(current.bot_version_id),"waiting_expires_at":None,"processing_expires_at":None}
     _save(db,current,metadata)
     return RoomTurnDecision(True,generation,reason)
 
@@ -125,7 +125,31 @@ def lock_current_room_turn(db: Session,room_id: UUID,actor_id: str,generation: s
     turn=room.metadata_json.get(_TURN_KEY)
     if not _matches(turn,actor_id,generation) or turn["phase"]!="running":return None
     if turn["bot_id"]!=str(room.bot_id) or turn["bot_version_id"]!=str(room.bot_version_id):return None
+    try:
+        if _expired(db,turn,"processing_expires_at"):return None
+    except (ValueError,TypeError):
+        return None
     return room
+
+
+def renew_room_turn_processing_lease(db: Session,room_id: UUID,actor_id: str,generation: str,*,lease_seconds: float) -> bool:
+    """현재 소유 실행만 만료 전에 갱신한다. 외부 요청 재실행이나 commit은 하지 않는다."""
+    if type(lease_seconds) not in (int,float):return False
+    try:
+        if not math.isfinite(lease_seconds) or lease_seconds<=0:return False
+        duration=timedelta(seconds=lease_seconds)
+    except (ValueError,TypeError,OverflowError):
+        return False
+    room=lock_current_room_turn(db,room_id,actor_id,generation)
+    if room is None:return False
+    try:
+        expires=(db.scalar(select(func.clock_timestamp()))+duration).isoformat()
+    except OverflowError:
+        return False
+    metadata=deepcopy(room.metadata_json)
+    metadata[_TURN_KEY]["processing_expires_at"]=expires
+    _save(db,room,metadata)
+    return True
 
 
 def hold_room_turn_for_input(db: Session,room_id: UUID,actor_id: str,generation: str) -> bool:
@@ -134,6 +158,7 @@ def hold_room_turn_for_input(db: Session,room_id: UUID,actor_id: str,generation:
     if room is None:return False
     metadata=deepcopy(room.metadata_json)
     metadata[_TURN_KEY]["phase"]="waiting_input"
+    metadata[_TURN_KEY]["processing_expires_at"]=None
     metadata[_TURN_KEY]["waiting_expires_at"]=_waiting_expiry(db,room)
     _save(db,room,metadata)
     return True

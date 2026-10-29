@@ -244,3 +244,91 @@ def test_untyped_terminal_reason_cannot_release(turn_context):
     with Session(c.engine) as db:
         assert not s.release_room_turn(db,c.room_ids[0],"server:A",first.generation,{"reason":"error"});db.commit()
     assert not claim(c,"server:B").allowed
+
+
+def test_processing_lease_expiry_fences_old_result_without_replaying(turn_context):
+    c=turn_context;s=subject();first=claim(c)
+    assert callable(getattr(s,"renew_room_turn_processing_lease",None)),"S05 처리중 복구 lease가 필요합니다"
+    with Session(c.engine) as db:
+        assert s.renew_room_turn_processing_lease(db,c.room_ids[0],"server:A",first.generation,lease_seconds=30)
+        room=db.get(ChannelRoom,c.room_ids[0]);metadata=deepcopy(room.metadata_json);metadata["__roomTurn"]["processing_expires_at"]="2000-01-01T00:00:00+00:00";room.metadata_json=metadata;db.commit()
+    with Session(c.engine) as db:
+        assert s.lock_current_room_turn(db,c.room_ids[0],"server:A",first.generation) is None
+        assert not s.renew_room_turn_processing_lease(db,c.room_ids[0],"server:A",first.generation,lease_seconds=30);db.commit()
+    newer=claim(c,"server:B");assert newer.allowed and newer.reason=="expired" and newer.generation!=first.generation
+    with Session(c.engine) as db:
+        assert not s.release_room_turn(db,c.room_ids[0],"server:A",first.generation,"error")
+        assert db.scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id==c.room_ids[0]))==0;db.commit()
+
+
+def test_processing_lease_can_only_be_renewed_by_current_owner(turn_context):
+    from datetime import datetime
+    c=turn_context;s=subject();first=claim(c)
+    assert callable(getattr(s,"renew_room_turn_processing_lease",None))
+    with Session(c.engine) as db:
+        assert not s.renew_room_turn_processing_lease(db,c.room_ids[0],"server:B",first.generation,lease_seconds=30)
+        assert s.renew_room_turn_processing_lease(db,c.room_ids[0],"server:A",first.generation,lease_seconds=30);db.commit()
+        room=db.get(ChannelRoom,c.room_ids[0]);expires=datetime.fromisoformat(room.metadata_json["__roomTurn"]["processing_expires_at"])
+        now=db.scalar(select(func.clock_timestamp()));assert 0<(expires-now).total_seconds()<=30
+        assert s.hold_room_turn_for_input(db,room.id,"server:A",first.generation)
+        assert not s.renew_room_turn_processing_lease(db,room.id,"server:A",first.generation,lease_seconds=30);db.commit()
+
+
+@pytest.mark.parametrize("seconds",[0,-1,"30",True,float("inf"),float("nan")])
+def test_invalid_processing_lease_does_not_change_owner(turn_context,seconds):
+    c=turn_context;s=subject();first=claim(c)
+    assert callable(getattr(s,"renew_room_turn_processing_lease",None))
+    with Session(c.engine) as db:
+        room=db.get(ChannelRoom,c.room_ids[0]);before=deepcopy(room.metadata_json)
+        assert not s.renew_room_turn_processing_lease(db,room.id,"server:A",first.generation,lease_seconds=seconds)
+        assert room.metadata_json==before;db.commit()
+
+
+@pytest.mark.parametrize("expires",["invalid","2000-01-01T00:00:00",42])
+def test_corrupt_processing_deadline_fails_closed(turn_context,expires):
+    c=turn_context;s=subject();first=claim(c)
+    with Session(c.engine) as db:
+        room=db.get(ChannelRoom,c.room_ids[0]);metadata=deepcopy(room.metadata_json);metadata["__roomTurn"]["processing_expires_at"]=expires;room.metadata_json=metadata;db.commit()
+    denied=claim(c,"server:B");assert not denied.allowed and denied.reason=="invalid_turn"
+    with Session(c.engine) as db:
+        assert s.lock_current_room_turn(db,c.room_ids[0],"server:A",first.generation) is None
+        assert not s.renew_room_turn_processing_lease(db,c.room_ids[0],"server:A",first.generation,lease_seconds=30);db.commit()
+
+
+def test_processing_owner_process_exit_preserves_lock_and_expiry_fences_old_result(turn_context):
+    import os,subprocess,sys
+    c=turn_context;s=subject()
+    script="""
+import json,os,sys
+from uuid import UUID
+from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
+from app.models import ChannelRoom
+from app.services.room_turn import claim_room_turn,renew_room_turn_processing_lease
+payload=json.load(sys.stdin)
+url=os.environ['AIDOT_TEST_DATABASE_URL']
+assert make_url(url).database=='cga_alone_qa'
+engine=create_engine(url)
+with Session(engine) as db:
+    room=db.get(ChannelRoom,UUID(payload['room']))
+    result=claim_room_turn(db,room,payload['actor'],True)
+    if result.allowed:
+        assert renew_room_turn_processing_lease(db,room.id,payload['actor'],result.generation,lease_seconds=60)
+    db.commit()
+print(json.dumps({'allowed':result.allowed,'generation':result.generation,'reason':result.reason}),flush=True)
+os._exit(0)
+"""
+    def run(actor):
+        result=subprocess.run([sys.executable,"-c",script],input=json.dumps({"room":str(c.room_ids[0]),"actor":actor}),text=True,capture_output=True,timeout=20,env=os.environ.copy())
+        assert result.returncode==0,"소유 QA 방 하위 프로세스 검증 실패"
+        return json.loads(result.stdout)
+    first=run("server:A");assert first["allowed"]
+    denied=run("server:B");assert not denied["allowed"] and denied["reason"]=="another_actor"
+    with Session(c.engine) as db:
+        room=db.get(ChannelRoom,c.room_ids[0]);metadata=deepcopy(room.metadata_json);metadata["__roomTurn"]["processing_expires_at"]="2000-01-01T00:00:00+00:00";room.metadata_json=metadata;db.commit()
+    newer=run("server:B");assert newer["allowed"] and newer["reason"]=="expired" and newer["generation"]!=first["generation"]
+    with Session(c.engine) as db:
+        assert s.lock_current_room_turn(db,c.room_ids[0],"server:A",first["generation"]) is None
+        assert not s.release_room_turn(db,c.room_ids[0],"server:A",first["generation"],"error")
+        assert db.scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id==c.room_ids[0]))==0;db.commit()
