@@ -175,7 +175,7 @@ networks:
     name: proxy-network
   db_net:
     external: true
-    name: common_default
+    name: ${CGA_DB_NETWORK:-common_default}
   cga_internal:
     driver: bridge
 

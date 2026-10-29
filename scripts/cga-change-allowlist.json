@@ -53,5 +53,10 @@
     "path": "apps/api/tests/test_web_dependency_security.py",
     "stage": "S01",
     "reason": "신산님 승인 Next 16.4.3 패치에 직접 종속된 고정 버전 기대만 갱신. exact pin/lockfile 보안 검사 유지"
+  },
+  {
+    "path": ".github/pr-broker-gate.sh",
+    "stage": "S01",
+    "reason": "2026-10-29 신산님이 전달한 PR Broker 자동화 적용. 지정된 sinsan-develop/CGA-alone SSH 주소만 반영; gate와 자동화 구조 유지"
   }
 ]
