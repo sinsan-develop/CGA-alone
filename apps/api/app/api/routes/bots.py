@@ -79,7 +79,7 @@ from app.services.version_pins import (version_mutation, admit_version_write, ad
     MutationBusy, PinConflict, retains_persistent_history, remove_unused_version_guard)
 from app.models import ChannelLlmBinding, LlmBudgetAccount, LlmBudgetReservation, AdminLicense
 from app.schemas.persistent_llm import (TurnScope, BudgetQuote, UsageEvidence, PersistentRoomStartRequest,
-    PersistentTurnRequest, PersistentAckRequest, PersistentResetRequest, PersistentCloseRequest, PersistentRevokeRequest)
+    PersistentTurnRequest, PersistentAckRequest, PersistentResetRequest, PersistentCloseRequest, PersistentRevokeRequest, PersistentCancelRequest)
 from app.services.persistent_llm import PersistentLlmService, TurnConflict
 from app.services.openai_conversations import OpenAIConversations, BoundedJsonTransport, payload_hash
 from app.services.llm_budget import BudgetConflict, release_presubmit_budget, hold_unknown_budget
@@ -7335,6 +7335,7 @@ def generate_version_llm_answer(
 ) -> dict[str, object]:
     bot = _get_bot_or_404(db, bot_id, current_user)
     version = _get_version_or_404(db, bot.id, version_id)
+    _persistent_version_operable(db, version.id)
     ai_config = _get_version_ai_config(bot, version)
     answer_mode = _safe_text_value(ai_config.get("answer_mode") or ai_config.get("answerMode"))
     if answer_mode != "llm":
@@ -7403,6 +7404,7 @@ def search_version_rag_answers(
 ) -> dict[str, object]:
     bot = _get_bot_or_404(db, bot_id, current_user)
     version = _get_version_or_404(db, bot.id, version_id)
+    _persistent_version_operable(db, version.id)
     ai_config = _get_version_ai_config(bot, version)
     answer_mode = str(ai_config.get("answer_mode") or ai_config.get("answerMode") or "").strip()
     prefix = _answer_rag_variable_prefix(ai_config)
@@ -7790,6 +7792,7 @@ def activate_version(
     _require_version_operating_user(db, current_user)
     bot = _get_bot_or_404(db, bot_id, current_user)
     target_version = _get_version_or_404(db, bot.id, version_id)
+    _persistent_version_operable(db, target_version.id, require_idle=True)
     hub = db.get(BotHub, bot.id) if str((bot.data_json or {}).get("bot_kind") or "").lower() == "hub" else None
     is_button_hub = hub is not None and str(hub.call_method or "button").lower() == "button"
     if not is_button_hub and not _is_version_trained(target_version, db):
@@ -8225,7 +8228,7 @@ def _persistent_binding(db, bot, current_user, room_id, generation=None):
     return binding
 
 
-def _persistent_access(db, scope, *, read_only=False):
+def _persistent_access(db, scope, *, read_only=False, management=False):
     user = db.scalar(
         select(User)
         .where(User.id == UUID(scope.principal_key[5:]), User.deleted_at.is_(None))
@@ -8239,6 +8242,8 @@ def _persistent_access(db, scope, *, read_only=False):
         or user.group_id != scope.group_id
     ):
         raise HTTPException(status_code=403, detail="대화 이용 권한을 확인해야 합니다.")
+    if management:
+        return
     _persistent_license(db, user)
     binding = db.scalar(
         select(ChannelLlmBinding)
@@ -8249,7 +8254,10 @@ def _persistent_access(db, scope, *, read_only=False):
         )
         .execution_options(populate_existing=True)
     )
-    if binding is not None and binding.status == "revoked":
+    guard = db.get(ChannelLlmVersionGuard, scope.version_id, populate_existing=True)
+    if (binding is not None and binding.status == "revoked") or (
+        guard is not None and guard.mutation_status == "revoked"
+    ):
         raise HTTPException(
             status_code=403, detail="관리자가 이 대화의 이용을 중지했습니다."
         )
@@ -8303,7 +8311,9 @@ def _persistent_render(db, binding, dialog_id, answer, question):
     return str(outputs[0]["text"])
 
 
-def _persistent_runtime_service(db, scope, *, event_id=None, read_only=False):
+def _persistent_runtime_service(
+    db, scope, *, event_id=None, read_only=False, management=False
+):
     from app.services.llm_client import LlmProviderConfig
 
     binding = db.scalar(
@@ -8341,24 +8351,38 @@ def _persistent_runtime_service(db, scope, *, event_id=None, read_only=False):
         )
 
     client = None
-    if not read_only:
-        frozen = binding.snapshot_json["resolved_llm_config"]
-        credentials = _persistent_config(
-            {"llm_provider": frozen["provider"], "llm_model": frozen["model"]}
+    network_allowed = (
+        settings.persistent_llm_enabled
+        and settings.persistent_llm_execution_enabled
+        and str(scope.bot_id) == settings.persistent_llm_sample_bot_id
+    )
+    if not read_only and (not management or network_allowed):
+        try:
+            frozen = binding.snapshot_json["resolved_llm_config"]
+            credentials = _persistent_config(
+                {"llm_provider": frozen["provider"], "llm_model": frozen["model"]}
+            )
+            config = LlmProviderConfig(
+                provider=frozen["provider"],
+                model=frozen["model"],
+                base_url=frozen["base_url"],
+                api_key=credentials.api_key,
+                timeout_seconds=30,
+            )
+            client = OpenAIConversations(
+                config, transport=_persistent_provider_transport()
+            )
+        except Exception:
+            if not management:
+                raise
+
+    def access(session, turn_scope, *, read_only=False):
+        return _persistent_access(
+            session, turn_scope, read_only=read_only, management=management
         )
-        config = LlmProviderConfig(
-            provider=frozen["provider"],
-            model=frozen["model"],
-            base_url=frozen["base_url"],
-            api_key=credentials.api_key,
-            timeout_seconds=30,
-        )
-        client = OpenAIConversations(config, transport=_persistent_provider_transport())
+
     return PersistentLlmService(
-        client,
-        usage_evaluator=usage,
-        display_transform=render,
-        access_validator=_persistent_access,
+        client, usage_evaluator=usage, display_transform=render, access_validator=access
     )
 
 
@@ -8410,6 +8434,83 @@ def _persistent_accounts(db, binding):
     return tuple(ids)
 
 
+@router.get("/{bot_id}/persistent/config")
+def persistent_sample_config(
+    bot_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    existing = db.scalar(
+        select(ChannelLlmBinding.id)
+        .where(
+            ChannelLlmBinding.bot_id == bot.id,
+            ChannelLlmBinding.user_id == current_user.id,
+            ChannelLlmBinding.organization_id == current_user.organization_id,
+        )
+        .limit(1)
+    )
+    selected = str(bot.id) == settings.persistent_llm_sample_bot_id
+    enabled = bool(existing) or (selected and settings.persistent_llm_enabled)
+    data = {"enabled": enabled, "ready": False, "profiles": {}, "reason": ""}
+    if not enabled:
+        return success_response(request, data)
+    _persistent_license(db, current_user)
+    try:
+        _persistent_execution(bot.id)
+        version = (
+            db.get(BotVersion, bot.active_version_id) if bot.active_version_id else None
+        )
+        if version is None or version.deleted_at or version.status != "active":
+            raise HTTPException(
+                status_code=409, detail="운영 버전을 먼저 적용해 주세요."
+            )
+        profiles = _persistent_profiles(
+            normalize_version_document(version.version_json)
+        )
+        if not profiles:
+            raise HTTPException(
+                status_code=409, detail="텍스트 Talk와 End로 구성한 모듈이 필요합니다."
+            )
+        snapshot = _persistent_snapshot(db, bot, version, next(iter(profiles)))
+        data.update(ready=True, profiles=snapshot["profiles"])
+    except HTTPException as error:
+        data["reason"] = str(error.detail)
+    return success_response(request, data)
+
+
+@router.get("/{bot_id}/persistent/rooms")
+def list_persistent_rooms(
+    bot_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    bindings = db.scalars(
+        select(ChannelLlmBinding)
+        .where(
+            ChannelLlmBinding.bot_id == bot.id,
+            ChannelLlmBinding.user_id == current_user.id,
+            ChannelLlmBinding.organization_id == current_user.organization_id,
+            ChannelLlmBinding.group_id == current_user.group_id,
+            ChannelLlmBinding.status != "revoked",
+            ChannelLlmBinding.version_id.not_in(
+                select(ChannelLlmVersionGuard.version_id).where(
+                    ChannelLlmVersionGuard.mutation_status == "revoked"
+                )
+            ),
+        )
+        .order_by(ChannelLlmBinding.created_at.desc())
+        .limit(100)
+    ).all()
+    return success_response(
+        request, {"rooms": [_persistent_room_payload(db, row) for row in bindings]}
+    )
+
+
 def _persistent_room_payload(db, binding):
     room = db.get(ChannelRoom, binding.room_id)
     event = db.scalar(
@@ -8427,7 +8528,11 @@ def _persistent_room_payload(db, binding):
         "dialog_id": binding.snapshot_json.get("initial_dialog_id"),
         "profiles": binding.snapshot_json.get("profiles", {}),
         "current_event_id": str(event.id) if event else None,
+        "current_message_key": event.client_message_key if event else None,
         "can_send": binding.status == "open"
+        and settings.persistent_llm_enabled
+        and settings.persistent_llm_execution_enabled
+        and str(binding.bot_id) == settings.persistent_llm_sample_bot_id
         and (event is None or event.phase == "committed"),
     }
 
@@ -8518,21 +8623,50 @@ def get_persistent_room(
     )
     runtime._binding(db, _persistent_scope(binding), read_only=True)
     messages = []
+    events = db.scalars(
+        select(ChannelQueueEvent).where(ChannelQueueEvent.binding_id == binding.id)
+    ).all()
+    by_request = {row.request_message_id: row for row in events}
+    by_display = {
+        str((row.result_json or {}).get("display", {}).get("id")): row for row in events
+    }
     for message in db.scalars(
         select(ChannelMessage)
         .where(ChannelMessage.room_id == room_id, ChannelMessage.deleted_at.is_(None))
         .order_by(ChannelMessage.created_at.asc())
     ).all():
         mark = (message.payload_json or {}).get("persistent_llm", {})
-        if mark.get("binding_id") == str(binding.id):
-            messages.append(
-                {
-                    "id": str(message.id),
-                    "sender": "user" if message.participant_kind == "user" else "bot",
-                    "text": message.text,
-                    "memory_committed": mark.get("canonical") is True,
-                }
+        if mark.get("binding_id") != str(binding.id):
+            continue
+        event = (
+            by_request.get(message.id)
+            if message.participant_kind == "user"
+            else by_display.get(str(message.id))
+        )
+        canonical = mark.get("canonical") is True
+        if message.participant_kind == "bot" and not canonical:
+            acknowledged = (
+                event is not None
+                and (event.result_json or {}).get("delivery_receipt") is not None
             )
+            if event is None or (
+                not acknowledged
+                and (
+                    event.phase != "pending_delivery"
+                    or event.cancel_requested_at is not None
+                )
+            ):
+                continue
+        messages.append(
+            {
+                "id": str(message.id),
+                "sender": "user" if message.participant_kind == "user" else "bot",
+                "text": message.text,
+                "memory_committed": canonical,
+                "event_id": str(event.id) if event else None,
+                "phase": event.phase if event else "record_only",
+            }
+        )
     return success_response(
         request, {"room": _persistent_room_payload(db, binding), "messages": messages}
     )
@@ -8722,7 +8856,23 @@ def _process_persistent_llm_events(db, request, *, limit=10):
         except Exception:
             db.rollback()
             event = db.get(ChannelQueueEvent, identifier, populate_existing=True)
-            if event is None or event.phase == "committed":
+            if event is None:
+                continue
+            if event.phase in {
+                "committed",
+                "cancelled",
+                "revoked",
+                "invalid_response",
+                "failed",
+                "access_blocked",
+            }:
+                results.append(
+                    {
+                        "event_id": str(event.id),
+                        "phase": event.phase,
+                        "status": event.status,
+                    }
+                )
                 continue
             reservations = db.scalars(
                 select(LlmBudgetReservation).where(
@@ -8754,3 +8904,346 @@ def _process_persistent_llm_events(db, request, *, limit=10):
             }
         results.append(result)
     return results
+
+
+@router.post("/{bot_id}/persistent/rooms/{room_id}/new")
+def reset_persistent_dialog(
+    bot_id: UUID,
+    room_id: UUID,
+    payload: PersistentResetRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.api.routes import channels
+    from app.services.version_pins import close_pinned_dialog, open_pinned_dialog
+
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    _persistent_execution(bot.id)
+    binding = _persistent_binding(db, bot, current_user, room_id)
+    room = db.get(ChannelRoom, room_id)
+    if (
+        binding.generation != payload.expected_generation
+        or binding.status != "open"
+        or room.status != "open"
+        or room.deleted_at is not None
+    ):
+        raise HTTPException(
+            status_code=409, detail="현재 열린 대화와 초기화 대상을 다시 확인해 주세요."
+        )
+    target_id = bot.active_version_id
+    if target_id is None:
+        raise HTTPException(
+            status_code=409, detail="운영 가능한 최신 버전이 필요합니다."
+        )
+    try:
+        # 서로 다른 두 버전의 전환도 version IDs -> room/binding 장벽 순서를 유지한다.
+        versions = db.scalars(
+            select(BotVersion)
+            .where(BotVersion.id.in_((binding.version_id, target_id)))
+            .order_by(BotVersion.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+        target = next((row for row in versions if row.id == target_id), None)
+        db.refresh(bot)
+        binding = _persistent_binding(db, bot, current_user, room_id)
+        if (
+            binding.generation != payload.expected_generation
+            or bot.active_version_id != target_id
+            or target is None
+            or target.status != "active"
+            or target.deleted_at is not None
+        ):
+            raise TurnConflict(
+                "대화 또는 운영 버전이 바뀌었습니다. 새 상태를 확인해 주세요."
+            )
+        snapshot = _persistent_snapshot(db, bot, target, payload.dialog_id)
+        close_pinned_dialog(db, binding.id)
+        channels._apply_active_version_to_room(room, bot, target, "webchat")
+        scope = TurnScope(
+            bot.organization_id,
+            bot.group_id,
+            bot.id,
+            room.id,
+            "user:" + str(current_user.id),
+            binding.generation + 1,
+            target.id,
+        )
+        current = open_pinned_dialog(db, scope, snapshot)
+        room.metadata_json = {
+            **dict(room.metadata_json or {}),
+            "persistent_llm": {
+                "owner_id": str(current_user.id),
+                "generation": current.generation,
+            },
+        }
+        _write_audit_log(
+            db,
+            request,
+            current_user,
+            action_type="persistent.dialog.reset",
+            target_type="channel_room",
+            target_id=room.id,
+            before_json={
+                "generation": binding.generation,
+                "version_id": str(binding.version_id),
+            },
+            after_json={
+                "generation": current.generation,
+                "version_id": str(current.version_id),
+            },
+        )
+        db.commit()
+        return success_response(
+            request, {"room": _persistent_room_payload(db, current)}
+        )
+    except (TurnConflict, PinConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/{bot_id}/persistent/rooms/{room_id}/end")
+def close_persistent_room(
+    bot_id: UUID,
+    room_id: UUID,
+    payload: PersistentCloseRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.api.routes import channels
+    from app.services.version_pins import close_pinned_dialog
+
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    binding = _persistent_binding(db, bot, current_user, room_id)
+    if binding.generation != payload.expected_generation:
+        raise HTTPException(
+            status_code=409, detail="대화가 변경되었습니다. 새 상태를 확인해 주세요."
+        )
+    if binding.status == "closed":
+        return success_response(
+            request, {"room": _persistent_room_payload(db, binding)}
+        )
+    try:
+        close_pinned_dialog(db, binding.id)
+        room = db.get(ChannelRoom, room_id)
+        channels._archive_room_for_new_session(db, room, "persistent_user_closed")
+        _write_audit_log(
+            db,
+            request,
+            current_user,
+            action_type="persistent.room.closed",
+            target_type="channel_room",
+            target_id=room.id,
+            after_json={
+                "generation": binding.generation,
+                "version_id": str(binding.version_id),
+            },
+        )
+        db.commit()
+        return success_response(
+            request, {"room": _persistent_room_payload(db, binding)}
+        )
+    except PinConflict as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/{bot_id}/persistent/rooms/{room_id}/turns/{event_id}/cancel")
+def cancel_persistent_turn(
+    bot_id: UUID,
+    room_id: UUID,
+    event_id: UUID,
+    payload: PersistentCancelRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    binding, event = _persistent_event_for_user(
+        db, bot, current_user, room_id, event_id
+    )
+    try:
+        result = _persistent_runtime_service(
+            db, _persistent_scope(binding), event_id=event.id, management=True
+        ).cancel_turn(db, _persistent_scope(binding), event.id)
+        # 권한·라이선스 상실 뒤에도 중지는 요청할 수 있지만 새 답변 내용은 받지 않는다.
+        result = {**result, "message": None}
+        return success_response(request, result)
+    except (TurnConflict, BudgetConflict) as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+def _persistent_version_operable(db, version_id, *, require_idle=False):
+    guard = db.get(ChannelLlmVersionGuard, version_id, populate_existing=True)
+    if guard is not None and (
+        guard.mutation_status == "revoked"
+        or (require_idle and guard.mutation_status != "idle")
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="이 버전의 폐기 또는 진행 작업 상태를 확인해야 합니다. 새 버전을 준비해 주세요.",
+        )
+
+
+@router.post("/{bot_id}/persistent/revoke")
+def revoke_persistent_version(
+    bot_id: UUID,
+    payload: PersistentRevokeRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.api.routes.admin import _require_admin_user
+
+    _require_admin_user(db, current_user)
+    bot = db.scalar(
+        select(Bot).where(
+            Bot.id == bot_id,
+            Bot.organization_id == current_user.organization_id,
+            Bot.deleted_at.is_(None),
+        )
+    )
+    if bot is None:
+        raise HTTPException(status_code=404, detail="봇을 찾을 수 없습니다.")
+    target_id = payload.version_id or bot.active_version_id
+    reason = payload.reason.strip()
+    if not target_id or not reason:
+        raise HTTPException(status_code=400, detail="폐기할 버전과 사유가 필요합니다.")
+    version = db.scalar(
+        select(BotVersion)
+        .where(BotVersion.id == target_id, BotVersion.bot_id == bot.id)
+        .with_for_update()
+    )
+    guard = db.get(ChannelLlmVersionGuard, target_id, populate_existing=True)
+    if version is None or guard is None:
+        raise HTTPException(
+            status_code=409, detail="준비된 지속 샘플 버전만 폐기할 수 있습니다."
+        )
+    existing = db.scalars(
+        select(ChannelLlmBinding).where(ChannelLlmBinding.version_id == target_id)
+    ).all()
+    for room_id in sorted({binding.room_id for binding in existing}, key=str):
+        db.scalar(
+            select(ChannelRoom).where(ChannelRoom.id == room_id).with_for_update()
+        )
+    bindings = db.scalars(
+        select(ChannelLlmBinding)
+        .where(ChannelLlmBinding.version_id == target_id)
+        .order_by(ChannelLlmBinding.room_id, ChannelLlmBinding.generation)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    guard.mutation_status = "revoked"
+    guard.heartbeat_at = datetime.now(timezone.utc)
+    for binding in bindings:
+        # 종료한 generation을 live 상태로 되돌리지 않는다. 폐기 guard가 과거 조회도 차단한다.
+        if binding.status != "closed":
+            binding.status = "revoked"
+    db.flush()
+    events = (
+        db.scalars(
+            select(ChannelQueueEvent)
+            .where(
+                ChannelQueueEvent.binding_id.in_([binding.id for binding in bindings])
+            )
+            .order_by(ChannelQueueEvent.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+        if bindings
+        else []
+    )
+    incomplete = 0
+    for event in events:
+        if event.phase == "committed":
+            continue
+        event.lease_fence += 1
+        event.cancel_requested_at = datetime.now(timezone.utc)
+        db.flush()
+        rows = db.scalars(
+            select(LlmBudgetReservation).where(
+                LlmBudgetReservation.event_id == event.id
+            )
+        ).all()
+        if (event.result_json or {}).get("append_attempted"):
+            event.phase = "needs_reconcile"
+            event.status = "unknown"
+            incomplete += 1
+        elif event.submitted_at is None:
+            if rows and all(row.state == "reserved" for row in rows):
+                release_presubmit_budget(db, event.id)
+            event.phase = "revoked"
+            event.status = "failed"
+        elif rows and all(row.state == "settled" for row in rows):
+            event.phase = "revoked"
+            event.status = "failed"
+        else:
+            if rows and all(
+                row.state in {"reserved", "submitted", "unknown"} for row in rows
+            ):
+                hold_unknown_budget(db, event.id)
+            event.phase = "unknown"
+            event.status = "unknown"
+            incomplete += 1
+        event.error_message = "관리자가 버전을 폐기했습니다. 불명 요청의 예약과 참조는 강제로 해제하지 않습니다."
+    if bot.active_version_id == target_id:
+        _close_open_channel_rooms_for_version_change(
+            db, request, current_user, bot, target_id, None
+        )
+        bot.active_version_id = None
+        version.status = "draft"
+    _write_audit_log(
+        db,
+        request,
+        current_user,
+        action_type="persistent.version.revoked",
+        target_type="bot_version",
+        target_id=target_id,
+        after_json={
+            "reason": reason,
+            "affected_bindings": len(bindings),
+            "incomplete_events": incomplete,
+        },
+    )
+    db.commit()
+    return success_response(
+        request,
+        {
+            "version_id": str(target_id),
+            "affected_bindings": len(bindings),
+            "incomplete_events": incomplete,
+        },
+    )
+
+
+@router.post("/{bot_id}/persistent/rooms/{room_id}/turns/{event_id}/reconcile")
+def reconcile_persistent_turn(
+    bot_id: UUID,
+    room_id: UUID,
+    event_id: UUID,
+    payload: PersistentCancelRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bot = _get_bot_or_404(db, bot_id, current_user)
+    _persistent_license(db, current_user)
+    _persistent_execution(bot.id)
+    binding, event = _persistent_event_for_user(
+        db, bot, current_user, room_id, event_id
+    )
+    try:
+        result = _persistent_runtime_service(
+            db, _persistent_scope(binding)
+        ).reconcile_turn(
+            db,
+            _persistent_scope(binding),
+            event.id,
+        )
+    except TurnConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return success_response(request, result)

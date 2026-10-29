@@ -79,3 +79,7 @@ class PersistentCloseRequest(PersistentRequest):
 class PersistentRevokeRequest(PersistentRequest):
     reason: str = Field(min_length=1, max_length=2000)
     version_id: UUID | None = None
+
+
+class PersistentCancelRequest(PersistentRequest):
+    pass

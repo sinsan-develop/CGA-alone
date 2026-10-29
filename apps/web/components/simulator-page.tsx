@@ -32,6 +32,10 @@ import {
 } from "@/lib/dialog-flow";
 import { loadAuthSession, saveLastBotScreen, type AuthSession } from "@/lib/auth";
 import {
+  fetchStudioPersistentConfig, fetchStudioPersistentRooms, fetchStudioPersistentRoom, fetchStudioPersistentTurn,
+  startStudioPersistentRoom, submitStudioPersistentTurn, ackStudioPersistentTurn, resetStudioPersistentRoom,
+  closeStudioPersistentRoom, manageStudioPersistentTurn, persistentRoomStorageKey, canSendPersistentTurn,
+  persistentDisplayReceipt, persistentTranscriptNeedsRefresh, type PersistentConfig, type PersistentRoom, type PersistentTurn, type PersistentTranscript,
   generateStudioBotVersionLlmAnswer,
   refreshStudioBotSelectedVersion,
   searchStudioBotVersionRagAnswers,
@@ -3441,7 +3445,206 @@ type SimulatorPageProps = {
   onClose?: () => void;
 };
 
-export function SimulatorPage({ embedded = false, startDialogId: startDialogIdProp = "", botIdOverride = "", versionIdOverride = "", onClose }: SimulatorPageProps = {}) {
+// 샘플 서버가 지정한 봇만 지속 경로로 연결한다. 기존 CGA runtime은 아래에 보존한다.
+export function SimulatorPage(props: SimulatorPageProps = {}) {
+  const { language: uiLanguage } = useI18n();
+  const params = useParams<{botId:string}>();
+  const router = useRouter();
+  const botId = props.botIdOverride || (typeof params.botId === "string" ? decodeURIComponent(params.botId) : "");
+  const [context, setContext] = useState<{session:AuthSession; config:PersistentConfig} | null>(null);
+  const [error, setError] = useState("");
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const session = loadAuthSession();
+    if (!session) { router.replace("/login"); return; }
+    setContext(null); setError("");
+    fetchStudioPersistentConfig(session.access_token, botId, controller.signal).then(config => {
+      if (!controller.signal.aborted) setContext({session, config});
+    }).catch(cause => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "대화 설정 조회 실패"));
+    });
+    return () => controller.abort();
+  }, [botId, router, revision]);
+  // 조회 실패/기능 OFF의 보호 방을 단발 경로로 우회하지 않는다.
+  if (error) return <div className="simulator-alert" role="alert">{error}<button type="button" onClick={() => setRevision(value => value + 1)}>{getStudioRuntimeMessage(uiLanguage, "설정 다시 조회")}</button></div>;
+  if (!context) return <div className="simulator-empty">{getStudioRuntimeMessage(uiLanguage, "대화 설정 확인 중")}</div>;
+  return context.config.enabled
+    ? <PersistentSimulator key={`${context.session.user.id}:${botId}`} {...props} botId={botId} session={context.session} config={context.config} />
+    : <LegacySimulatorPage {...props} />;
+}
+
+function PersistentSimulator({botId, session, config, embedded = false, onClose, startDialogId = ""}: SimulatorPageProps & {
+  botId:string; session:AuthSession; config:PersistentConfig;
+}) {
+  const { language: uiLanguage } = useI18n();
+  const router = useRouter();
+  const token = session.access_token;
+  const storageKey = persistentRoomStorageKey(session.user.id, botId);
+  const [rooms, setRooms] = useState<PersistentRoom[]>([]);
+  const [room, setRoom] = useState<PersistentRoom | null>(null);
+  const [transcript, setTranscript] = useState<PersistentTranscript["messages"]>([]);
+  const [turn, setTurn] = useState<PersistentTurn | null>(null);
+  const [dialogId, setDialogId] = useState(startDialogId || Object.keys(config.profiles)[0] || "");
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [uncertainKey, setUncertainKey] = useState("");
+  const [error, setError] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [loadingRooms, setLoadingRooms] = useState(true);
+  const displayRef = useRef<HTMLSpanElement | null>(null);
+  const ackAttempts = useRef(new Set<string>());
+  const roomScope = useRef("");
+  roomScope.current = room ? `${room.id}:${room.generation}` : "";
+  const live = useRef(true);
+  const busyRef = useRef(false);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  function remember(next: PersistentRoom, key = "") {
+    // 서버가 매번 소유권을 검증한다. 이 값은 자격 증명이 아닌 재접속 힌트다.
+    sessionStorage.setItem(storageKey, JSON.stringify({room_id:next.id,generation:next.generation,pending_key:key}));
+  }
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchStudioPersistentRooms(token, botId, controller.signal).then(data => {
+      if (controller.signal.aborted) return;
+      setRooms(data.rooms);
+      let hint: {room_id?:string;generation?:number;pending_key?:string} = {};
+      try { hint = JSON.parse(sessionStorage.getItem(storageKey) || "{}"); } catch { /* 인증은 서버가 담당한다. */ }
+      const restored = data.rooms.find(row => row.id === hint.room_id && row.generation === hint.generation);
+      if (restored) { setRoom(restored); setDialogId(restored.dialog_id); setUncertainKey(hint.pending_key || ""); }
+    }).catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "이력 조회 실패")); })
+      .finally(() => { if (!controller.signal.aborted) setLoadingRooms(false); });
+    return () => controller.abort();
+  }, [token, botId, storageKey]);
+  const roomId = room?.id;
+  const generation = room?.generation;
+  useEffect(() => {
+    if (!roomId || !generation) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function poll() {
+      try {
+        const data = await fetchStudioPersistentRoom(token, botId, roomId!, generation!, controller.signal);
+        const next = data.room.current_event_id ? await fetchStudioPersistentTurn(token, botId, roomId!, data.room.current_event_id, controller.signal) : null;
+        if (controller.signal.aborted) return;
+        if (persistentTranscriptNeedsRefresh(data, next)) {
+          timer = setTimeout(() => { void poll(); }, 250);
+          return;
+        }
+        setRoom(data.room); setTranscript(data.messages); setTurn(next);
+        setRooms(items => [data.room, ...items.filter(item => item.id !== data.room.id || item.generation !== data.room.generation)]);
+        if (uncertainKey && data.room.current_message_key === uncertainKey) { setUncertainKey(""); remember(data.room); }
+        if (next && ["reserved", "conversation_creating", "history_check", "submitting", "submitted", "generated", "delivery_confirmed", "memory_syncing"].includes(next.phase)) {
+          timer = setTimeout(() => { void poll(); }, 1000);
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "상태 조회 실패"));
+      }
+    }
+    void poll();
+    return () => { controller.abort(); if (timer) clearTimeout(timer); };
+  }, [token, botId, roomId, generation, revision, uncertainKey]);
+  async function acknowledge() {
+    if (!room || !turn) return;
+    const receipt = persistentDisplayReceipt(turn, displayRef.current);
+    if (!receipt) return;
+    const expectedScope = `${room.id}:${room.generation}`;
+    try {
+      const next = await ackStudioPersistentTurn(token, botId, room.id, turn.event_id, receipt);
+      if (live.current && roomScope.current === expectedScope) { setTurn(next); setRevision(value => value + 1); }
+    } catch (cause) { if (live.current) setError(cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "표출 확인 실패")); }
+    // 실패 시 자동 재시도하지 않는다. 같은 서버 receipt의 명시적 재확인만 허용한다.
+  }
+  useEffect(() => {
+    if (room?.status !== "open" || !turn || turn.phase !== "pending_delivery" || !persistentDisplayReceipt(turn, displayRef.current)) return;
+    const key = `${room.id}:${room.generation}:${turn.event_id}`;
+    if (ackAttempts.current.has(key)) return;
+    ackAttempts.current.add(key);
+    void acknowledge();
+  }, [turn, room?.id, room?.generation, room?.status]);
+  const profiles = room?.status === "open" ? room.profiles : config.profiles;
+  const locked = !canSendPersistentTurn(room, turn, busy || Boolean(uncertainKey));
+  async function action(operation: "start" | "new" | "end" | "cancel" | "reconcile") {
+    if (busyRef.current) return;
+    if (operation === "new" && !window.confirm(getStudioRuntimeMessage(uiLanguage, "이전 기록은 조회용으로 남고 LLM 문맥은 초기화됩니다. 최신 운영 버전으로 새 대화를 시작할까요?"))) return;
+    if (operation === "end" && !window.confirm(getStudioRuntimeMessage(uiLanguage, "이 방을 종료할까요? 기록은 보관되며 다음 대화에 자동 반영되지 않습니다."))) return;
+    busyRef.current = true; setBusy(true); setError("");
+    try {
+      if (operation === "start" || !room) {
+        const data = await startStudioPersistentRoom(token, botId, dialogId);
+        if (!live.current) return;
+        remember(data.room); setRoom(data.room); setTranscript([]); setTurn(null); setUncertainKey("");
+      } else if (operation === "new" || operation === "end") {
+        const data = operation === "new"
+          ? await resetStudioPersistentRoom(token, botId, room.id, room.generation, Object.keys(config.profiles).includes(dialogId) ? dialogId : Object.keys(config.profiles)[0])
+          : await closeStudioPersistentRoom(token, botId, room.id, room.generation);
+        if (!live.current) return;
+        remember(data.room); setRoom(data.room); setDialogId(data.room.dialog_id); setTurn(null); setUncertainKey("");
+      } else if (turn) {
+        const result = await manageStudioPersistentTurn(token, botId, room.id, turn.event_id, operation);
+        if (!live.current) return;
+        setTurn(result);
+      }
+      if (live.current) { setInput(""); setRevision(value => value + 1); }
+    } catch (cause) { if (live.current) setError(cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "요청 처리 실패")); }
+    finally { busyRef.current = false; if (live.current) setBusy(false); }
+  }
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (busyRef.current || locked || !room || !input.trim() || !profiles[dialogId]) return;
+    busyRef.current = true; setBusy(true); setError("");
+    const messageKey = crypto.randomUUID();
+    // 전송 전 키를 저장한다. timeout 뒤 모델 POST를 자동 반복하지 않는다.
+    remember(room, messageKey); setUncertainKey(messageKey);
+    try {
+      const result = await submitStudioPersistentTurn(token, botId, room.id, {expected_generation:room.generation,message_key:messageKey,question:input.trim(),dialog_id:dialogId});
+      if (live.current) { remember(room); setUncertainKey(""); setInput(""); setTurn(result); }
+    } catch (cause) { if (live.current) setError(`${cause instanceof Error ? cause.message : getStudioRuntimeMessage(uiLanguage, "전송 실패")} ${getStudioRuntimeMessage(uiLanguage, "결과를 조회해 확인해 주세요. 자동 재전송하지 않습니다.")}`); }
+    finally { busyRef.current = false; if (live.current) { setBusy(false); setRevision(value => value + 1); } }
+  }
+  const display = turn?.phase === "pending_delivery" && room?.status === "open" ? turn.message : null;
+  const rows = transcript.filter(message => message.id !== display?.id);
+  return <div className={`simulator-workbench${embedded ? " simulator-workbench--popup" : ""} simulator-workbench--debug-open`}>
+    <div className="simulator-stage simulator-stage--flat simulator-stage--messenger"><div className="simulator-window simulator-window--messenger">
+      <div className="simulator-window__header"><div className="simulator-title"><strong>{getStudioRuntimeMessage(uiLanguage, "지속 LLM 대화")}</strong><small>{getStudioRuntimeMessage(uiLanguage, "Simulator / Webchat 공통 대화")}</small></div>
+        <button className="icon-button" type="button" aria-label={getStudioRuntimeMessage(uiLanguage, "시뮬레이터 닫기")} onClick={() => embedded ? onClose?.() : router.back()}>×</button></div>
+      {error ? <div className="simulator-alert" role="alert">{error}</div> : null}
+      {!config.ready ? <div className="simulator-alert">{config.reason || getStudioRuntimeMessage(uiLanguage, "새 대화 준비가 완료되지 않았습니다.")}</div> : null}
+      <div className="simulator-window__body simulator-window__body--scroll"><div className="chat-stack" aria-live="polite">
+        {rows.map(message => <div className={`chat-row chat-row--${message.sender}`} key={message.id}>
+          {message.sender === "bot" ? <span className="chat-message-avatar" /> : null}
+          <div className="chat-message"><div className="chat-message__line"><div className={`chat-bubble chat-bubble--${message.sender === "user" ? "user" : "bot"}`}>
+          <span style={{whiteSpace:"pre-wrap"}}>{message.text}</span></div></div><small>{message.memory_committed ? getStudioRuntimeMessage(uiLanguage, "문맥 반영 완료") : getStudioRuntimeMessage(uiLanguage, "문맥 미반영")}</small></div></div>)}
+        {display ? <div className="chat-row chat-row--bot"><span className="chat-message-avatar" /><div className="chat-message"><div className="chat-message__line"><div className="chat-bubble chat-bubble--bot"><span ref={displayRef} data-persistent-message-id={display.id} style={{whiteSpace:"pre-wrap"}}>{display.text}</span></div></div><small>{getStudioRuntimeMessage(uiLanguage, "표출 확인 대기 · 문맥 미반영")}</small></div></div> : null}
+        {!room ? <p>{getStudioRuntimeMessage(uiLanguage, "모듈을 선택한 뒤 대화를 시작해 주세요.")}</p> : null}
+      </div></div>
+      <form className="simulator-composer simulator-composer--messenger" onSubmit={submit}>
+        <textarea className="textarea-control textarea-control--flat" aria-label={getStudioRuntimeMessage(uiLanguage, "질문")} placeholder={getStudioRuntimeMessage(uiLanguage, "봇에게 질문해 주세요")} value={input} disabled={locked} onChange={event => setInput(event.target.value)} onKeyDown={event => {if(event.key === "Enter" && !event.shiftKey){event.preventDefault();void submit();}}} />
+        <button className="primary-action" type="submit" disabled={locked || !input.trim()}>{getStudioRuntimeMessage(uiLanguage, "전송")}</button>
+      </form>
+    </div></div>
+    <aside className="simulator-analysis"><div className="simulator-analysis__header"><strong>{getStudioRuntimeMessage(uiLanguage, "대화 상태")}</strong></div><div className="simulator-analysis__block">
+      <label>{getStudioRuntimeMessage(uiLanguage, "답변 모듈")}<select className="select-control" aria-label={getStudioRuntimeMessage(uiLanguage, "답변 모듈")} value={dialogId} disabled={busy || Boolean(turn && turn.phase !== "committed")} onChange={event => setDialogId(event.target.value)}>{Object.entries(profiles).map(([id, profile]) => <option key={id} value={id}>{profile.name} ({profile.uses_llm ? "LLM" : getStudioRuntimeMessage(uiLanguage, "고정 답변")})</option>)}</select></label>
+      <p>{room ? formatStudioRuntimeMessage(uiLanguage, "고정 버전 {version} / 대화 {generation} / {status}", {version:room.version_id,generation:room.generation,status:room.status}) : getStudioRuntimeMessage(uiLanguage, "시작 전")}</p>
+      <p role="status">{uncertainKey ? getStudioRuntimeMessage(uiLanguage, "전송 결과 확인 필요 · 자동 재호출 안 함") : turn?.phase || getStudioRuntimeMessage(uiLanguage, "대기")}</p>
+      {room?.scenario_ended ? <p>{getStudioRuntimeMessage(uiLanguage, "시나리오 종료 · LLM 문맥 유지")}</p> : null}
+      <button className="secondary-action" type="button" disabled={busy || loadingRooms || !config.ready || !dialogId || room?.status === "open"} onClick={() => void action("start")}>{getStudioRuntimeMessage(uiLanguage, "새 방 시작")}</button>
+      <button className="secondary-action" type="button" disabled={busy || !room || room.status !== "open" || !config.ready} onClick={() => void action("new")}>{getStudioRuntimeMessage(uiLanguage, "새 대화 · 최신 버전 적용")}</button>
+      <button className="secondary-action" type="button" disabled={busy || !room || room.status !== "open"} onClick={() => void action("end")}>{getStudioRuntimeMessage(uiLanguage, "방 종료")}</button>
+      <button className="secondary-action" type="button" disabled={busy || !room} onClick={() => {setError("");setRevision(value => value + 1);}}>{getStudioRuntimeMessage(uiLanguage, "상태 다시 조회")}</button>
+      <button className="secondary-action" type="button" disabled={busy || !turn || room?.status !== "open"} onClick={() => void action("reconcile")}>{getStudioRuntimeMessage(uiLanguage, "결과 확인 · 생성 재호출 없음")}</button>
+      <button className="secondary-action" type="button" disabled={busy || !turn || turn.phase === "committed" || room?.status !== "open"} onClick={() => void action("cancel")}>{getStudioRuntimeMessage(uiLanguage, "진행 요청 취소")}</button>
+      {display ? <button className="secondary-action" type="button" disabled={busy} onClick={() => void acknowledge()}>{getStudioRuntimeMessage(uiLanguage, "표출 다시 확인")}</button> : null}
+      <label>{getStudioRuntimeMessage(uiLanguage, "이전 대화 조회")}<select className="select-control" aria-label={getStudioRuntimeMessage(uiLanguage, "이전 대화 조회")} value={room ? `${room.id}:${room.generation}` : ""} disabled={busy || Boolean(uncertainKey)} onChange={event => {
+        const selected = rooms.find(item => `${item.id}:${item.generation}` === event.target.value);
+        if (selected) {remember(selected);setRoom(selected);setTurn(null);setTranscript([]);setUncertainKey("");setDialogId(selected.dialog_id);setError("");setRevision(value => value + 1);}
+      }}><option value="" disabled>{getStudioRuntimeMessage(uiLanguage, "대화 선택")}</option>{rooms.map(item => <option key={`${item.id}:${item.generation}`} value={`${item.id}:${item.generation}`}>{item.id.slice(0,8)} / {item.generation} / {item.status}</option>)}</select></label>
+      <p>{getStudioRuntimeMessage(uiLanguage, "이전 기록은 조회용입니다. 새 LLM 문맥에 자동으로 넣지 않습니다.")}</p>
+    </div></aside>
+  </div>;
+}
+
+function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdProp = "", botIdOverride = "", versionIdOverride = "", onClose }: SimulatorPageProps = {}) {
   const { language: uiLanguage } = useI18n();
   const copy = SIMULATOR_CATALOGS[uiLanguage];
   const params = useParams<{ botId: string; versionId: string }>();

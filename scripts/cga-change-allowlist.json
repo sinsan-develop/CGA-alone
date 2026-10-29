@@ -243,5 +243,20 @@
     "path": "apps/api/app/main.py",
     "stage": "P03",
     "reason": "승인된 기존 queue worker에 persistent operation 전용 처리 연결, 일반 worker 분리 유지"
+  },
+  {
+    "path": "apps/web/components/simulator-page.tsx",
+    "stage": "P03",
+    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화"
+  },
+  {
+    "path": "apps/web/components/persistent-llm-runtime.test.mjs",
+    "stage": "P03",
+    "reason": "승인된 P03 렌더링 확인·잠금/중복 전송·재접속 범위·새 대화 및 단발 모드 회귀"
+  },
+  {
+    "path": "apps/web/lib/i18n/studio-runtime-native.ts",
+    "stage": "P03",
+    "reason": "승인된 P03 새 시뮬레이터 조작/상태 문구의 기존 6개 번역 경로 보존; 기존 문구/번역 불변"
   }
 ]

@@ -188,11 +188,12 @@ def authenticated_http(persistent_context, monkeypatch):
         def __init__(self):
             super().__init__()
             self.conversations = {}
+            self.namespace = uuid4().hex
 
         def __call__(self, method, url, payload, headers, timeout):
             if method == "POST" and url.endswith("/conversations"):
                 self.calls.append((method, url, deepcopy(payload)))
-                cid = "conv_" + str(len(self.conversations) + 1)
+                cid = "conv_" + self.namespace + "_" + str(len(self.conversations) + 1)
                 self.conversations[cid] = []
                 return {"id": cid}
             if "/conversations/" in url:
@@ -337,14 +338,20 @@ def http_open(fixture):
 
 
 def http_process(
-    fixture, base, room_id, key="message-1", question="첫 질문", dialog_id="pllm-module"
+    fixture,
+    base,
+    room_id,
+    key="message-1",
+    question="첫 질문",
+    dialog_id="pllm-module",
+    expected_generation=1,
 ):
     c, client, a, _, _, _ = fixture
     sent = client.post(
         base + f"/rooms/{room_id}/turns",
         headers=a,
         json={
-            "expected_generation": 1,
+            "expected_generation": expected_generation,
             "message_key": key,
             "question": question,
             "dialog_id": dialog_id,
@@ -474,6 +481,12 @@ def test_feature_off_still_blocks_legacy_and_new_paid_execution(
     c, client, a, _, transport, _ = authenticated_http
     base, room_id = http_open(authenticated_http)
     monkeypatch.setattr(settings, "persistent_llm_enabled", False)
+    assert (
+        client.get(base + f"/rooms/{room_id}", headers=a).json()["data"]["room"][
+            "can_send"
+        ]
+        is False
+    )
     sent = client.post(
         base + f"/rooms/{room_id}/turns",
         headers=a,
@@ -648,3 +661,546 @@ def test_fixed_qa_is_canonical_without_generation_and_next_llm_sees_it(
         payload["input"][0]["content"] == "고정 질문"
         and payload["input"][1]["content"] == "사전에 정의한 답변"
     )
+
+
+def test_new_dialog_has_fresh_id_and_closed_generation_history(authenticated_http):
+    from sqlalchemy import select
+    from app.models import ChannelLlmBinding
+    from uuid import UUID
+
+    c, client, a, _, transport, _ = authenticated_http
+    base, room_id = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room_id)
+    http_confirm(authenticated_http, base, room_id, event, view)
+    with Session(c.engine) as db:
+        old_cid = db.scalar(
+            select(ChannelLlmBinding).where(ChannelLlmBinding.room_id == UUID(room_id))
+        ).provider_conversation_id
+    reset = client.post(
+        base + f"/rooms/{room_id}/new",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "confirm_reset": True,
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["data"]["room"]["generation"] == 2
+    old = client.get(base + f"/rooms/{room_id}?generation=1", headers=a).json()["data"]
+    assert old["room"]["status"] == "closed" and len(old["messages"]) == 2
+    assert (
+        client.get(base + f"/rooms/{room_id}", headers=a).json()["data"]["messages"]
+        == []
+    )
+    assert (
+        client.post(
+            base + f"/rooms/{room_id}/turns",
+            headers=a,
+            json={
+                "expected_generation": 1,
+                "message_key": "late-old",
+                "question": "늦은 이전 질문",
+                "dialog_id": "pllm-module",
+            },
+        ).status_code
+        == 409
+    )
+    http_process(
+        authenticated_http,
+        base,
+        room_id,
+        "new-message",
+        "새 문맥 질문",
+        expected_generation=2,
+    )
+    with Session(c.engine) as db:
+        new_cid = db.scalar(
+            select(ChannelLlmBinding).where(
+                ChannelLlmBinding.room_id == UUID(room_id),
+                ChannelLlmBinding.generation == 2,
+            )
+        ).provider_conversation_id
+    assert new_cid and new_cid != old_cid
+    body = [
+        v[2] for v in transport.calls if v[0] == "POST" and v[1].endswith("/responses")
+    ][-1]
+    assert len(body["input"]) == 1
+    assert (
+        client.post(
+            base + f"/rooms/{room_id}/new",
+            headers=a,
+            json={
+                "expected_generation": 1,
+                "confirm_reset": True,
+                "dialog_id": "pllm-module",
+            },
+        ).status_code
+        == 409
+    )
+
+
+def test_explicit_close_keeps_history_read_only_without_replay(authenticated_http):
+    c, client, a, _, transport, _ = authenticated_http
+    base, room_id = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room_id)
+    http_confirm(authenticated_http, base, room_id, event, view)
+    closed = client.post(
+        base + f"/rooms/{room_id}/end", headers=a, json={"expected_generation": 1}
+    )
+    assert closed.status_code == 200, closed.text
+    history = client.get(base + f"/rooms/{room_id}", headers=a)
+    assert (
+        history.status_code == 200
+        and history.json()["data"]["room"]["status"] == "closed"
+    )
+    assert len(history.json()["data"]["messages"]) == 2
+    assert (
+        client.post(
+            base + f"/rooms/{room_id}/turns",
+            headers=a,
+            json={
+                "expected_generation": 1,
+                "message_key": "closed",
+                "question": "종료 후 질문",
+                "dialog_id": "pllm-module",
+            },
+        ).status_code
+        == 409
+    )
+    _, next_room = http_open(authenticated_http)
+    assert (
+        next_room != room_id
+        and client.get(base + f"/rooms/{next_room}", headers=a).json()["data"][
+            "messages"
+        ]
+        == []
+    )
+    assert transport.generations == 1
+
+
+def test_reset_and_close_cannot_unpin_pending_delivery(authenticated_http):
+    from app.models import ChannelLlmBinding
+    from sqlalchemy import select
+    from uuid import UUID
+
+    c, client, a, _, transport, _ = authenticated_http
+    base, room_id = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room_id)
+    assert view["phase"] == "pending_delivery"
+    assert (
+        client.post(
+            base + f"/rooms/{room_id}/new",
+            headers=a,
+            json={
+                "expected_generation": 1,
+                "confirm_reset": True,
+                "dialog_id": "pllm-module",
+            },
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            base + f"/rooms/{room_id}/end", headers=a, json={"expected_generation": 1}
+        ).status_code
+        == 409
+    )
+    with Session(c.engine) as db:
+        binding = db.scalar(
+            select(ChannelLlmBinding).where(ChannelLlmBinding.room_id == UUID(room_id))
+        )
+        assert binding.generation == 1 and binding.status == "open"
+    assert transport.generations == 1
+
+
+def test_known_completed_cancel_does_not_recall_provider_and_allows_reset(
+    authenticated_http,
+):
+    c, client, a, _, transport, _ = authenticated_http
+    base, room_id = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room_id)
+    before = len(transport.calls)
+    canceled = client.post(
+        base + f"/rooms/{room_id}/turns/{event}/cancel", headers=a, json={}
+    )
+    assert canceled.status_code == 200, canceled.text
+    assert (
+        canceled.json()["data"]["phase"] == "cancelled"
+        and canceled.json()["data"]["message"] is None
+    )
+    assert len(transport.calls) == before and transport.generations == 1
+    history = client.get(base + f"/rooms/{room_id}", headers=a).json()["data"][
+        "messages"
+    ]
+    assert not any(row["sender"] == "bot" for row in history)
+    reset = client.post(
+        base + f"/rooms/{room_id}/new",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "confirm_reset": True,
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert reset.status_code == 200 and reset.json()["data"]["room"]["generation"] == 2
+
+
+def test_off_allows_proven_presubmit_cancel_without_refunding_unknown(
+    authenticated_http, monkeypatch
+):
+    c, client, a, _, transport, _ = authenticated_http
+    base, room_id = http_open(authenticated_http)
+    sent = client.post(
+        base + f"/rooms/{room_id}/turns",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "message_key": "not-submitted",
+            "question": "질문",
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert sent.status_code == 202
+    event = sent.json()["data"]["event_id"]
+    monkeypatch.setattr(settings, "persistent_llm_enabled", False)
+    canceled = client.post(
+        base + f"/rooms/{room_id}/turns/{event}/cancel", headers=a, json={}
+    )
+    assert (
+        canceled.status_code == 200 and canceled.json()["data"]["phase"] == "cancelled"
+    )
+    assert transport.generations == 0 and transport.calls == []
+    closed = client.post(
+        base + f"/rooms/{room_id}/end", headers=a, json={"expected_generation": 1}
+    )
+    assert closed.status_code == 200
+
+
+def test_ongoing_version_is_pinned_until_user_resets_to_latest(authenticated_http):
+    from copy import deepcopy
+    from sqlalchemy import select
+    from app.models import ChannelLlmBinding
+    from uuid import UUID
+
+    c, client, a, _, transport, _ = authenticated_http
+    base, room_id = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room_id)
+    http_confirm(authenticated_http, base, room_id, event, view)
+    with Session(c.engine) as db:
+        old = db.scalar(
+            select(ChannelLlmBinding).where(ChannelLlmBinding.room_id == UUID(room_id))
+        )
+        old_cid = old.provider_conversation_id
+        copied = bots.copy_version(
+            c.bot_id, c.version_id, _request(), db.get(User, c.user_id), db
+        )["data"]
+        latest_id = UUID(copied["id"])
+        latest = db.get(BotVersion, latest_id)
+        doc = deepcopy(latest.version_json)
+        doc["dialogs"][0]["llmAnswerPrompt"] = "새 버전 지침"
+        doc["dialog_flow_graphs"][0]["nodes"][1]["config"]["basicMessages"] = [
+            "새 버전: {{$_llm_answer_text}}"
+        ]
+        bots._assign_version_document(latest, doc)
+        bot = db.get(Bot, c.bot_id)
+        assert (
+            bots._close_open_channel_rooms_for_version_change(
+                db, _request(), db.get(User, c.user_id), bot, c.version_id, latest_id
+            )
+            == 1
+        )
+        assert (
+            db.get(ChannelRoom, UUID(room_id)).status == "open"
+            and db.get(ChannelRoom, c.room_id).status == "closed"
+        )
+        bot.active_version_id = latest_id
+        latest.status = "active"
+        db.get(BotVersion, c.version_id).status = "draft"
+        db.commit()
+    event2, view2 = http_process(
+        authenticated_http, base, room_id, "old-followup", "이전 문맥 후속"
+    )
+    assert view2["message"]["text"] == "답변: 보여줄 답변"
+    http_confirm(authenticated_http, base, room_id, event2, view2)
+    with Session(c.engine) as db:
+        old = db.scalar(
+            select(ChannelLlmBinding).where(
+                ChannelLlmBinding.room_id == UUID(room_id),
+                ChannelLlmBinding.generation == 1,
+            )
+        )
+        assert (
+            old.provider_conversation_id == old_cid and old.version_id == c.version_id
+        )
+    reset = client.post(
+        base + f"/rooms/{room_id}/new",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "confirm_reset": True,
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert reset.status_code == 200 and reset.json()["data"]["room"][
+        "version_id"
+    ] == str(latest_id)
+    _, view3 = http_process(
+        authenticated_http,
+        base,
+        room_id,
+        "latest-question",
+        "새 문맥",
+        expected_generation=2,
+    )
+    assert view3["message"]["text"] == "새 버전: 보여줄 답변"
+    payload = [
+        call[2]
+        for call in transport.calls
+        if call[0] == "POST" and call[1].endswith("/responses")
+    ][-1]
+    assert len(payload["input"]) == 1 and "새 버전 지침" in payload["instructions"]
+    old_history = client.get(base + f"/rooms/{room_id}?generation=1", headers=a)
+    assert (
+        old_history.status_code == 200
+        and len(old_history.json()["data"]["messages"]) == 4
+    )
+
+
+@pytest.fixture
+def admin_http(authenticated_http):
+    from app.models import Role, UserRole
+    from sqlalchemy import select, delete
+
+    c = authenticated_http[0]
+    created = False
+    with Session(c.engine) as db:
+        role = db.scalar(select(Role).where(Role.code == "system_manager"))
+        if role is None:
+            role = Role(code="system_manager", name="합성 검증 관리자")
+            db.add(role)
+            db.flush()
+            created = True
+        assert role.deleted_at is None
+        link = UserRole(user_id=c.user_id, role_id=role.id)
+        db.add(link)
+        db.commit()
+        role_id = role.id
+        link_id = link.id
+    try:
+        yield authenticated_http
+    finally:
+        with Session(c.engine) as db:
+            db.execute(delete(UserRole).where(UserRole.id == link_id))
+            if (
+                created
+                and db.scalar(
+                    select(UserRole.id).where(UserRole.role_id == role_id).limit(1)
+                )
+                is None
+            ):
+                db.execute(delete(Role).where(Role.id == role_id))
+            db.commit()
+
+
+def test_creator_alone_cannot_force_revoke_version(authenticated_http):
+    c, client, a, _, transport, _ = authenticated_http
+    result = client.post(
+        f"/api/v1/bots/{c.bot_id}/persistent/revoke",
+        headers=a,
+        json={"version_id": str(c.version_id), "reason": "권한 검증"},
+    )
+    assert result.status_code == 403 and transport.generations == 0
+
+
+def test_forced_revoke_blocks_late_result_and_keeps_actual_usage(
+    admin_http, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import select
+    from app.models import (
+        ChannelLlmBinding,
+        ChannelLlmVersionGuard,
+        LlmBudgetAccount,
+        AuditLog,
+    )
+    from uuid import UUID
+
+    c, client, a, _, transport, _ = admin_http
+    base, room_id = http_open(admin_http)
+    sent = client.post(
+        base + f"/rooms/{room_id}/turns",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "message_key": "late-revoked",
+            "question": "질문",
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert sent.status_code == 202
+    event_id = sent.json()["data"]["event_id"]
+    barrier = Barrier(2)
+    original = type(transport).__call__
+
+    def held_response(self, method, url, payload, headers, timeout):
+        raw = original(self, method, url, payload, headers, timeout)
+        if method == "POST" and url.endswith("/responses"):
+            barrier.wait(timeout=10)
+            barrier.wait(timeout=10)
+        return raw
+
+    monkeypatch.setattr(type(transport), "__call__", held_response)
+
+    def worker():
+        with Session(c.engine, autoflush=False) as db:
+            return bots._process_persistent_llm_events(db, _request(), limit=10)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(worker)
+        barrier.wait(timeout=10)
+        try:
+            revoked = client.post(
+                base + "/revoke",
+                headers=a,
+                json={"version_id": str(c.version_id), "reason": "합성 보안 폐기"},
+            )
+        finally:
+            barrier.wait(timeout=10)
+        future.result(timeout=10)
+    assert revoked.status_code == 200, revoked.text
+    assert client.get(
+        base + f"/rooms/{room_id}/turns/{event_id}", headers=a
+    ).status_code in {403, 409}
+    with Session(c.engine) as db:
+        event = db.get(ChannelQueueEvent, UUID(event_id))
+        binding = db.get(ChannelLlmBinding, event.binding_id)
+        assert (
+            event.provider_response_id == "resp_1"
+            and event.phase == "revoked"
+            and binding.status == "revoked"
+        )
+        assert db.get(ChannelLlmVersionGuard, c.version_id).mutation_status == "revoked"
+        accounts = db.scalars(
+            select(LlmBudgetAccount).where(
+                LlmBudgetAccount.scope_key.contains(str(c.org_id))
+            )
+        ).all()
+        assert accounts and all(
+            row.spent_count == 1 and row.reserved_count == 0 and row.spent_amount > 0
+            for row in accounts
+        )
+        assert (
+            db.scalar(
+                select(AuditLog.id).where(
+                    AuditLog.target_id == c.version_id,
+                    AuditLog.action_type == "persistent.version.revoked",
+                )
+            )
+            is not None
+        )
+        bots._process_persistent_llm_events(db, _request(), limit=10)
+    assert transport.generations == 1
+
+
+def test_readiness_is_server_scoped_and_returns_no_prompt_or_secret(
+    authenticated_http, monkeypatch
+):
+    c, client, a, b, transport, _ = authenticated_http
+    base = f"/api/v1/bots/{c.bot_id}/persistent"
+    response = client.get(base + "/config", headers=a)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["enabled"] is True and data["ready"] is True
+    assert data["profiles"]["pllm-module"]["name"] == "지속대화 샘플"
+    assert (
+        "고정 지침" not in response.text
+        and "test-only-placeholder" not in response.text
+    )
+    assert client.get(base + "/config", headers=b).status_code == 404
+    monkeypatch.setattr(settings, "persistent_llm_execution_enabled", False)
+    data = client.get(base + "/config", headers=a).json()["data"]
+    assert data["enabled"] is True and data["ready"] is False
+    assert transport.generations == 0
+
+
+def test_owned_room_list_restores_history_without_client_identity(authenticated_http):
+    c, client, a, b, transport, _ = authenticated_http
+    base, room = http_open(authenticated_http)
+    result = client.get(base + "/rooms", headers=a)
+    assert result.status_code == 200
+    assert [row["id"] for row in result.json()["data"]["rooms"]] == [room]
+    assert client.get(base + "/rooms", headers=b).status_code == 404
+    assert transport.generations == 0
+
+
+def test_explicit_reconcile_only_reads_known_response_and_never_generates(
+    authenticated_http,
+):
+    c, client, a, b, transport, _ = authenticated_http
+    base, room = http_open(authenticated_http)
+    event, view = http_process(authenticated_http, base, room)
+    calls = transport.generations
+    result = client.post(
+        base + f"/rooms/{room}/turns/{event}/reconcile", headers=a, json={}
+    )
+    assert result.status_code == 200
+    assert result.json()["data"]["phase"] == "pending_delivery"
+    assert (
+        client.post(
+            base + f"/rooms/{room}/turns/{event}/reconcile", headers=b, json={}
+        ).status_code
+        == 404
+    )
+    assert transport.generations == calls
+
+
+def test_force_revoke_keeps_closed_generations_closed_and_denies_old_history(
+    admin_http,
+):
+    from app.models import ChannelLlmBinding
+    from uuid import UUID
+    from sqlalchemy import select
+
+    c, client, a, _, transport, _ = admin_http
+    base, room_id = http_open(admin_http)
+    event, view = http_process(admin_http, base, room_id)
+    if view["message"] is None:
+        with Session(c.engine) as db:
+            row = db.get(ChannelQueueEvent, UUID(event))
+            assert view["message"], (view, row.error_message, transport.generations)
+    http_confirm(admin_http, base, room_id, event, view)
+    reset = client.post(
+        base + f"/rooms/{room_id}/new",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "confirm_reset": True,
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert reset.status_code == 200
+    revoked = client.post(
+        base + "/revoke",
+        headers=a,
+        json={"version_id": str(c.version_id), "reason": "복수 generation 보안 폐기"},
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert (
+        client.get(base + f"/rooms/{room_id}?generation=1", headers=a).status_code
+        == 403
+    )
+    assert (
+        client.get(base + f"/rooms/{room_id}?generation=2", headers=a).status_code
+        == 403
+    )
+    assert client.get(base + "/rooms", headers=a).json()["data"]["rooms"] == []
+    with Session(c.engine) as db:
+        rows = db.scalars(
+            select(ChannelLlmBinding)
+            .where(ChannelLlmBinding.room_id == UUID(room_id))
+            .order_by(ChannelLlmBinding.generation)
+        ).all()
+        assert [row.status for row in rows] == ["closed", "revoked"]
+    assert transport.generations == 1

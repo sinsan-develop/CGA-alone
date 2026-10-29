@@ -2266,3 +2266,69 @@ export async function deleteStudioHub(token: string, hubId: string) {
   clearStudioClientCaches();
   return result;
 }
+
+
+// 지속 대화 샘플: 기본 CGA 단발/NLU 요청과 분리하며 POST를 재시도하지 않는다.
+export type PersistentProfile = {name: string; uses_llm: boolean};
+export type PersistentConfig = {enabled: boolean; ready: boolean; reason: string; profiles: Record<string, PersistentProfile>};
+export type PersistentRoom = {
+  id: string; generation: number; version_id: string; status: string; scenario_ended: boolean;
+  dialog_id: string; profiles: Record<string, PersistentProfile>; current_event_id: string | null;
+  current_message_key: string | null; can_send: boolean;
+};
+export type PersistentTurn = {
+  event_id: string; phase: string; status: string; memory_committed: boolean;
+  message: {id: string; hash: string; text: string} | null;
+};
+export type PersistentTranscript = {room: PersistentRoom; messages: Array<{
+  id: string; sender: "user" | "bot"; text: string; memory_committed: boolean; event_id: string | null; phase: string;
+}>};
+export function persistentRoomStorageKey(userId: string, botId: string) {
+  return `cga.persistent.v1.${encodeURIComponent(userId)}.${encodeURIComponent(botId)}`;
+}
+export function canSendPersistentTurn(room: PersistentRoom | null, turn: PersistentTurn | null, busy: boolean) {
+  return !busy && room?.status === "open" && room.can_send === true && (!turn || turn.phase === "committed");
+}
+export function persistentDisplayReceipt(turn: PersistentTurn | null, element: HTMLElement | null) {
+  if (turn?.phase !== "pending_delivery" || !turn.message || !element ||
+      element.dataset.persistentMessageId !== turn.message.id || element.textContent !== turn.message.text) return null;
+  return {message_id: turn.message.id, content_hash: turn.message.hash};
+}
+export function fetchStudioPersistentConfig(token: string, botId: string, signal?: AbortSignal) {
+  return apiSameOriginRequest<PersistentConfig>(`/api/v1/bots/${botId}/persistent/config`, {signal}, token);
+}
+export function fetchStudioPersistentRooms(token: string, botId: string, signal?: AbortSignal) {
+  return apiSameOriginRequest<{rooms: PersistentRoom[]}>(`/api/v1/bots/${botId}/persistent/rooms`, {signal}, token);
+}
+export function fetchStudioPersistentRoom(token: string, botId: string, roomId: string, generation: number, signal?: AbortSignal) {
+  return apiSameOriginRequest<PersistentTranscript>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}?generation=${generation}`, {signal}, token);
+}
+export function fetchStudioPersistentTurn(token: string, botId: string, roomId: string, eventId: string, signal?: AbortSignal) {
+  return apiSameOriginRequest<PersistentTurn>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}/turns/${eventId}`, {signal}, token);
+}
+export function startStudioPersistentRoom(token: string, botId: string, dialogId: string) {
+  return apiSameOriginRequest<{room: PersistentRoom}>(`/api/v1/bots/${botId}/persistent/rooms`, {method:"POST",body:JSON.stringify({dialog_id:dialogId})}, token);
+}
+export function submitStudioPersistentTurn(token: string, botId: string, roomId: string, payload: {
+  expected_generation: number; message_key: string; question: string; dialog_id: string;
+}) {
+  return apiSameOriginRequest<PersistentTurn>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}/turns`, {method:"POST",body:JSON.stringify(payload)}, token);
+}
+export function ackStudioPersistentTurn(token: string, botId: string, roomId: string, eventId: string, receipt: {message_id:string;content_hash:string}) {
+  return apiSameOriginRequest<PersistentTurn>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}/turns/${eventId}/ack`, {method:"POST",body:JSON.stringify(receipt)}, token);
+}
+export function resetStudioPersistentRoom(token: string, botId: string, roomId: string, generation: number, dialogId: string) {
+  return apiSameOriginRequest<{room: PersistentRoom}>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}/new`, {method:"POST",body:JSON.stringify({expected_generation:generation,confirm_reset:true,dialog_id:dialogId})}, token);
+}
+export function closeStudioPersistentRoom(token: string, botId: string, roomId: string, generation: number) {
+  return apiSameOriginRequest<{room: PersistentRoom}>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}/end`, {method:"POST",body:JSON.stringify({expected_generation:generation})}, token);
+}
+export function manageStudioPersistentTurn(token: string, botId: string, roomId: string, eventId: string, action: "cancel" | "reconcile") {
+  return apiSameOriginRequest<PersistentTurn>(`/api/v1/bots/${botId}/persistent/rooms/${roomId}/turns/${eventId}/${action}`, {method:"POST",body:"{}"}, token);
+}
+
+export function persistentTranscriptNeedsRefresh(snapshot: PersistentTranscript, turn: PersistentTurn | null) {
+  if (turn?.phase !== "committed") return false;
+  const pair = snapshot.messages.filter(message => message.event_id === turn.event_id);
+  return snapshot.room.current_event_id !== turn.event_id || pair.length !== 2 || pair.some(message => !message.memory_committed);
+}
