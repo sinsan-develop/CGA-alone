@@ -80,7 +80,7 @@ from app.services.version_pins import (version_mutation, admit_version_write, ad
 from app.models import ChannelLlmBinding, LlmBudgetAccount, LlmBudgetReservation, AdminLicense
 from app.schemas.persistent_llm import (TurnScope, BudgetQuote, UsageEvidence, PersistentRoomStartRequest,
     PersistentTurnRequest, PersistentAckRequest, PersistentResetRequest, PersistentCloseRequest, PersistentRevokeRequest, PersistentCancelRequest)
-from app.services.persistent_llm import PersistentLlmService, TurnConflict
+from app.services.persistent_llm import PersistentLlmService, TurnConflict, INTERRUPTED_PHASES
 from app.services.openai_conversations import OpenAIConversations, BoundedJsonTransport, payload_hash
 from app.services.llm_budget import BudgetConflict, release_presubmit_budget, hold_unknown_budget
 from app.services.llm_client import LlmChatClient, LlmClientError, resolve_llm_provider_config
@@ -8834,7 +8834,11 @@ def _process_persistent_llm_events(db, request, *, limit=10):
             ChannelQueueEvent.bot_id == target,
             ChannelQueueEvent.operation_kind == "persistent_llm",
             ChannelQueueEvent.deleted_at.is_(None),
-            ChannelQueueEvent.phase.in_(("reserved", "delivery_confirmed")),
+            or_(
+                ChannelQueueEvent.phase.in_(("reserved", "delivery_confirmed")),
+                ChannelQueueEvent.phase.in_(INTERRUPTED_PHASES)
+                & (ChannelQueueEvent.lease_expires_at <= datetime.now(timezone.utc)),
+            ),
         )
         .order_by(ChannelQueueEvent.created_at.asc())
         .limit(limit)
@@ -8848,11 +8852,12 @@ def _process_persistent_llm_events(db, request, *, limit=10):
         scope = _persistent_scope(binding)
         try:
             runtime = _persistent_runtime_service(db, scope, event_id=identifier)
-            result = (
-                runtime.process_turn(db, scope, identifier)
-                if candidate.phase == "reserved"
-                else runtime.sync_turn(db, scope, identifier)
-            )
+            if candidate.phase == "reserved":
+                result = runtime.process_turn(db, scope, identifier)
+            elif candidate.phase == "delivery_confirmed":
+                result = runtime.sync_turn(db, scope, identifier)
+            else:
+                result = runtime.reconcile_turn(db, scope, identifier)
         except Exception:
             db.rollback()
             event = db.get(ChannelQueueEvent, identifier, populate_existing=True)

@@ -33,6 +33,7 @@ from app.core.version_storage import (
     sync_version_dialog_split_tables,
 )
 from app.models import AdminChannel, AdminDefaultMessage, AdminLicense, AdminTemplate, AuditLog, Bot, BotVersion, ChannelMessage, ChannelQueueEvent, ChannelRoom, CommonVariable, EditLock, Group, Organization, Role, SignupRequest, User, UserRole, VersionDialogAsset, VersionDialogFlowGraph
+from app.services.version_pins import lock_registered_projection
 from app.services.license_policy import assert_license_allows_creation, get_license_usage_counts, get_license_warnings
 from app.services.nlu.deep_learning_lite import get_ml_acceleration_status
 from app.services.scenario_validation import scenario_validation_from_version
@@ -3700,14 +3701,16 @@ def backfill_version_storage(
     expected_dialog_rows = 0
     expected_graph_rows = 0
     for version, bot in version_pairs:
-        dialog_rows = build_version_dialog_asset_rows(version.version_json)
-        graph_rows = build_version_dialog_flow_graph_rows(version.version_json)
-        expected_dialog_rows += len(dialog_rows)
-        expected_graph_rows += len(graph_rows)
-        if payload.dry_run:
-            processed_versions += 1
-            continue
         try:
+            if not payload.dry_run:
+                version = lock_registered_projection(db, version)
+            dialog_rows = build_version_dialog_asset_rows(version.version_json)
+            graph_rows = build_version_dialog_flow_graph_rows(version.version_json)
+            expected_dialog_rows += len(dialog_rows)
+            expected_graph_rows += len(graph_rows)
+            if payload.dry_run:
+                processed_versions += 1
+                continue
             sync_version_dialog_split_tables(
                 db,
                 bot,
@@ -3778,6 +3781,7 @@ def backfill_version_read_snapshots(
             processed_versions += 1
             continue
         try:
+            version = lock_registered_projection(db, version)
             _assign_version_read_snapshot(version, version.version_json)
             db.flush()
             db.commit()

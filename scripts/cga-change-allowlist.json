@@ -62,7 +62,7 @@
   {
     "path": "apps/api/app/api/routes/bots.py",
     "stage": "S02/P01/P03",
-    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결; P03 열린 지속 방의 자동 운영버전 종료 제외; P03 실제JWT room/turn/ACK·고정버전 text Talk/End·예산계층·전용worker와 새샘플버전 사전guard"
+    "reason": "S02 한 봇·소유 격리·허브 원문 비노출 및 승인 P01 샘플 버전 mutation/worker fence·닫힌 기록 보존 최소 연결; P03 열린 지속 방의 자동 운영버전 종료 제외; P03 실제JWT room/turn/ACK·고정버전 text Talk/End·예산계층·전용worker와 새샘플버전 사전guard; P04 기존 worker에 만료 persistent operation의 결과확인 연결; 일반채널/살아있는 lease 보존"
   },
   {
     "path": "apps/api/app/api/routes/hubs.py",
@@ -167,7 +167,7 @@
   {
     "path": "apps/api/app/services/version_pins.py",
     "stage": "P01",
-    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증"
+    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; P04 등록샘플 파생projection 최신재조회 장벽, pin/권한/일반버전불변"
   },
   {
     "path": "apps/api/app/services/llm_budget.py",
@@ -187,17 +187,17 @@
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_pins.py",
     "stage": "P01",
-    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증"
+    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; P04 마지막참조close와새open·mutation의실제PGbarrier 경합검증"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_budget.py",
     "stage": "P01",
-    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증"
+    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; P04 별도OS process 전역/조직마지막한도·중복·unknown보존 검증"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_knowledge.py",
     "stage": "P01",
-    "reason": "승인된 실제 복제·로컬 worker 재학습의 원본 문서/모델/지침 불변 및 미검증 공유 RAG 실패 닫힘 검증"
+    "reason": "승인된 실제 복제·로컬 worker 재학습의 원본 문서/모델/지침 불변 및 미검증 공유 RAG 실패 닫힘 검증; P04 복제후검색결과/버전캐시범위정리/새OSprocess 재조회불변 검증"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_migration.py",
@@ -217,12 +217,12 @@
   {
     "path": "apps/api/app/services/persistent_llm.py",
     "stage": "P02/P02/P03",
-    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증; 기존 room/message/queue의 표출 확정·복구와 P03 인증검사 hook/닫힌 세대 조회/고정Q&A 무생성 canonical 연결"
+    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증; 기존 room/message/queue의 표출 확정·복구와 P03 인증검사 hook/닫힌 세대 조회/고정Q&A 무생성 canonical 연결; P04 승인 실제프로세스장애 검증의 기존 lease deadline·fence/unknown 복구 최소보완; TTL 예산반환/unpin/모델재POST 금지"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_recovery.py",
     "stage": "P02",
-    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증"
+    "reason": "승인된 기존 방/메시지/큐의 표출 ACK·canonical 확정·PG/provider 결과불명 복구 및 무재생성 검증; P04 실제 QA 자식process 종료/재시작·파일지속전송대역·단계별 비용/표출/메모리/중복불가 검증"
   },
   {
     "path": "apps/api/app/api/routes/channels.py",
@@ -232,7 +232,7 @@
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
     "stage": "P03",
-    "reason": "승인된 P03 실제PG 보호방/인증 범위·legacy worker/버전전환 경계 검증"
+    "reason": "승인된 P03 실제PG 보호방/인증 범위·legacy worker/버전전환 경계 검증; P04 실제 JWT/PG worker의 만료/활성 lease·unknown 예산/pin 보존 회귀"
   },
   {
     "path": "apps/api/app/core/config.py",
@@ -263,5 +263,15 @@
     "path": "apps/web/lib/api.ts",
     "stage": "P03",
     "reason": "독립검토 확정미접수422 입력잠금 보완: 기존 same-origin Error 메시지/인증처리/재시도는 유지하고 HTTP status만 내부 오류 metadata에 보존"
+  },
+  {
+    "path": "apps/api/app/api/routes/admin.py",
+    "stage": "P04",
+    "reason": "승인된 P04 버전지식불변: 실제경합 RED2로 재현한 등록샘플 Admin backfill stale 파생자료 덮어쓰기만 버전장벽/최신재조회로보완; 기존Admin권한/응답/일반버전유지"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/persistent_llm_qa_server.py",
+    "stage": "P04",
+    "reason": "승인된 P04 정식WSL 대역화면/실API재시작검증용 테스트전용실행기: 기존app/JWT·전용QA만·서비스DB/admin role거부·파일영속대역/소유범위정리; 일반startup/Compose/실Provider 불변"
   }
 ]

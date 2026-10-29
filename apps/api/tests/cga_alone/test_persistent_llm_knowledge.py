@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import Bot, BotVersion, User, ChannelQueueEvent
 from app.api.routes import bots
 from app.core.config import settings
-from app.schemas.bot import VersionUpdateRequest
+from app.schemas.bot import VersionUpdateRequest, LlmIntentTestRequest
 from app.services.version_pins import PinConflict, open_pinned_dialog
 from tests.integration.test_bot_persistence_regression import _request
 
@@ -79,6 +79,15 @@ def test_copy_retrain_preserves_source_document_model_and_instructions(
             tmp_path / str(c.bot_id) / str(c.version_id) / "deep_learning_lite.json"
         )
         model_before = sha256(source_path.read_bytes()).hexdigest()
+        prediction_before = bots.test_version_ml_intent(
+            c.bot_id,
+            c.version_id,
+            LlmIntentTestRequest(utterance="원본 지식 질문0"),
+            _request(),
+            user,
+            db,
+        )["data"]["candidates"]
+        assert prediction_before and prediction_before[0]["intent_id"] == "source-0"
         binding = open_pinned_dialog(db, c.scope, {"instructions": "원본 고정 지침"})
         db.commit()
         copied = bots.copy_version(c.bot_id, c.version_id, _request(), user, db)["data"]
@@ -114,6 +123,44 @@ def test_copy_retrain_preserves_source_document_model_and_instructions(
         ).exists()
         assert binding.snapshot_json["instructions"] == "원본 고정 지침"
 
+        bots._purge_version_cache(
+            source
+        )  # 합성 버전 UUID 범위만, global Redis flush 금지.
+        db.expire_all()
+        prediction_after = bots.test_version_ml_intent(
+            c.bot_id,
+            c.version_id,
+            LlmIntentTestRequest(utterance="원본 지식 질문0"),
+            _request(),
+            db.get(User, c.user_id),
+            db,
+        )["data"]["candidates"]
+        assert prediction_after == prediction_before
+        # 새 OS process/새 DB session으로 모델을 다시 읽어 process cache 재사용도 배제한다.
+        import os, subprocess, sys
+        from pathlib import Path
+
+        env = os.environ.copy()
+        env["NLU_MODEL_STORAGE_PATH"] = str(tmp_path)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                COLD_KNOWLEDGE_WORKER,
+                str(c.bot_id),
+                str(c.version_id),
+                str(c.user_id),
+            ],
+            cwd=Path(__file__).parents[2],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=25,
+        )
+        assert result.returncode == 0, result.stderr[-1500:]
+        assert json.loads(result.stdout.splitlines()[-1]) == prediction_before
+
 
 @pytest.mark.parametrize(
     "nlu_type", ["semantic", "semantic_external", "semantic_vector"]
@@ -134,3 +181,23 @@ def test_unproven_semantic_nlu_cannot_bypass_server_profile(
         db.commit()
         with pytest.raises(PinConflict):
             open_pinned_dialog(db, c.scope, hint)
+
+
+COLD_KNOWLEDGE_WORKER = r"""
+import os,sys,json
+from uuid import UUID
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from app.api.routes import bots
+from app.models import User
+from app.schemas.bot import LlmIntentTestRequest
+from tests.integration.test_bot_persistence_regression import _request
+url=os.environ['AIDOT_TEST_DATABASE_URL'];assert url.rsplit('/',1)[-1]=='cga_alone_qa'
+engine=create_engine(url,pool_pre_ping=True)
+from app.core.config import settings
+assert (settings.nlu_model_storage_dir/sys.argv[1]/sys.argv[2]/'deep_learning_lite.json').is_file(), 'QA 모델 경로 설정이 필요합니다'
+with Session(engine) as db:
+    result=bots.test_version_ml_intent(UUID(sys.argv[1]),UUID(sys.argv[2]),LlmIntentTestRequest(utterance='원본 지식 질문0'),_request(),db.get(User,UUID(sys.argv[3])),db)
+    print(json.dumps(result['data']['candidates'],ensure_ascii=False))
+engine.dispose()
+"""

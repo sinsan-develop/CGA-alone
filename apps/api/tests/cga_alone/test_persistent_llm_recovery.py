@@ -608,3 +608,716 @@ def test_cancel_cannot_erase_ambiguous_memory_append(protocol, mode):
             with pytest.raises(PinConflict):
                 close_pinned_dialog(db, binding_id)
         assert t.appends == 1 and t.generations == 1
+
+
+# 실제 자식 프로세스를 종료한다. 전송 대역의 원격 상태는 파일로 살아남는다.
+PROCESS_WORKER = r"""
+import json,os,sys
+from pathlib import Path
+from uuid import UUID
+from sqlalchemy import create_engine,select
+from sqlalchemy.orm import Session
+from app.schemas.persistent_llm import TurnScope,UsageEvidence
+from app.models import ChannelQueueEvent,LlmBudgetReservation
+from app.services.openai_conversations import OpenAIConversations
+from app.services.persistent_llm import PersistentLlmService
+import app.services.persistent_llm as module
+from tests.cga_alone.test_persistent_llm_recovery import MemoryTransport
+from tests.cga_alone.test_persistent_llm_provider import CONFIG
+scope_json,event_key,state_file,operation,crash=sys.argv[1:]
+print(json.dumps({'worker_pid':os.getpid(),'operation':operation,'crash':crash}),flush=True)
+scope_json=json.loads(scope_json)
+scope=TurnScope(**{key:(value if key in {'principal_key','generation'} else UUID(value)) for key,value in scope_json.items()})
+url=os.environ['AIDOT_TEST_DATABASE_URL']
+assert url.rsplit('/',1)[-1]=='cga_alone_qa'
+engine=create_engine(url,pool_pre_ping=True)
+state_path=Path(state_file)
+class DurableTransport(MemoryTransport):
+    def __init__(self):
+        super().__init__()
+        if state_path.exists():
+            saved=json.loads(state_path.read_text(encoding='utf-8'))
+            for key in ['items','calls','generations','appends']:
+                setattr(self,key,saved[key])
+    def __call__(self,method,url,payload,headers,timeout):
+        with state_path.with_suffix('.requests').open('a',encoding='utf-8') as journal:
+            journal.write(json.dumps({'method':method,'url':url})+'\n')
+        if crash=='partial_append': self.append_mode='partial'
+        raw=super().__call__(method,url,payload,headers,timeout)
+        state_path.write_text(json.dumps({key:getattr(self,key) for key in ['items','calls','generations','appends']},ensure_ascii=False),encoding='utf-8')
+        if crash=='remote_completed' and method=='POST' and url.endswith('/responses'):os._exit(77)
+        if crash in {'partial_append','full_append'} and method=='POST' and url.endswith('/items'):os._exit(77)
+        return raw
+class Service(PersistentLlmService):
+    def _persist_response(self,*args):
+        result=super()._persist_response(*args)
+        if crash=='response_id':os._exit(77)
+        return result
+if operation=='raced_process':
+    import time
+    (state_path.parent/('worker-ready-'+str(os.getpid()))).touch()
+    stop=time.monotonic()+10
+    while len(list(state_path.parent.glob('worker-ready-*')))<2:
+        if time.monotonic()>stop:raise RuntimeError('QA process barrier timeout')
+        time.sleep(.01)
+    operation='process'
+transport=DurableTransport()
+service=Service(OpenAIConversations(CONFIG,transport=transport),usage_evaluator=lambda raw:UsageEvidence(10,'USD','test-v1',raw['id']))
+if crash=='before_submit':module.mark_turn_submitted=lambda *args:os._exit(77)
+with Session(engine,autoflush=False) as db:
+    original_commit=db.commit
+    def commit():
+        event=db.get(ChannelQueueEvent,UUID(event_key))
+        phase=event.phase if event else None
+        settled=False
+        if crash=='usage_committed' and phase=='generated':
+            rows=db.scalars(select(LlmBudgetReservation).where(LlmBudgetReservation.event_id==event.id)).all()
+            settled=bool(rows) and all(row.state=='settled' for row in rows)
+        original_commit()
+        if (crash=='after_submit' and phase=='submitted') or (crash=='usage_committed' and settled) or (crash=='display_committed' and phase=='pending_delivery') or (crash=='ack_committed' and phase=='delivery_confirmed') or (crash=='canonical_committed' and phase=='committed'):
+            os._exit(77)
+    db.commit=commit
+    if operation=='process':result=service.process_turn(db,scope,event_key)
+    elif operation=='recover':
+        service.process_turn(db,scope,event_key)
+        result=service.reconcile_turn(db,scope,event_key)
+    elif operation=='ack':
+        view=service.view_turn(db,scope,event_key)
+        result=service.ack_display(db,scope,event_key,message_id=view['message']['id'],content_hash=view['message']['hash'])
+    elif operation=='sync':result=service.sync_turn(db,scope,event_key)
+    elif operation=='confirm':
+        view=service.view_turn(db,scope,event_key)
+        service.ack_display(db,scope,event_key,message_id=view['message']['id'],content_hash=view['message']['hash'])
+        result=service.sync_turn(db,scope,event_key)
+    else:raise AssertionError('unknown test operation')
+    print(json.dumps(result,ensure_ascii=False))
+engine.dispose()
+"""
+
+
+def process_worker(c, event_id, state_path, operation, crash="", expected=0):
+    """종료 대상은 이번 테스트가 생성한 자식 한 개뿐이다. 인증정보는 argv/로그에 넣지 않는다."""
+    from dataclasses import asdict
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            PROCESS_WORKER,
+            json.dumps(asdict(c.scope), default=str),
+            str(event_id),
+            str(state_path),
+            operation,
+            crash,
+        ],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=25,
+    )
+    with state_path.with_suffix(".workers").open("a", encoding="utf-8") as receipt:
+        receipt.write(
+            json.dumps(
+                {
+                    "returncode": result.returncode,
+                    "operation": operation,
+                    "crash": crash,
+                    "worker": (
+                        json.loads(result.stdout.splitlines()[0])
+                        if result.stdout
+                        else None
+                    ),
+                }
+            )
+            + "\n"
+        )
+    assert result.returncode == expected, result.stderr[-1800:]
+    return json.loads(result.stdout.splitlines()[-1]) if expected == 0 else None
+
+
+@pytest.mark.parametrize(
+    "crash,expected_generations",
+    [("before_submit", 0), ("after_submit", 0), ("remote_completed", 1)],
+)
+def test_real_process_restart_marks_expired_unknown_without_reposting(
+    protocol, tmp_path, crash, expected_generations
+):
+    from datetime import datetime, timedelta, timezone
+
+    c, _, service, _, account_id = protocol
+    state = tmp_path / "remote-state.json"
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+    process_worker(c, event, state, "process", crash, expected=77)
+    with Session(c.engine) as db:
+        row = db.get(ChannelQueueEvent, UUID(event))
+        assert (
+            row.lease_expires_at is not None
+        ), "중단된 실행을 판정할 영속 deadline이 필요합니다"
+        row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.commit()
+    restored = process_worker(c, event, state, "recover")
+    assert restored["phase"] == "unknown" and restored["message"] is None
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["generations"] == expected_generations
+    with Session(c.engine) as db:
+        account = db.get(LlmBudgetAccount, account_id)
+        assert (
+            account.reserved_count == 1
+            and account.reserved_amount == 20
+            and account.spent_count == 0
+        )
+        with pytest.raises(TurnConflict):
+            admit(protocol, db, "next-blocked")
+        db.rollback()
+        rows = db.scalars(
+            select(LlmBudgetReservation).where(
+                LlmBudgetReservation.event_id == UUID(event)
+            )
+        ).all()
+        assert all(
+            row.state == ("reserved" if crash == "before_submit" else "unknown")
+            for row in rows
+        )
+    preserve_process_evidence(c, event, state, crash)
+
+
+@pytest.mark.parametrize(
+    "crash", ["response_id", "usage_committed", "display_committed"]
+)
+def test_real_process_recovers_saved_response_without_generation_or_duplicate_display(
+    protocol, tmp_path, crash
+):
+    c, _, _, _, account_id = protocol
+    state = tmp_path / "remote-state.json"
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+    process_worker(c, event, state, "process", crash, expected=77)
+    with Session(c.engine) as db:
+        original = (db.get(ChannelQueueEvent, UUID(event)).result_json or {}).get(
+            "display"
+        )
+    recovered = process_worker(c, event, state, "recover")
+    assert recovered["phase"] == "pending_delivery"
+    if original:
+        assert recovered["message"] == original
+    confirmed = process_worker(c, event, state, "confirm")
+    assert (
+        confirmed["phase"] == "committed"
+        and confirmed["message"]["id"] == recovered["message"]["id"]
+    )
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert (
+        saved["generations"] == 1 and saved["appends"] == 1 and len(saved["items"]) == 2
+    )
+    assert "당회 비공개 검색자료" not in json.dumps(saved["items"], ensure_ascii=False)
+    with Session(c.engine) as db:
+        account = db.get(LlmBudgetAccount, account_id)
+        assert (
+            account.spent_count == 1
+            and account.spent_amount == 10
+            and account.reserved_count == 0
+        )
+        messages = db.scalars(
+            select(ChannelMessage).where(
+                ChannelMessage.room_id == c.room_id,
+                ChannelMessage.participant_kind == "bot",
+            )
+        ).all()
+        assert (
+            len(messages) == 1
+            and (messages[0].payload_json or {})["persistent_llm"]["canonical"] is True
+        )
+    preserve_process_evidence(c, event, state, crash)
+
+
+@pytest.mark.parametrize(
+    "crash", ["ack_committed", "partial_append", "full_append", "canonical_committed"]
+)
+def test_real_process_ack_and_append_crashes_never_repeat_remote_writes(
+    protocol, tmp_path, crash
+):
+    c, _, service, binding_id, account_id = protocol
+    state = tmp_path / "remote-state.json"
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+    first = process_worker(c, event, state, "process")
+    process_worker(
+        c,
+        event,
+        state,
+        "ack",
+        crash if crash == "ack_committed" else "",
+        expected=77 if crash == "ack_committed" else 0,
+    )
+    if crash != "ack_committed":
+        process_worker(c, event, state, "sync", crash, expected=77)
+    recovered = process_worker(c, event, state, "recover")
+    assert recovered["message"]["id"] == first["message"]["id"]
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["generations"] == 1 and saved["appends"] == 1
+    expected = "needs_reconcile" if crash == "partial_append" else "committed"
+    assert recovered["phase"] == expected
+    with Session(c.engine) as db:
+        account = db.get(LlmBudgetAccount, account_id)
+        assert account.spent_count == 1 and account.reserved_count == 0
+        binding = db.get(ChannelLlmBinding, binding_id)
+        assert binding.status == "open" and binding.committed_turn_count == (
+            0 if crash == "partial_append" else 1
+        )
+        if crash == "partial_append":
+            with pytest.raises(TurnConflict):
+                admit(protocol, db, "next-after-partial")
+    preserve_process_evidence(c, event, state, crash)
+
+
+def test_two_real_workers_claim_one_event_with_one_generation(protocol, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    c, _, _, _, account_id = protocol
+    state = tmp_path / "remote-state.json"
+    with Session(c.engine) as db:
+        event = admit(protocol, db)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda _: process_worker(c, event, state, "raced_process"), range(2)
+            )
+        )
+    assert any(result["phase"] == "pending_delivery" for result in results)
+    calls = [
+        json.loads(line)
+        for line in state.with_suffix(".requests")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert (
+        len(
+            [
+                row
+                for row in calls
+                if row["method"] == "POST" and row["url"].endswith("/responses")
+            ]
+        )
+        == 1
+    )
+    with Session(c.engine) as db:
+        account = db.get(LlmBudgetAccount, account_id)
+        assert account.spent_count == 1 and account.reserved_count == 0
+        assert db.get(ChannelQueueEvent, UUID(event)).phase == "pending_delivery"
+    preserve_process_evidence(c, event, state, "two-workers")
+
+
+@pytest.mark.parametrize(
+    "database,role,same",
+    [
+        ("cga_alone", "cga_alone", False),
+        ("other_qa", "cga_alone", False),
+        ("cga_alone_qa", "postgres", False),
+        ("cga_alone_qa", "cga_alone", True),
+    ],
+)
+def test_qa_server_refuses_service_database_or_privileged_role(database, role, same):
+    from sqlalchemy.engine import URL
+    from tests.cga_alone.persistent_llm_qa_server import validate_qa_url
+
+    candidate = URL.create(
+        "postgresql+psycopg",
+        username=role,
+        password="test-only",
+        host="db",
+        database=database,
+    ).render_as_string(hide_password=False)
+    production = (
+        candidate
+        if same
+        else URL.create(
+            "postgresql+psycopg", username="cga_alone", host="db", database="cga_alone"
+        ).render_as_string(hide_password=False)
+    )
+    with pytest.raises(ValueError):
+        validate_qa_url(candidate, production)
+
+
+def test_qa_server_restores_same_identity_and_file_provider_then_cleans(
+    test_engine, migrated_test_database, tmp_path
+):
+    from tests.cga_alone.persistent_llm_qa_server import (
+        _seed,
+        _context,
+        _configure,
+        _cleanup,
+    )
+    from app.main import app
+    from app.api.routes import bots
+    from fastapi.testclient import TestClient
+    from tests.integration.test_bot_persistence_regression import _request
+    from app.models import User
+    from app.core.config import ROOT_DIR
+
+    private = tmp_path / "owner-private.json"
+    remote = tmp_path / "provider-state.json"
+    c, packet, generators = _seed(test_engine, private)
+    try:
+        _configure(c, packet, remote)
+        with TestClient(app) as client:
+            login = client.post(
+                "/api/v1/auth/login",
+                json={"login_id": packet["login_id"], "password": packet["password"]},
+            )
+            assert login.status_code == 200
+            headers = {
+                "Authorization": "Bearer " + login.json()["data"]["access_token"]
+            }
+            base = f"/api/v1/bots/{c.bot_id}/persistent"
+            started = client.post(
+                base + "/rooms", headers=headers, json={"dialog_id": "pllm-module"}
+            )
+            assert started.status_code == 200
+            room = started.json()["data"]["room"]["id"]
+            for index in range(2):
+                if index:
+                    c = _context(
+                        test_engine, json.loads(private.read_text(encoding="utf-8"))
+                    )
+                    _configure(c, packet, remote)
+                sent = client.post(
+                    base + f"/rooms/{room}/turns",
+                    headers=headers,
+                    json={
+                        "expected_generation": 1,
+                        "message_key": f"qa-server-{index}",
+                        "question": f"영속 대역 질문{index}",
+                        "dialog_id": "pllm-module",
+                    },
+                )
+                assert sent.status_code == 202
+                event = sent.json()["data"]["event_id"]
+                with Session(test_engine) as db:
+                    bots._process_persistent_llm_events(db, _request(), limit=10)
+                view = client.get(
+                    base + f"/rooms/{room}/turns/{event}", headers=headers
+                ).json()["data"]
+                assert view["phase"] == "pending_delivery"
+                ack = client.post(
+                    base + f"/rooms/{room}/turns/{event}/ack",
+                    headers=headers,
+                    json={
+                        "message_id": view["message"]["id"],
+                        "content_hash": view["message"]["hash"],
+                    },
+                )
+                assert ack.status_code == 202
+                with Session(test_engine) as db:
+                    bots._process_persistent_llm_events(db, _request(), limit=10)
+            state = json.loads(remote.read_text(encoding="utf-8"))
+            inputs = [
+                row[2]["input"]
+                for row in state["calls"]
+                if row[0] == "POST" and row[1].endswith("/responses")
+            ]
+            assert [len(body) for body in inputs] == [1, 3] and state[
+                "generations"
+            ] == 2
+            with Session(test_engine) as db:
+                binding = db.scalar(
+                    select(ChannelLlmBinding).where(
+                        ChannelLlmBinding.room_id == UUID(room)
+                    )
+                )
+                assert (
+                    binding.committed_turn_count == 2
+                    and binding.provider_conversation_id in state["conversations"]
+                )
+        _cleanup(c, packet)
+        with Session(test_engine) as db:
+            assert db.get(User, c.user_id) is None
+        assert not (
+            ROOT_DIR / ".local/pllm-fixture-owners" / (str(c.org_id) + ".json")
+        ).exists()
+    finally:
+        context_generator, http_generator, patch = generators
+        for generator in (http_generator, context_generator):
+            try:
+                next(generator)
+            except StopIteration:
+                pass
+        patch.undo()
+
+
+def test_qa_server_cleanup_refuses_mismatched_group_receipt(persistent_context):
+    from tests.cga_alone.persistent_llm_qa_server import _assert_owned
+    from types import SimpleNamespace
+
+    c = persistent_context
+    wrong = SimpleNamespace(**{**vars(c), "group_id": uuid4()})
+    with Session(c.engine) as db:
+        with pytest.raises(ValueError):
+            _assert_owned(db, wrong)
+
+
+def preserve_process_evidence(c, event_id, state_path, label, extra=None):
+    from pathlib import Path
+    from dataclasses import asdict
+    from app.models import ChannelLlmVersionGuard
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    with Session(c.engine) as db:
+        event = db.get(ChannelQueueEvent, UUID(str(event_id)))
+        binding = db.get(ChannelLlmBinding, event.binding_id)
+        guard = db.get(ChannelLlmVersionGuard, binding.version_id)
+        receipt = {
+            "scope": asdict(c.scope),
+            "event_id": str(event.id),
+            "phase": event.phase,
+            "fence": event.lease_fence,
+            "binding_status": binding.status,
+            "provider_conversation_id": binding.provider_conversation_id,
+            "committed_turn_count": binding.committed_turn_count,
+            "mutation_status": guard.mutation_status,
+            "transport": "file-persistent synthetic only",
+            "actual_openai_calls": 0,
+            "remote": state,
+            "extra": extra,
+        }
+    worker_path = state_path.with_suffix(".workers")
+    receipt["workers"] = (
+        [
+            json.loads(line)
+            for line in worker_path.read_text(encoding="utf-8").splitlines()
+        ]
+        if worker_path.exists()
+        else []
+    )
+    root = Path(__file__).parents[4] / ".local/pllm-p04-process-evidence"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / (label + "-" + str(event_id) + ".json")).write_text(
+        json.dumps(receipt, default=str, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def test_native_qa_api_restart_preserves_user_bot_room_and_provider_history(
+    test_engine, migrated_test_database, tmp_path
+):
+    import os, socket, subprocess, sys, time
+    from pathlib import Path
+    from urllib.request import build_opener, ProxyHandler, Request
+    from tests.cga_alone.persistent_llm_qa_server import _context
+
+    host = "127.0.0.2"
+    port = 8320
+    with socket.socket() as probe:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        probe.bind((host, port))
+    env = {**os.environ, "CGA_PERSISTENT_QA": "1"}
+    private = tmp_path / "owner-private.json"
+    state = tmp_path / "provider-state.json"
+    process = None
+    logs = []
+    pids = []
+    opener = build_opener(ProxyHandler({}))
+
+    def http(path, body=None, token=None):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        request = Request(
+            f"http://{host}:{port}" + path,
+            data=json.dumps(body).encode() if body is not None else None,
+            headers=headers,
+        )
+        with opener.open(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    def start(mode):
+        nonlocal process
+        log = (tmp_path / (mode + ".log")).open("w", encoding="utf-8")
+        logs.append(log)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "tests.cga_alone.persistent_llm_qa_server",
+                mode,
+                "--state-dir",
+                str(tmp_path),
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--keep-on-stop",
+            ],
+            cwd=Path(__file__).parents[2],
+            env=env,
+            stdout=log,
+            stderr=log,
+        )
+        pids.append(process.pid)
+        limit = time.monotonic() + 25
+        while time.monotonic() < limit:
+            assert process.poll() is None, "QA API가 준비 전에 종료됐습니다"
+            try:
+                http("/health/ready")
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("QA API 준비 시간 초과")
+
+    def stop():
+        nonlocal process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        process = None
+
+    def wait_turn(base, event, token, phase):
+        limit = time.monotonic() + 20
+        while time.monotonic() < limit:
+            view = http(base + "/turns/" + event, token=token)["data"]
+            if view["phase"] == phase:
+                return view
+            time.sleep(0.1)
+        raise AssertionError("실제 QA worker 상태 전이 시간 초과")
+
+    try:
+        start("seed")
+        packet = json.loads(private.read_text(encoding="utf-8"))
+        token = http(
+            "/api/v1/auth/login",
+            {"login_id": packet["login_id"], "password": packet["password"]},
+        )["data"]["access_token"]
+        base = "/api/v1/bots/" + packet["owner"]["bot_id"] + "/persistent/rooms"
+        room = http(base, {"dialog_id": "pllm-module"}, token)["data"]["room"]["id"]
+        base += "/" + room
+        conversation = None
+        for index in range(2):
+            if index:
+                stop()
+                start("resume")
+                token = http(
+                    "/api/v1/auth/login",
+                    {"login_id": packet["login_id"], "password": packet["password"]},
+                )["data"]["access_token"]
+                restored = http(base, token=token)["data"]
+                assert (
+                    restored["room"]["id"] == room
+                    and restored["room"]["generation"] == 1
+                    and len(restored["messages"]) == 2
+                )
+            event = http(
+                base + "/turns",
+                {
+                    "expected_generation": 1,
+                    "message_key": f"native-{index}",
+                    "question": f"실제 API 재시작 질문{index}",
+                    "dialog_id": "pllm-module",
+                },
+                token,
+            )["data"]["event_id"]
+            pending = wait_turn(base, event, token, "pending_delivery")
+            http(
+                base + "/turns/" + event + "/ack",
+                {
+                    "message_id": pending["message"]["id"],
+                    "content_hash": pending["message"]["hash"],
+                },
+                token,
+            )
+            wait_turn(base, event, token, "committed")
+            with Session(test_engine) as db:
+                binding = db.scalar(
+                    select(ChannelLlmBinding).where(
+                        ChannelLlmBinding.room_id == UUID(room)
+                    )
+                )
+                if conversation:
+                    assert binding.provider_conversation_id == conversation
+                conversation = binding.provider_conversation_id
+        remote = json.loads(state.read_text(encoding="utf-8"))
+        inputs = [
+            row[2]["input"]
+            for row in remote["calls"]
+            if row[0] == "POST" and row[1].endswith("/responses")
+        ]
+        assert (
+            remote["generations"] == 2
+            and [len(body) for body in inputs] == [1, 3]
+            and pids[0] != pids[1]
+        )
+        preserve_process_evidence(
+            _context(test_engine, packet),
+            event,
+            state,
+            "native-api-restart",
+            {"api_pids": pids, "same_room": room, "input_counts": [1, 3]},
+        )
+    finally:
+        stop()
+        for log in logs:
+            log.close()
+        if private.exists():
+            clean = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "tests.cga_alone.persistent_llm_qa_server",
+                    "cleanup",
+                    "--state-dir",
+                    str(tmp_path),
+                ],
+                cwd=Path(__file__).parents[2],
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=25,
+            )
+            assert clean.returncode == 0, clean.stderr[-1500:]
+
+
+def test_qa_server_preserve_mode_never_reports_failed_start_as_success(
+    test_engine, migrated_test_database, tmp_path, monkeypatch
+):
+    import sys, uvicorn
+    from tests.cga_alone import persistent_llm_qa_server as qa
+
+    c, packet, generators = qa._seed(test_engine, tmp_path / "owner-private.json")
+
+    class RecordedExit(BaseException):
+        def __init__(self, code):
+            self.code = code
+
+    def exit_now(code):
+        raise RecordedExit(code)
+
+    def failed_start(*args, **kwargs):
+        raise RuntimeError("synthetic startup failure")
+
+    monkeypatch.setenv("CGA_PERSISTENT_QA", "1")
+    monkeypatch.setattr(
+        sys, "argv", ["qa", "resume", "--state-dir", str(tmp_path), "--keep-on-stop"]
+    )
+    monkeypatch.setattr(qa, "create_engine", lambda *args, **kwargs: test_engine)
+    monkeypatch.setattr(qa.os, "_exit", exit_now)
+    monkeypatch.setattr(uvicorn, "run", failed_start)
+    try:
+        with pytest.raises(RecordedExit) as result:
+            qa.main()
+        assert result.value.code != 0
+    finally:
+        context_generator, http_generator, patch = generators
+        for generator in (http_generator, context_generator):
+            try:
+                next(generator)
+            except StopIteration:
+                pass
+        patch.undo()

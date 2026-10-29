@@ -257,3 +257,102 @@ def test_reserved_but_unsubmitted_turn_rechecks_account_safety(
         # 호출 전 실패가 입증된 이 예약만 환급할 수 있고 이미 제출한 요청은 건드리지 않는다.
         release_presubmit_budget(db, events[1])
         db.commit()
+
+
+BUDGET_PROCESS_WORKER = r"""
+import os,sys,json,time
+from pathlib import Path
+from uuid import UUID
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from app.schemas.persistent_llm import BudgetQuote
+from app.services.llm_budget import reserve_turn_budget,BudgetConflict
+identifier,quote_json,barrier=sys.argv[1:]
+print(json.dumps({'worker_pid':os.getpid()}),flush=True)
+url=os.environ['AIDOT_TEST_DATABASE_URL'];assert url.rsplit('/',1)[-1]=='cga_alone_qa'
+engine=create_engine(url,pool_pre_ping=True)
+values=json.loads(quote_json);values['account_ids']=tuple(UUID(x) for x in values['account_ids']);quote=BudgetQuote(**values)
+barrier=Path(barrier);barrier.mkdir(exist_ok=True)
+(barrier/str(os.getpid())).touch();stop=time.monotonic()+10
+while len(list(barrier.iterdir()))<2:
+    if time.monotonic()>stop:raise RuntimeError('QA process barrier timeout')
+    time.sleep(.01)
+with Session(engine) as db:
+    try:
+        reserve_turn_budget(db,UUID(identifier),quote);db.commit();print('allowed')
+    except BudgetConflict:
+        db.rollback();print('blocked')
+engine.dispose()
+"""
+
+
+def budget_process(event_id, quote, barrier):
+    from dataclasses import asdict
+    import json, subprocess, sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            BUDGET_PROCESS_WORKER,
+            str(event_id),
+            json.dumps(asdict(quote), default=str),
+            str(barrier),
+        ],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=25,
+    )
+    assert result.returncode == 0, result.stderr[-1500:]
+    receipt = {
+        "event_id": str(event_id),
+        "quote": asdict(quote),
+        "worker": json.loads(result.stdout.splitlines()[0]),
+        "status": result.stdout.splitlines()[-1],
+        "actual_openai_calls": 0,
+    }
+    directory = Path(__file__).parents[4] / ".local/pllm-p04-budget-evidence"
+    directory.mkdir(parents=True, exist_ok=True)
+    (
+        directory
+        / (str(event_id) + "-" + str(receipt["worker"]["worker_pid"]) + ".json")
+    ).write_text(json.dumps(receipt, default=str, indent=2), encoding="utf-8")
+    return result.stdout.splitlines()[-1]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_real_process_global_and_org_last_budget_is_atomic(
+    persistent_context, tmp_path, duplicate
+):
+    c = persistent_context
+    ids, events, quote = setup(c, amount=30, count=1, scopes=2)
+    selected = [events[0], events[0]] if duplicate else events
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda event: budget_process(event, quote, tmp_path), selected)
+        )
+    assert sorted(results) == (
+        ["allowed", "allowed"] if duplicate else ["allowed", "blocked"]
+    )
+    with Session(c.engine) as db:
+        accounts = [db.get(LlmBudgetAccount, account_id) for account_id in ids]
+        assert all(
+            row.reserved_amount == 30
+            and row.reserved_count == 1
+            and row.spent_count == 0
+            for row in accounts
+        )
+        winner = events[0] if duplicate else events[results.index("allowed")]
+        assert mark_turn_submitted(db, winner)
+        hold_unknown_budget(db, winner)
+        db.commit()
+    loser = events[1] if duplicate else events[results.index("blocked")]
+    assert budget_process(loser, quote, tmp_path) == "blocked"
+    with Session(c.engine) as db:
+        assert all(
+            db.get(LlmBudgetAccount, account_id).reserved_count == 1
+            for account_id in ids
+        )

@@ -32,6 +32,15 @@ def _lock_version(db: Session, version_id: UUID, *, include_deleted=False):
     return version
 
 
+def lock_registered_projection(db: Session, version: BotVersion):
+    """등록 샘플의 파생 자료 보정은 최신 원본을 버전 장벽 안에서 다시 읽는다."""
+    if db.get(ChannelLlmVersionGuard, version.id) is None:
+        return version
+    locked = _lock_version(db, version.id)
+    db.refresh(locked)
+    return locked
+
+
 def register_sample_version(db: Session, version_id: UUID):
     """첫 등록 전 기존 writer 종료·manifest 입증은 활성화 절차에서 확인해야 한다."""
     _lock_version(db, version_id)

@@ -1329,3 +1329,159 @@ def test_stale_end_cannot_archive_room_of_new_generation(
     result = client.get(base + f"/rooms/{room}", headers=a)
     assert result.status_code == 200 and result.json()["data"]["room"]["can_send"]
     assert transport.generations == 0
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_existing_worker_recovers_only_expired_submitted_without_model_retry(
+    authenticated_http, expired
+):
+    from app.services.llm_budget import mark_turn_submitted
+    from app.models import LlmBudgetReservation, ChannelLlmBinding
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from uuid import UUID
+
+    c, client, a, _, transport, _ = authenticated_http
+    base, room = http_open(authenticated_http)
+    sent = client.post(
+        base + f"/rooms/{room}/turns",
+        headers=a,
+        json={
+            "expected_generation": 1,
+            "message_key": "interrupted-worker",
+            "question": "중단된 질문",
+            "dialog_id": "pllm-module",
+        },
+    )
+    assert sent.status_code == 202
+    event_id = UUID(sent.json()["data"]["event_id"])
+    with Session(c.engine) as db:
+        assert mark_turn_submitted(db, event_id)
+        event = db.get(ChannelQueueEvent, event_id)
+        event.lease_owner = "synthetic-dead-worker"
+        event.lease_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=-1 if expired else 120
+        )
+        fence = event.lease_fence
+        db.commit()
+    with Session(c.engine) as db:
+        bots._process_persistent_llm_events(db, _request(), limit=10)
+        event = db.get(ChannelQueueEvent, event_id, populate_existing=True)
+        assert event.phase == ("unknown" if expired else "submitted")
+        assert event.lease_fence == (fence + 1 if expired else fence)
+        rows = db.scalars(
+            select(LlmBudgetReservation).where(
+                LlmBudgetReservation.event_id == event_id
+            )
+        ).all()
+        assert rows and all(
+            row.state == ("unknown" if expired else "submitted") for row in rows
+        )
+        assert db.get(ChannelLlmBinding, event.binding_id).status == "open"
+    assert transport.generations == 0
+
+
+@pytest.mark.parametrize("kind", ["snapshot", "split"])
+def test_admin_backfill_refreshes_registered_version_after_concurrent_edit_and_pin(
+    admin_http, monkeypatch, kind
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from copy import deepcopy
+    from app.api.routes import admin
+    from app.models import (
+        Organization,
+        BotVersion,
+        VersionDialogAsset,
+        User,
+        ChannelLlmBinding,
+    )
+    from app.schemas.admin import AdminVersionStorageBackfillRequest
+    from app.schemas.bot import VersionUpdateRequest
+    from app.services.version_pins import open_pinned_dialog
+    from sqlalchemy import select
+
+    c, _, _, _, transport, _ = admin_http
+    if kind == "snapshot":
+        # backfill의 실제 대상인 누락 파생 자료를 재현한다. 원본 version_json은 유지한다.
+        with Session(c.engine) as db:
+            db.get(BotVersion, c.version_id).system_config_json = None
+            db.commit()
+    barrier = Barrier(2)
+    original = admin._version_storage_filtered_versions
+
+    def delayed(db, *args, **kwargs):
+        rows = original(db, *args, **kwargs)
+        if db.info.get("stale_backfill") and not db.info.get("paused"):
+            db.info["paused"] = True
+            barrier.wait(timeout=10)
+            barrier.wait(timeout=10)
+        return rows
+
+    monkeypatch.setattr(admin, "_version_storage_filtered_versions", delayed)
+    monkeypatch.setattr(
+        admin, "_get_default_organization", lambda db: db.get(Organization, c.org_id)
+    )
+
+    def backfill():
+        with Session(c.engine, autoflush=False) as db:
+            db.info["stale_backfill"] = True
+            handler = (
+                admin.backfill_version_read_snapshots
+                if kind == "snapshot"
+                else admin.backfill_version_storage
+            )
+            return handler(
+                AdminVersionStorageBackfillRequest(bot_id=c.bot_id),
+                _request(),
+                db,
+                db.get(User, c.user_id),
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(backfill)
+        barrier.wait(timeout=10)
+        try:
+            with Session(c.engine) as db:
+                version = db.get(BotVersion, c.version_id)
+                doc = deepcopy(version.version_json)
+                doc["system_config"]["instructions"] = "새 고정 지침"
+                doc["dialogs"][0]["name"] = "새 고정 지식"
+                doc["dialogs"][0]["displayName"] = "새 고정 지식"
+                bots.update_version(
+                    c.bot_id,
+                    c.version_id,
+                    VersionUpdateRequest(version_json=doc),
+                    _request(),
+                    db.get(User, c.user_id),
+                    db,
+                )
+                binding = open_pinned_dialog(
+                    db, c.scope, {"instructions": "새 고정 지침"}
+                )
+                snapshot_hash = binding.snapshot_hash
+                binding_id = binding.id
+                db.commit()
+        finally:
+            barrier.wait(timeout=10)
+        result = future.result(timeout=10)
+    assert (
+        result["data"]["processed_versions"] == 1
+        and result["data"]["failed_versions"] == []
+    )
+    with Session(c.engine) as db:
+        version = db.get(BotVersion, c.version_id)
+        assert version.version_json["system_config"]["instructions"] == "새 고정 지침"
+        if kind == "snapshot":
+            assert version.system_config_json["instructions"] == "새 고정 지침"
+        else:
+            row = db.scalar(
+                select(VersionDialogAsset).where(
+                    VersionDialogAsset.version_id == c.version_id,
+                    VersionDialogAsset.dialog_id == "pllm-module",
+                    VersionDialogAsset.deleted_at.is_(None),
+                )
+            )
+            assert row.name == "새 고정 지식"
+        assert db.get(ChannelLlmBinding, binding_id).snapshot_hash == snapshot_hash
+    assert transport.generations == 0

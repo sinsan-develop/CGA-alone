@@ -366,3 +366,69 @@ def test_duplicate_workers_cannot_claim_same_sample_writer(
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(claim, range(2))) == ["allowed", "blocked"]
+
+
+def test_last_close_races_new_open_without_allowing_mutation_and_live_pin(
+    persistent_context,
+):
+    from sqlalchemy import select
+
+    c = persistent_context
+    with Session(c.engine) as db:
+        first = open_pinned_dialog(db, c.scope, {})
+        first_id = first.id
+        room = ChannelRoom(
+            channel_type="simulator",
+            client_room_id=str(uuid4()),
+            bot_id=c.bot_id,
+            bot_version_id=c.version_id,
+            participant_id=str(c.user_id),
+        )
+        db.add(room)
+        db.flush()
+        next_scope = replace(c.scope, room_id=room.id)
+        db.commit()
+    barrier = Barrier(2)
+
+    def close_and_edit():
+        with Session(c.engine) as db:
+            barrier.wait(timeout=10)
+            close_pinned_dialog(db, first_id)
+            try:
+                token = begin_version_mutation(db, c.version_id, "edit")
+            except PinConflict:
+                token = None
+            db.commit()
+            return token
+
+    def open_next():
+        with Session(c.engine) as db:
+            barrier.wait(timeout=10)
+            try:
+                binding = open_pinned_dialog(db, next_scope, {})
+                db.commit()
+                return binding.id
+            except PinConflict:
+                db.rollback()
+                return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        closing = pool.submit(close_and_edit)
+        opening = pool.submit(open_next)
+        token = closing.result(timeout=10)
+        binding_id = opening.result(timeout=10)
+    assert (token is not None) != (binding_id is not None)
+    with Session(c.engine) as db:
+        assert db.get(ChannelLlmBinding, first_id).status == "closed"
+        if binding_id:
+            assert db.get(ChannelLlmBinding, binding_id).status == "open"
+            assert (
+                db.get(ChannelLlmVersionGuard, c.version_id).mutation_status == "idle"
+            )
+        else:
+            assert (
+                db.get(ChannelLlmVersionGuard, c.version_id).mutation_status
+                == "running"
+            )
+            finish_version_mutation(db, token, "d" * 64)
+            db.commit()

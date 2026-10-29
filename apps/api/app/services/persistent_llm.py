@@ -1,7 +1,7 @@
 """기존 방/메시지/큐의 지속 답변 조정. Provider·표출 확정 사이의 불명을 영속 보존한다."""
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib, json, re
 from uuid import UUID, uuid4
 from sqlalchemy import select
@@ -31,6 +31,17 @@ from app.services.llm_budget import (
     hold_unknown_budget,
     settle_turn_budget,
     release_presubmit_budget,
+)
+
+
+INTERRUPTED_PHASES = (
+    "conversation_creating",
+    "history_check",
+    "submitting",
+    "submitted",
+    "response_pending",
+    "generated",
+    "memory_syncing",
 )
 
 
@@ -494,14 +505,58 @@ class PersistentLlmService:
         db.commit()
         return self._view(event)
 
+    def _renew_execution_deadline(self, event):
+        # 순차 전송(최대4회)의 유한 timeout보다 넉넉한 실행 경계다.
+        # 만료는 fence/unknown 판정만 허용한다. 돈·횟수·pin의 반환 증거가 아니다.
+        timeout = getattr(self.client, "timeout", 30)
+        event.lease_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=max(60, 6 * timeout)
+        )
+
+    def _recover_expired_execution(self, db, event):
+        if (
+            event.phase not in INTERRUPTED_PHASES
+            or event.lease_expires_at is None
+            or event.lease_expires_at > datetime.now(timezone.utc)
+        ):
+            return False
+        event.lease_fence += 1
+        event.lease_owner = None
+        event.lease_expires_at = None
+        rows = db.scalars(
+            select(LlmBudgetReservation).where(
+                LlmBudgetReservation.event_id == event.id
+            )
+        ).all()
+        if (
+            event.submitted_at is not None
+            and rows
+            and all(row.state in {"reserved", "submitted", "unknown"} for row in rows)
+        ):
+            hold_unknown_budget(db, event.id)
+        _phase(
+            event,
+            (
+                "needs_reconcile"
+                if (event.result_json or {}).get("append_attempted")
+                else "unknown"
+            ),
+            "unknown",
+        )
+        event.error_message = "실행 시간 제한 이후 결과 확인이 필요합니다. 예약·참조를 보존하며 자동 재생성하지 않습니다."
+        db.commit()
+        return True
+
     def process_turn(self, db, scope, event_id):
         binding, event = self._event(db, scope, event_id)
+        self._recover_expired_execution(db, event)
         if event.phase != "reserved":
             return self._view(event)
         self._check_config(binding)
         event.lease_fence += 1
         fence = event.lease_fence
         event.lease_owner = "persistent:" + uuid4().hex
+        self._renew_execution_deadline(event)
         needs_conversation = binding.provider_conversation_id is None
         _phase(
             event,
@@ -927,6 +982,7 @@ class PersistentLlmService:
             return self._view(event)
         event.lease_fence += 1
         fence = event.lease_fence
+        self._renew_execution_deadline(event)
         _phase(event, "memory_syncing", "processing")
         conversation_id = binding.provider_conversation_id
         create_conversation = (
@@ -1019,6 +1075,7 @@ class PersistentLlmService:
 
     def reconcile_turn(self, db, scope, event_id):
         _, event = self._event(db, scope, event_id)
+        self._recover_expired_execution(db, event)
         if event.phase == "validated":
             # 검증된 답변의 표출 실패는 저장된 원문으로 재개한다. 생성/조회 재호출이 아니다.
             event.lease_fence += 1
@@ -1039,6 +1096,7 @@ class PersistentLlmService:
         event.lease_fence += 1
         fence = event.lease_fence
         identifier = event.provider_response_id
+        self._renew_execution_deadline(event)
         db.commit()
         try:
             raw = self.client.retrieve_response(identifier)
