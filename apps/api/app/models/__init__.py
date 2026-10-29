@@ -10,7 +10,8 @@ from app.models.access_control import (
     UserRole,
 )
 from app.models.audit import AuditLog
-from app.models.channel import ChannelMessage, ChannelQueueEvent, ChannelRoom
+from app.models.channel import (ChannelMessage, ChannelQueueEvent, ChannelRoom, ChannelLlmBinding,
+                                ChannelLlmVersionGuard, LlmBudgetAccount, LlmBudgetReservation)
 from app.models.admin import AdminChannel, AdminDefaultMessage, AdminLicense, AdminTemplate, CommonVariable
 from app.models.studio import Bot, BotHub, BotHubMember, BotVersion, EditLock, VersionDialogAsset, VersionDialogFlowGraph
 
@@ -24,6 +25,10 @@ __all__ = [
     "BotHub",
     "BotHubMember",
     "BotVersion",
+    "ChannelLlmBinding",
+    "ChannelLlmVersionGuard",
+    "LlmBudgetAccount",
+    "LlmBudgetReservation",
     "ChannelMessage",
     "ChannelQueueEvent",
     "ChannelRoom",
