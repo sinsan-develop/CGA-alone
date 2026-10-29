@@ -212,3 +212,10 @@ def test_other_provider_is_not_automatically_switched_to_openai():
             LlmProviderConfig("groq", "registered", "https://example.invalid"),
             transport=ScriptedTransport(),
         )
+
+
+def test_invalid_output_part_reports_protocol_error():
+    raw = response()
+    raw["output"][0]["content"] = ["not a content object"]
+    with pytest.raises(ProviderProtocolError):
+        validated_answer(raw)

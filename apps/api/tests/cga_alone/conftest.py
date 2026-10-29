@@ -14,7 +14,7 @@ def persistent_context(test_engine, migrated_test_database):
     from sqlalchemy import delete, select
     from sqlalchemy.orm import Session
     from app.core.version_documents import build_default_version_document
-    from app.models import (Organization, Group, User, Bot, BotVersion, ChannelRoom, ChannelQueueEvent, AuditLog,
+    from app.models import (Organization, Group, User, Bot, BotVersion, ChannelRoom, ChannelMessage, ChannelQueueEvent, AuditLog,
                             ChannelLlmBinding, ChannelLlmVersionGuard, LlmBudgetAccount, LlmBudgetReservation, VersionDialogAsset, VersionDialogFlowGraph)
     from app.schemas.persistent_llm import TurnScope
     from app.services.version_pins import register_sample_version
@@ -36,6 +36,7 @@ def persistent_context(test_engine, migrated_test_database):
             accounts=select(LlmBudgetAccount.id).where(LlmBudgetAccount.scope_key.contains(str(ctx.org_id)))
             db.execute(delete(LlmBudgetReservation).where((LlmBudgetReservation.event_id.in_(events)) | (LlmBudgetReservation.account_id.in_(accounts))))
             db.execute(delete(ChannelQueueEvent).where(ChannelQueueEvent.bot_id==ctx.bot_id))
+            db.execute(delete(ChannelMessage).where(ChannelMessage.room_id.in_(select(ChannelRoom.id).where(ChannelRoom.bot_id==ctx.bot_id))))
             db.execute(delete(ChannelLlmBinding).where(ChannelLlmBinding.bot_id==ctx.bot_id))
             db.execute(delete(ChannelLlmVersionGuard).where(ChannelLlmVersionGuard.version_id.in_(select(BotVersion.id).where(BotVersion.bot_id==ctx.bot_id))))
             db.execute(delete(LlmBudgetAccount).where(LlmBudgetAccount.scope_key.contains(str(ctx.org_id))))

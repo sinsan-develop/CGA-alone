@@ -120,6 +120,7 @@ def validated_answer(raw):
     if (
         not isinstance(content, list)
         or len(content) != 1
+        or not isinstance(content[0], dict)
         or content[0].get("type") != "output_text"
     ):
         raise ProviderProtocolError("답변의 텍스트 형식을 확인해야 합니다.")
