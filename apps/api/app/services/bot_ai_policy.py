@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.vector_search import intent_vector_config
+from app.services.secondary_llm import outcome_mapping
 
 
 SUPPORTED_NLU_TYPE = "ml"
@@ -82,4 +83,6 @@ def secondary_llm_block_reason(document: dict[str, Any] | None, ai_config: dict[
     graphs = graphs if isinstance(graphs, list) else []
     if not any(isinstance(graph, dict) and graph.get("dialogId") == identifier and isinstance(graph.get("nodes"), list) and graph["nodes"] for graph in graphs):
         return "2차 LLM 답변 모듈의 시나리오를 작성해주세요."
+    if outcome_mapping(secondary) is None:
+        return "2차 LLM의 판정 변수와 서로 다른 답변 성공값·미인식값을 지정해주세요."
     return None

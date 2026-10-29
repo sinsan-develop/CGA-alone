@@ -7,6 +7,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from "next/navigat
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { useI18n } from "@/components/language-provider";
+import { evaluateSecondaryOutcome, prepareSecondaryVariables, secondaryOutcomeMapping, type SecondaryModuleConfig } from "@/lib/secondary-llm";
 import { normalizeAnswerMode } from "@/lib/answer-options";
 import { getBotVersionSettings, type MessageItemConfig } from "@/lib/bot-settings";
 import { isSimulatorRichFormLocalFilePath, normalizeSimulatorRichFormAssetUrl } from "./simulator-rich-form-assets";
@@ -156,6 +157,8 @@ type NluValidationDiagnostic = {
 };
 
 type RuntimeState = {
+  secondaryConfig?: SecondaryModuleConfig;
+  secondaryError?: boolean;
   dialog: VersionDialogAsset;
   graph: DialogFlowGraph;
   nextNodeId: string;
@@ -3763,6 +3766,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   );
   const apiAssets = useMemo(() => normalizeApiAssets(versionDocument.apis), [versionDocument.apis]);
   const versionSettings = useMemo(() => getBotVersionSettings(bot ?? {}), [bot]);
+  const secondaryConfig = bot?.data_json?.bot_kind === "hub" ? undefined : bot?.data_json?.secondary_llm;
   const runtimeLanguage = normalizeSupportedLanguage(bot?.data_json?.language);
   const runtimeCopy = SIMULATOR_CATALOGS[runtimeLanguage];
   const nluModel = useMemo(
@@ -4304,6 +4308,33 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     return true;
   }
 
+  function startSecondaryRuntime(analysisId: string, variables: Record<string, string>) {
+    if (!secondaryConfig || !secondaryOutcomeMapping(secondaryConfig)) return false;
+    const dialog = dialogs.find(item => item.dialogType === 0 && item.id === secondaryConfig.module_id);
+    if (!dialog) return false;
+    const graph = getDialogFlowGraph(versionDocument, dialog);
+    if (!graph.nodes.length) return false;
+    void continueRuntime({dialog, graph, nextNodeId: getGraphStartNodeId(graph),
+      variables: prepareSecondaryVariables(variables, secondaryConfig, normalizeRuntimeVariableName),
+      ended: false, secondaryConfig: JSON.parse(JSON.stringify(secondaryConfig)), secondaryError: false}, analysisId);
+    return true;
+  }
+
+  function finishSecondaryFallback(analysisId: string, variables: Record<string, string>, config: SecondaryModuleConfig) {
+    intentFallbackCountRef.current += 1;
+    const retryCount = Math.max(1, Math.round(versionSettings.conversationDefaults.intentDetection.retryCount || 2));
+    const overflowModule = versionSettings.conversationDefaults.intentDetection.overflowModule.trim();
+    const secondaryDialog = dialogs.find(item => item.id === config.module_id);
+    const excluded = [config.module_id, secondaryDialog?.name, secondaryDialog?.displayName, secondaryDialog?.dialogKey];
+    if (intentFallbackCountRef.current >= retryCount && overflowModule && !excluded.includes(overflowModule)
+        && runModuleByName(overflowModule, analysisId, variables)) {
+      intentFallbackCountRef.current = 0;
+      return;
+    }
+    setMessages(current => [...current, makeMessage("bot", getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback, {analysisId})]);
+    setRuntime(null);
+  }
+
   function runModuleByName(moduleName: string, analysisId: string, variables: Record<string, string> = {}) {
     const normalizedModuleName = moduleName.trim();
     if (!normalizedModuleName) {
@@ -4516,12 +4547,14 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     const sessionId = simulatorSessionIdRef.current;
     const nextMessages: SimulatorMessage[] = [];
     let nextRuntime = { ...currentRuntime };
+    let secondaryError = currentRuntime.secondaryError === true;
     let guard = 0;
 
     while (!nextRuntime.ended && nextRuntime.nextNodeId && guard < maxCardsBetweenUserResponses) {
       guard += 1;
         const node = getNodeById(nextRuntime.graph, nextRuntime.nextNodeId);
         if (!node) {
+          secondaryError = true;
           writeSimulatorLog("error", "simulator.next_node_missing", {
             analysisId,
             nextRuntime,
@@ -4627,6 +4660,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               : false,
           ) ?? node.config.branches.find((branch) => branch.operator === "else");
         if (!matchedBranch) {
+          secondaryError = true;
           const detailMessage = SIMULATOR_RUNTIME_MESSAGES.conditionNoElseDetail;
           nextMessages.push(makeMessage("system", SIMULATOR_RUNTIME_MESSAGES.runtimeFlowError));
           writeSimulatorLog("error", "simulator.condition_no_else", {
@@ -4649,6 +4683,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         }
         const branchTargetNodeId = getNextNodeId(nextRuntime.graph, node.id, `branch:${matchedBranch.id}`);
         if (!branchTargetNodeId) {
+          secondaryError = true;
           const detailMessage = SIMULATOR_RUNTIME_MESSAGES.conditionTargetMissingDetail;
           nextMessages.push(makeMessage("system", SIMULATOR_RUNTIME_MESSAGES.runtimeFlowError));
           writeSimulatorLog("error", "simulator.condition_target_missing", {
@@ -4684,6 +4719,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       if (node.kind === "script") {
         const result = runScriptNode(node, nextRuntime.variables, uiLanguage);
         if (result.error) {
+          secondaryError = true;
           writeSimulatorLog("error", "simulator.script_error", {
             analysisId,
             nodeId: node.id,
@@ -4725,6 +4761,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
           return;
         }
         if (!result.ok) {
+          secondaryError = true;
           const exceptionNodeId = getNextNodeId(nextRuntime.graph, node.id, "exception");
           if (exceptionNodeId) {
             appendAnalysisLog(analysisId, {
@@ -4809,6 +4846,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
           continue;
         }
 
+        secondaryError = true;
         const detailMessage = SIMULATOR_RUNTIME_MESSAGES.jumpTargetMissingDetail;
         nextMessages.push(makeMessage("system", SIMULATOR_RUNTIME_MESSAGES.runtimeModuleNotFound));
         writeSimulatorLog("error", "simulator.jump_target_missing", {
@@ -4866,7 +4904,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
             moduleName: beforeSessionEndModule,
           });
         }
-        const variables = sessionEnded ? {} : nextRuntime.variables;
+        const variables = sessionEnded && !nextRuntime.secondaryConfig ? {} : nextRuntime.variables;
         const restoredRuntime = !sessionEnded ? restoreRuntimeReturn({ ...nextRuntime, variables }) : null;
         if (restoredRuntime) {
           appendAnalysisLog(analysisId, {
@@ -4911,6 +4949,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     }
 
     if (guard >= maxCardsBetweenUserResponses) {
+          secondaryError = true;
       writeSimulatorLog("error", "simulator.guard_exceeded", {
         analysisId,
         nextRuntime,
@@ -4928,6 +4967,26 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       nextRuntime = { ...nextRuntime, ended: true };
     }
 
+    if (nextRuntime.secondaryConfig) {
+      const config = nextRuntime.secondaryConfig;
+      const result = evaluateSecondaryOutcome(config, nextRuntime.variables,
+        {waiting: Boolean(nextRuntime.waitingTalkNodeId), executionError: secondaryError}, resolveRuntimeVariableValue);
+      writeSimulatorLog("info", "simulator.secondary_result", {analysisId, status: result.status, moduleId: config.module_id});
+      if (result.status === "unrecognized") {
+        finishSecondaryFallback(analysisId, nextRuntime.variables, config);
+        return;
+      }
+      if (result.status === "error") {
+        setMessages(current => [...current, makeMessage("system", SIMULATOR_RUNTIME_MESSAGES.systemError, {analysisId})]);
+        setRuntime(null);
+        return;
+      }
+      nextRuntime = {...nextRuntime, secondaryError, secondaryConfig: result.status === "pending" ? config : undefined};
+      if (result.status === "answered") {
+        intentFallbackCountRef.current = 0;
+        if (nextRuntime.sessionEnded) nextRuntime.variables = {};
+      }
+    }
     setMessages((current) => [...current, ...nextMessages]);
     setRuntime(nextRuntime);
   }
@@ -5360,7 +5419,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         }, variables);
         setMessages((current) => [
           ...current,
-          makeMessage("bot", getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback),
+          makeMessage(secondaryConfig ? "system" : "bot", secondaryConfig ? SIMULATOR_RUNTIME_MESSAGES.systemError : getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback),
         ]);
         setRuntime(null);
         return true;
@@ -5382,7 +5441,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         }, variables);
         setMessages((current) => [
           ...current,
-          makeMessage("bot", getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback),
+          makeMessage(secondaryConfig ? "system" : "bot", secondaryConfig ? SIMULATOR_RUNTIME_MESSAGES.systemError : getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback),
         ]);
         setRuntime(null);
         return true;
@@ -5404,7 +5463,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         }, variables);
         setMessages((current) => [
           ...current,
-          makeMessage("bot", getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback),
+          makeMessage(secondaryConfig ? "system" : "bot", secondaryConfig ? SIMULATOR_RUNTIME_MESSAGES.systemError : getConfiguredTextMessage(versionSettings.messages.fallback) || runtimeCopy.intentFallback),
         ]);
         setRuntime(null);
         return true;
@@ -5487,6 +5546,14 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
 
     if (options.suppressFallbackOnNoMatch) {
       return false;
+    }
+
+    if (secondaryConfig) {
+      if (!startSecondaryRuntime(analysis.id, {...variables, input: utterance})) {
+        setMessages(current => [...current, makeMessage("system", SIMULATOR_RUNTIME_MESSAGES.systemError, {analysisId: analysis.id})]);
+        setRuntime(null);
+      }
+      return true;
     }
 
     appendUserUtteranceLog(analysis.id, utterance, "의도 미분류", "의도 추출 오류");

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.secondary_llm import SecondaryOutcome, run_secondary_module, resume_secondary_outcome
+
 import json
 from io import BytesIO
 from copy import deepcopy
@@ -1995,7 +1997,7 @@ def _initial_runtime_state_for_version(bot: Bot, version: BotVersion, channel_ty
         )
         graph = _find_graph(document, dialog_id=str((greeting_dialog or {}).get("id") or ""), name=value)
 
-    if graph is None:
+    if graph is None and (_as_dict(bot.data_json).get("bot_kind") == "hub" or not isinstance(_version_ai_config(bot, version).get("secondary_llm"), dict)):
         graph = next((item for item in _as_list(document.get("dialog_flow_graphs")) if isinstance(item, dict)), None)
     if graph is None:
         state = {"variables": {}, "__beforeSessionEndModule": before_session_end_module}
@@ -4525,6 +4527,8 @@ def _select_dialog_for_bot(
         try:
             return with_cutoff(_semantic_select_dialog(document, bot, version, message))
         except VectorSearchError as error:
+            if isinstance(data_json.get("secondary_llm"), dict) and _as_dict(bot.data_json).get("bot_kind") != "hub":
+                raise
             logger.warning(
                 "Semantic vector intent search failed.",
                 extra={
@@ -5066,8 +5070,13 @@ def _run_named_module(
     module_name: str | None,
     default_messages: dict[str, str],
     channel_code: str,
+    *, module_id_only: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
-    module_graph = _graph_for_module_name(document, module_name)
+    if module_id_only:
+        dialog = next((d for d in _as_list(document.get("dialogs")) if isinstance(d, dict) and str(d.get("id") or "") == module_name and d.get("dialogType") in (0, "0")), None)
+        module_graph = _graph_for_dialog(document, dialog) if dialog else None
+    else:
+        module_graph = _graph_for_module_name(document, module_name)
     if module_graph is None:
         return [], state, False
     variables = _as_dict(state.get("variables"))
@@ -5096,12 +5105,16 @@ def _handle_intent_not_found(
     version: BotVersion,
     default_messages: dict[str, str],
     channel_code: str,
+    *, excluded_module_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
     settings = _intent_detection_settings(bot, version)
     retry_count = max(1, _int_setting(settings.get("retryCount"), 2))
     current_count = _int_setting(state.get("intentFallbackCount"), 0) + 1
     state["intentFallbackCount"] = current_count
     if current_count < retry_count:
+        return [], state, False
+    excluded = next((d for d in _as_list(document.get("dialogs")) if isinstance(d, dict) and str(d.get("id") or "") == excluded_module_id), {})
+    if excluded_module_id and str(settings.get("overflowModule") or "") in {str(excluded.get(k) or "") for k in ("id", "name", "displayName", "dialogKey")} - {""}:
         return [], state, False
     outputs, next_state, ran = _run_named_module(
         document,
@@ -5113,6 +5126,39 @@ def _handle_intent_not_found(
     if ran:
         next_state["intentFallbackCount"] = 0
     return outputs, next_state, ran
+
+
+
+def _apply_secondary_runtime_result(document, result, bot, version, default_messages, channel_code, module_id):
+    state = result.state
+    item = _append_runtime_event(state, level="info", event="channel.runtime.secondary_result", message="2차 모듈 실행 결과를 판정했습니다.", data={"status": result.status, "moduleId": module_id})
+    _log_runtime_event(item)
+    if result.status == "unrecognized":
+        outputs, state, _ = _handle_intent_not_found(document, state, bot, version, default_messages, channel_code, excluded_module_id=module_id)
+        return SecondaryOutcome("unrecognized", outputs, state)
+    if result.status == "error":
+        state.update(waitingNodeId="", currentNodeId="", dialogEnded=True)
+        return SecondaryOutcome("error", [_runtime_system_error_output(default_messages)], state)
+    if result.status == "answered":
+        state["intentFallbackCount"] = 0
+    return result
+
+
+def _handle_local_intent_miss(document, state, bot, version, default_messages, channel_code):
+    config = _version_ai_config(bot, version).get("secondary_llm")
+    if not isinstance(config, dict) or _as_dict(bot.data_json).get("bot_kind") == "hub":
+        outputs, state, _ = _handle_intent_not_found(document, state, bot, version, default_messages, channel_code)
+        return SecondaryOutcome("unrecognized", outputs, state)
+    def run_module(*args):
+        return _run_named_module(*args, module_id_only=True)
+    result = run_secondary_module(document, state, config, run_module=run_module, default_messages=default_messages, channel_code=channel_code)
+    return _apply_secondary_runtime_result(document, result, bot, version, default_messages, channel_code, config.get("module_id"))
+
+
+def _finish_secondary_runtime(document, state, bot, version, outputs, default_messages, channel_code):
+    config = _as_dict(_as_dict(state.get("__secondaryLlm")).get("config"))
+    result = resume_secondary_outcome(state, outputs)
+    return _apply_secondary_runtime_result(document, result, bot, version, default_messages, channel_code, config.get("module_id"))
 
 
 def _handle_pre_nlu_settings(
@@ -5271,6 +5317,8 @@ def _process_channel_queue_event(
         message=payload.message,
     )
     runtime_state_after = runtime_state_before
+    continuing_secondary = bool(runtime_state_before.get("__secondaryLlm"))
+    secondary_handled = False
     selected_dialog = None
     score = 0.0
     bot_messages: list[ChannelMessage] = []
@@ -5594,6 +5642,12 @@ def _process_channel_queue_event(
                     channel_code,
                     _button_selection_option(bot, version),
                 )
+        if continuing_secondary:
+            secondary_result = _finish_secondary_runtime(document, runtime_state, bot, version, runtime_outputs, default_messages, channel_code)
+            runtime_outputs, runtime_state = secondary_result.outputs, secondary_result.state
+            secondary_handled = secondary_result.status != "unrecognized"
+            if secondary_result.status == "unrecognized" and not runtime_outputs:
+                runtime_outputs = [{"type": "text", "text": _reply_for_dialog(db, bot, None, room_languages), "options": []}]
         runtime_state_after = runtime_state
         room.metadata_json = runtime_state
         flag_modified(room, "metadata_json")
@@ -5612,7 +5666,7 @@ def _process_channel_queue_event(
                         payload_json={"options": output.get("options") or [], **_as_dict(output.get("payload"))},
                     )
                 )
-        elif (not interrupted_intent_transition) and _should_run_intent_fallback(
+        elif (not continuing_secondary) and (not interrupted_intent_transition) and _should_run_intent_fallback(
             runtime_outputs,
             form_response_handled,
             bool(runtime_state_before.get("waitingNodeId")),
@@ -5684,7 +5738,9 @@ def _process_channel_queue_event(
                     intent_outputs, runtime_state = _run_runtime(document, runtime_state, start_node_id, default_messages, channel_code)
                     runtime_state_after = runtime_state
             elif not handled_pre_nlu:
-                overflow_outputs, runtime_state, ran_overflow = _handle_intent_not_found(
+                runtime_state["variables"] = dict(_as_dict(runtime_state.get("variables")))
+                _set_variable(runtime_state["variables"], "$input", payload.message)
+                secondary_result = _handle_local_intent_miss(
                     document,
                     runtime_state,
                     bot,
@@ -5692,9 +5748,9 @@ def _process_channel_queue_event(
                     default_messages,
                     channel_code,
                 )
-                if ran_overflow:
-                    intent_outputs = overflow_outputs
-                    runtime_state_after = runtime_state
+                intent_outputs, runtime_state = secondary_result.outputs, secondary_result.state
+                secondary_handled = secondary_result.status != "unrecognized"
+                runtime_state_after = runtime_state
 
             if intent_outputs:
                 for output in intent_outputs:
@@ -5710,7 +5766,7 @@ def _process_channel_queue_event(
                             payload_json={"options": output.get("options") or [], **_as_dict(output.get("payload"))},
                         )
                     )
-            else:
+            elif not secondary_handled:
                 bot_messages.append(
                     _add_message(
                         db,
@@ -6402,6 +6458,8 @@ def create_channel_room_message(
             message=payload.message,
         )
         runtime_state_after = runtime_state_before
+        continuing_secondary = bool(runtime_state_before.get("__secondaryLlm"))
+        secondary_handled = False
         selected_dialog = None
         score = 0.0
         bot_messages: list[ChannelMessage] = []
@@ -6487,6 +6545,12 @@ def create_channel_room_message(
                         channel_code,
                         _button_selection_option(bot, version),
                     )
+            if continuing_secondary:
+                secondary_result = _finish_secondary_runtime(document, runtime_state, bot, version, runtime_outputs, default_messages, channel_code)
+                runtime_outputs, runtime_state = secondary_result.outputs, secondary_result.state
+                secondary_handled = secondary_result.status != "unrecognized"
+                if secondary_result.status == "unrecognized" and not runtime_outputs:
+                    runtime_outputs = [{"type": "text", "text": _reply_for_dialog(db, bot, None, message_languages), "options": []}]
             runtime_state_after = runtime_state
             room.metadata_json = runtime_state
             flag_modified(room, "metadata_json")
@@ -6505,7 +6569,7 @@ def create_channel_room_message(
                             payload_json={"options": output.get("options") or [], **_as_dict(output.get("payload"))},
                         )
                     )
-            elif (not interrupted_intent_transition) and _should_run_intent_fallback(
+            elif (not continuing_secondary) and (not interrupted_intent_transition) and _should_run_intent_fallback(
                 runtime_outputs,
                 form_response_handled,
                 bool(runtime_state_before.get("waitingNodeId")),
@@ -6577,7 +6641,9 @@ def create_channel_room_message(
                         intent_outputs, runtime_state = _run_runtime(document, runtime_state, start_node_id, default_messages, channel_code)
                         runtime_state_after = runtime_state
                 elif not handled_pre_nlu:
-                    overflow_outputs, runtime_state, ran_overflow = _handle_intent_not_found(
+                    runtime_state["variables"] = dict(_as_dict(runtime_state.get("variables")))
+                    _set_variable(runtime_state["variables"], "$input", payload.message)
+                    secondary_result = _handle_local_intent_miss(
                         document,
                         runtime_state,
                         bot,
@@ -6585,9 +6651,9 @@ def create_channel_room_message(
                         default_messages,
                         channel_code,
                     )
-                    if ran_overflow:
-                        intent_outputs = overflow_outputs
-                        runtime_state_after = runtime_state
+                    intent_outputs, runtime_state = secondary_result.outputs, secondary_result.state
+                    secondary_handled = secondary_result.status != "unrecognized"
+                    runtime_state_after = runtime_state
 
                 if intent_outputs:
                     for output in intent_outputs:
@@ -6603,7 +6669,7 @@ def create_channel_room_message(
                                 payload_json={"options": output.get("options") or [], **_as_dict(output.get("payload"))},
                             )
                         )
-                else:
+                elif not secondary_handled:
                     reply = _reply_for_dialog(db, bot, selected_dialog, message_languages)
                     bot_messages.append(
                         _add_message(

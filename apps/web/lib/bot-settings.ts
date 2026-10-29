@@ -220,8 +220,13 @@ export type BotVersionSettings = {
   botstation: BotStationSettingsConfig;
 };
 
+export type SecondaryLlmSettings = {
+  module_id: string;
+  outcome?: { variableName: string; answeredValue: string; unrecognizedValue: string };
+};
+
 export type StudioBotDataJson = {
-  secondary_llm?: { module_id: string };
+  secondary_llm?: SecondaryLlmSettings;
   bot_kind?: "bot" | "hub";
   bot_mode?: "text" | "voice";
   profile_key?: "gray" | "accent" | "outline";
@@ -560,7 +565,16 @@ export function getBotVersionSettings(bot: {
 }
 
 
-export function normalizeSecondaryLlmConfig(value: unknown): { module_id: string } {
+export function normalizeSecondaryLlmConfig(value: unknown): SecondaryLlmSettings {
   const config = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  return { module_id: typeof config.module_id === "string" ? config.module_id.trim() : "" };
+  const normalized: SecondaryLlmSettings = { module_id: typeof config.module_id === "string" ? config.module_id.trim() : "" };
+  if (config.outcome && typeof config.outcome === "object" && !Array.isArray(config.outcome)) {
+    const source = config.outcome as Record<string, unknown>;
+    normalized.outcome = {
+      variableName: typeof source.variableName === "string" ? source.variableName.trim() : "",
+      answeredValue: typeof source.answeredValue === "string" ? source.answeredValue : "",
+      unrecognizedValue: typeof source.unrecognizedValue === "string" ? source.unrecognizedValue : "",
+    };
+  }
+  return normalized;
 }

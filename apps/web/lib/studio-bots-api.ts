@@ -1,6 +1,6 @@
 import { apiRequest, apiSameOriginRequest, formatApiErrorDetail } from "@/lib/api";
 import { type AnswerMode } from "@/lib/answer-options";
-import { type BotVersionSettings, type ConfigurationScoringConfig, type StudioBotDataJson, type VectorConnectionsConfig } from "@/lib/bot-settings";
+import { type BotVersionSettings, type ConfigurationScoringConfig, type StudioBotDataJson, type SecondaryLlmSettings, type VectorConnectionsConfig } from "@/lib/bot-settings";
 import { type LlmModelKey, type LlmProvider } from "@/lib/llm-options";
 import { type SupportedLanguage } from "@/lib/language";
 import { type NluModelKey, type NluType } from "@/lib/nlu-options";
@@ -757,7 +757,7 @@ export type CreateBotPayload = {
 };
 
 export type UpdateBotPayload = {
-  secondary_llm?: { module_id: string };
+  secondary_llm?: SecondaryLlmSettings;
   name?: string;
   description?: string;
   status?: string;

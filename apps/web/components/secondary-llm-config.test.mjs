@@ -21,3 +21,12 @@ test("표시명이 아닌 안정 모듈 ID만 저장하며 다른 필드를 섞�
   assert.deepEqual(Object.keys(result), ["module_id"]);
   assert.equal(result.module_id, "module-1");
 });
+
+test("제작자가 지정한 변수·두 결과값만 기존 설정에 보존한다", () => {
+  const normalize=subject("normalizeSecondaryLlmConfig");
+  const actual=normalize({module_id:"module-1",outcome:{variableName:"$custom.answerState",answeredValue:"answered-code",unrecognizedValue:"not-found-code",secret:"fixture"}});
+  assert.equal(actual.outcome.variableName,"$custom.answerState");
+  assert.equal(actual.outcome.answeredValue,"answered-code");
+  assert.equal(actual.outcome.unrecognizedValue,"not-found-code");
+  assert.deepEqual(Object.keys(actual.outcome),["variableName","answeredValue","unrecognizedValue"]);
+});

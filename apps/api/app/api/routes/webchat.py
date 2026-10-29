@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -539,6 +540,32 @@ def bootstrap_webchat(
         },
     )
 
+
+def _create_native_webchat_message(bot, version, room_id, payload, request, api_key):
+    """기존 Webchat 주소를 공통 채널 실행기로 연결한다. ID는 식별자이며 인증 근거가 아니다."""
+    from app.api.routes import channels
+    # 봇별 namespace로 서로 다른 봇의 동일 client room 식별자 충돌을 막는다.
+    client_room_id = "webchat:" + str(bot.id) + ":" + hashlib.sha256(room_id.encode("utf-8")).hexdigest()
+    created = channels.create_channel_room(
+        "webchat", channels.ChannelRoomCreateRequest(bot_id=str(bot.id), client_room_id=client_room_id,
+            participant_id=payload.participant_id or "visitor", start_immediately=False), request, api_key,
+    )["data"]
+    result = channels.create_channel_room_message(
+        "webchat", UUID(created["room"]["id"]), channels.ChannelMessageRequest(message=payload.message,
+            participant_id=payload.participant_id or "visitor"), request, api_key,
+    )["data"]
+    messages = result.get("botMessages") or []
+    return success_response(request, {
+        "roomId": room_id,
+        "bot": {"id": str(bot.id), "name": bot.name},
+        "activeVersion": {"id": str(version.id), "name": version.name, "versionNo": version.version_no},
+        "userMessage": result.get("userMessage"),
+        "botMessage": messages[-1] if messages else None,
+        "botMessages": messages,
+        "intent": result.get("intent"),
+    })
+
+
 @router.post("/bots/{bot_id}/rooms/{room_id}/messages")
 def create_webchat_room_message(
     bot_id: str,
@@ -549,6 +576,8 @@ def create_webchat_room_message(
 ) -> dict[str, object]:
     _verify_webchat_key(x_aidot_webchat_key)
     bot, version, _group = _get_active_bot_version(bot_id)
+    if isinstance(_version_ai_config(bot, version).get("secondary_llm"), dict) and _as_dict(bot.data_json).get("bot_kind") != "hub":
+        return _create_native_webchat_message(bot, version, room_id, payload, request, x_aidot_webchat_key)
     document = normalize_version_document(version.version_json)
     selected_dialog, score = _select_dialog_for_bot(
         document,
