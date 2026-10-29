@@ -70,6 +70,7 @@ def _get_hub_bot(db: Session, current_user: User, hub_id: UUID) -> tuple[Bot, Bo
             Bot.id == hub_id,
             Bot.organization_id == current_user.organization_id,
             Bot.group_id == group_id,
+            Bot.created_by == current_user.id,
             Bot.deleted_at.is_(None),
         )
     )
@@ -178,6 +179,7 @@ def list_hubs(
         .where(
             Bot.organization_id == current_user.organization_id,
             Bot.group_id == group_id,
+            Bot.created_by == current_user.id,
             Bot.deleted_at.is_(None),
         )
         .order_by(Bot.updated_at.desc())
@@ -196,6 +198,34 @@ def get_hub(
     return success_response(request, _serialize_hub(db, bot, hub))
 
 
+
+
+@router.get("/{hub_id}/candidates")
+def list_hub_candidates(
+    hub_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """본인 허브 구성에 필요한 같은 그룹의 최소 연결 정보만 제공한다."""
+    hub_bot, _ = _get_hub_bot(db, current_user, hub_id)
+    candidates = db.scalars(select(Bot).where(
+        Bot.organization_id == hub_bot.organization_id,
+        Bot.group_id == hub_bot.group_id,
+        Bot.id != hub_bot.id,
+        Bot.deleted_at.is_(None),
+    ).order_by(Bot.name, Bot.id)).all()
+    result = []
+    for bot in candidates:
+        if (bot.data_json or {}).get("bot_kind") == "hub":
+            continue
+        version = db.get(BotVersion, bot.active_version_id) if bot.active_version_id else None
+        if version is not None and (version.bot_id != bot.id or version.deleted_at is not None or version.status != "active"):
+            version = None
+        result.append({"id": str(bot.id), "name": bot.name,
+                       "active_version_id": str(version.id) if version else None,
+                       "is_trained": bool(version and _has_successful_nlu_training(version))})
+    return success_response(request, result)
 
 
 def _hub_retraining_result_kind(event: ChannelQueueEvent) -> str:

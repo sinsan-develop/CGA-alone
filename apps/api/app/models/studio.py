@@ -14,6 +14,8 @@ class Bot(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "bots"
     __table_args__ = (
         Index("idx_bots_org_group_deleted_updated", "organization_id", "group_id", "deleted_at", "updated_at"),
+        Index("uq_bots_live_creator", "created_by", unique=True,
+              postgresql_where=text("created_by IS NOT NULL AND deleted_at IS NULL")),
     )
 
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)

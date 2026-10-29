@@ -82,6 +82,7 @@ def _assert_target_access(db: Session, payload: EditLockTargetRequest, current_u
             Bot.id == payload.bot_id,
             Bot.organization_id == current_user.organization_id,
             Bot.group_id == current_user.group_id,
+            Bot.created_by == current_user.id,
             Bot.deleted_at.is_(None),
         )
     )
@@ -127,10 +128,17 @@ def _find_lock_by_target(db: Session, payload: EditLockTargetRequest) -> EditLoc
 def _find_release_lock(db: Session, payload: EditLockReleaseRequest, current_user: User) -> EditLock | None:
     if current_user.group_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="그룹이 지정된 사용자만 봇에 접근할 수 있습니다.")
+    owned_bot_ids = select(Bot.id).where(
+        Bot.organization_id == current_user.organization_id,
+        Bot.group_id == current_user.group_id,
+        Bot.created_by == current_user.id,
+        Bot.deleted_at.is_(None),
+    )
     if payload.lock_id is not None:
         return db.scalar(
             select(EditLock).where(
                 EditLock.id == payload.lock_id,
+                EditLock.bot_id.in_(owned_bot_ids),
                 EditLock.organization_id == current_user.organization_id,
                 EditLock.group_id == current_user.group_id,
             )
@@ -140,6 +148,7 @@ def _find_release_lock(db: Session, payload: EditLockReleaseRequest, current_use
     return db.scalar(
         select(EditLock).where(
             EditLock.bot_id == payload.bot_id,
+            EditLock.bot_id.in_(owned_bot_ids),
             EditLock.version_id == payload.version_id,
             EditLock.dialog_id == payload.dialog_id,
             EditLock.area == _normalize_area(payload.area),

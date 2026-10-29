@@ -86,6 +86,7 @@ def test_list_versions_summary_cache_miss_does_not_reload_full_documents(monkeyp
 
 
 def test_settings_context_cache_miss_does_not_reload_all_version_documents(monkeypatch) -> None:
+    user_id = uuid4()
     bot_id = uuid4()
     version_id = uuid4()
     group_id = uuid4()
@@ -100,7 +101,7 @@ def test_settings_context_cache_miss_does_not_reload_all_version_documents(monke
         description=None,
         status="active",
         data_json={},
-        created_by=None,
+        created_by=user_id,
         updated_at=now,
         created_at=now,
     )
@@ -153,7 +154,7 @@ def test_settings_context_cache_miss_does_not_reload_all_version_documents(monke
         bot_id=str(bot_id),
         version_scope="v1",
         request=SimpleNamespace(state=SimpleNamespace(request_id="test")),
-        current_user=SimpleNamespace(group_id=group_id, organization_id=organization_id),
+        current_user=SimpleNamespace(id=user_id, group_id=group_id, organization_id=organization_id),
         db=db,  # type: ignore[arg-type]
     )
 

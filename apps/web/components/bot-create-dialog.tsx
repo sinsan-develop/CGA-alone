@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 
 import { useI18n } from "@/components/language-provider";
 import {
@@ -30,7 +30,7 @@ import {
   type NluModelKey,
   type NluType,
 } from "@/lib/nlu-options";
-import { createStudioBot } from "@/lib/studio-bots-api";
+import { createStudioBot, fetchStudioBots } from "@/lib/studio-bots-api";
 import { type VectorConnectionConfig, type VectorConnectionsConfig } from "@/lib/bot-settings";
 import { normalizeSupportedLanguage, SUPPORTED_LANGUAGES, type SupportedLanguage } from "@/lib/language";
 import { translateAiOptionText } from "@/lib/i18n/ai-options";
@@ -105,6 +105,31 @@ export function BotCreateDialog() {
   const [introduction, setIntroduction] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [creationAllowed, setCreationAllowed] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    const session = loadAuthSession();
+    if (!session) {
+      setErrorMessage(copy.loginRequired);
+      return;
+    }
+    fetchStudioBots(session.access_token, true)
+      .then((bots) => {
+        if (disposed) return;
+        if (bots.length > 0) {
+          const bot = bots[0];
+          router.replace(bot.data_json?.bot_kind === "hub" ? `/studio/hubs/${bot.id}` : `/studio/bots/${bot.id}`);
+          return;
+        }
+        setCreationAllowed(true);
+      })
+      .catch((error) => {
+        if (!disposed) setErrorMessage(error instanceof Error ? error.message : copy.createError);
+      });
+    return () => { disposed = true; };
+  }, [router, copy.loginRequired, copy.createError]);
+
   const nluModelOptions = NLU_MODEL_OPTIONS_BY_TYPE[nluType] ?? [];
   const nluModelDescription = getNluModelDescription(nluType, nluModel);
   const llmModelOptions = LLM_MODEL_OPTIONS_BY_PROVIDER[llmProvider];
@@ -154,6 +179,7 @@ export function BotCreateDialog() {
   }
 
   async function handleSubmit() {
+    if (!creationAllowed) return;
     const session = loadAuthSession();
     if (!session) {
       setErrorMessage(copy.loginRequired);
@@ -272,16 +298,7 @@ export function BotCreateDialog() {
                 {copy.voiceType}
               </button>
             </div>
-            <label className="bot-create-dialog__radio">
-              <input
-                type="radio"
-                name="bot-kind"
-                checked={botKind === "hub"}
-                disabled
-                title={copy.hubUnavailable}
-              />
-              <span>{copy.botHub}</span>
-            </label>
+
           </div>
         </div>
 
@@ -695,7 +712,7 @@ export function BotCreateDialog() {
         <button
           type="button"
           className="bot-create-dialog__primary"
-          disabled={isSubmitting}
+          disabled={isSubmitting || !creationAllowed}
           onClick={handleSubmit}
         >
           {isSubmitting ? copy.creating : copy.confirm}
