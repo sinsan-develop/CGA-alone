@@ -70,6 +70,7 @@ def _get_hub_bot(db: Session, current_user: User, hub_id: UUID) -> tuple[Bot, Bo
             Bot.id == hub_id,
             Bot.organization_id == current_user.organization_id,
             Bot.group_id == group_id,
+            Bot.created_by == current_user.id,
             Bot.deleted_at.is_(None),
         )
     )
@@ -178,6 +179,7 @@ def list_hubs(
         .where(
             Bot.organization_id == current_user.organization_id,
             Bot.group_id == group_id,
+            Bot.created_by == current_user.id,
             Bot.deleted_at.is_(None),
         )
         .order_by(Bot.updated_at.desc())

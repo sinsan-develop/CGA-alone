@@ -8,6 +8,7 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 import { loadAuthSession, type AuthSession } from "@/lib/auth";
 import { fetchStudioBots, getCachedStudioBots, type StudioBotApiItem } from "@/lib/studio-bots-api";
 import { useI18n } from "@/components/language-provider";
+import { BOT_CREATE_CATALOGS } from "@/lib/i18n/bot-create";
 import { BOT_WORKSPACE_CATALOGS } from "@/lib/i18n/bot-workspace";
 import { getStudioPageLabel, STUDIO_PAGE_CATALOGS } from "@/lib/i18n/studio-pages";
 
@@ -154,9 +155,11 @@ export function BotsWorkspace({ activeTab = "bot", overlay }: BotsWorkspaceProps
 
   return (
     <section className="bots-workspace">
-      <Link href="/studio/bots/new" className="bots-workspace__top-create">
-        {getStudioPageLabel(copy, "+ 봇/봇 허브 생성")}
-      </Link>
+      {!loading && !errorMessage && items.length === 0 ? (
+        <Link href="/studio/bots/new" className="bots-workspace__top-create">
+          + {BOT_CREATE_CATALOGS[uiLanguage].createBot}
+        </Link>
+      ) : null}
 
       <div className="bots-workspace__tabs">
         <Link href="/studio/bots" className={activeTab === "bot" ? "is-active" : ""}>
@@ -203,7 +206,7 @@ export function BotsWorkspace({ activeTab = "bot", overlay }: BotsWorkspaceProps
           {errorMessage ? <p className="bots-workspace__notice bots-workspace__notice--error">{errorMessage}</p> : null}
         </aside>
 
-        {botItems.length === 0 && !loading && !errorMessage ? (
+        {items.length === 0 && !loading && !errorMessage ? (
           <div className="bots-workspace__empty">
             <div className="bots-workspace__empty-icon">
               <span className="bots-workspace__empty-face">
@@ -221,7 +224,7 @@ export function BotsWorkspace({ activeTab = "bot", overlay }: BotsWorkspaceProps
                 : `Create a new ${activeTab === "bot" ? "bot" : "Bot Hub"} and continue from its main screen.`}
             </p>
             <Link href="/studio/bots/new" className="bots-workspace__create-button">
-              {getStudioPageLabel(copy, "+ 봇/봇 허브 생성")}
+              + {BOT_CREATE_CATALOGS[uiLanguage].createBot}
             </Link>
           </div>
         ) : null}

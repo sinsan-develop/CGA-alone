@@ -58,5 +58,65 @@
     "path": ".github/pr-broker-gate.sh",
     "stage": "S01",
     "reason": "2026-10-29 신산님이 전달한 PR Broker 자동화 적용. 지정된 sinsan-develop/CGA-alone SSH 주소만 반영; gate와 자동화 구조 유지"
+  },
+  {
+    "path": "apps/api/app/api/routes/bots.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/app/api/routes/hubs.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/app/models/studio.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/alembic/versions/20261029_0028_one_bot_per_creator.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/conftest.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_one_bot_creation.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_owner_scope.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/tests/test_bot_create_ui_contract.py",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/web/components/bot-create-dialog.tsx",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/web/components/bots-workspace.tsx",
+    "stage": "S02",
+    "reason": "승인 R01/R02/R26/R27: 제작자별 봇 하나·소유 격리·기존 name 유지·허브 생성 UI 비표시. 허브 API/runtime·공용 그룹 API 유지"
+  },
+  {
+    "path": "apps/api/tests/test_bot_list_api.py",
+    "stage": "S02",
+    "reason": "소유 경계 추가에 필요한 기존 성능 테스트 actor ID fixture만 보완. cache/조회 assertion 불변"
+  },
+  {
+    "path": "apps/web/components/bot-management-page.tsx",
+    "stage": "S02",
+    "reason": "승인 R01: 본인 봇이 있으면 두번째 생성 진입 UI만 숨김"
   }
 ]

@@ -15,7 +15,7 @@ from copy import deepcopy
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import delete, func, or_, select, update
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, defer
 
 from app.api.deps import get_current_user, get_db
@@ -3152,6 +3152,7 @@ def _get_bot_or_404(db: Session, bot_id: UUID, user: User) -> Bot:
             Bot.id == bot_id,
             Bot.organization_id == user.organization_id,
             Bot.group_id == user.group_id,
+            Bot.created_by == user.id,
             Bot.deleted_at.is_(None),
         )
     )
@@ -4231,6 +4232,7 @@ def list_bots(
     filters = [
         Bot.organization_id == current_user.organization_id,
         Bot.group_id == current_user.group_id,
+        Bot.created_by == current_user.id,
         Bot.deleted_at.is_(None),
     ]
     if q:
@@ -4318,6 +4320,11 @@ def create_bot(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="그룹이 지정된 사용자만 봇을 생성할 수 있습니다.",
         )
+    existing_bot = db.scalar(
+        select(Bot.id).where(Bot.created_by == current_user.id, Bot.deleted_at.is_(None)).limit(1)
+    )
+    if existing_bot is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="사용자당 봇은 하나만 생성할 수 있습니다.")
     assert_license_allows_creation(db, current_user.organization_id, "bots")
     bot_id = uuid4()
     bot = Bot(
@@ -4331,7 +4338,16 @@ def create_bot(
         created_by=current_user.id,
     )
     db.add(bot)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as error:
+        if getattr(getattr(error.orig, "diag", None), "constraint_name", None) != "uq_bots_live_creator":
+            raise
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="사용자당 봇은 하나만 생성할 수 있습니다.",
+        ) from error
     profile_image_url = _store_profile_image(bot.id, payload.profile_image_data)
     if profile_image_url:
         bot_data = dict(bot.data_json or {})
@@ -4402,6 +4418,7 @@ def list_api_catalog_bots(
         .where(
             Bot.organization_id == current_user.organization_id,
             Bot.group_id == current_user.group_id,
+            Bot.created_by == current_user.id,
             Bot.deleted_at.is_(None),
         )
         .order_by(Bot.updated_at.desc())

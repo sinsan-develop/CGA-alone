@@ -52,6 +52,7 @@ export function BotManagementPage() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [bots, setBots] = useState<StudioBotApiItem[]>([]);
+  const [hasOwnedBot, setHasOwnedBot] = useState(false);
   const [selectedBotId, setSelectedBotId] = useState("");
   const [versions, setVersions] = useState<StudioBotVersionApiItem[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState("");
@@ -93,6 +94,7 @@ export function BotManagementPage() {
     const requestedBotId = new URLSearchParams(window.location.search).get("bot") || "";
     fetchStudioBots(currentSession.access_token, true)
       .then((items) => {
+        setHasOwnedBot(items.length > 0);
         const operationBots = filterOperationBots(currentSession, items);
         setBots(operationBots);
         setSelectedBotId(resolveInitialOperationBotId(currentSession, operationBots, requestedBotId));
@@ -243,7 +245,7 @@ export function BotManagementPage() {
           <span className="cga-operation-code">BM</span>
           <div><strong>{copy.title}</strong><span>{copy.description}</span></div>
         </div>
-        <Link href="/studio/bots/new" className="cga-operation-primary-action">{copy.createBot}</Link>
+        {!loading && !hasOwnedBot ? <Link href="/studio/bots/new" className="cga-operation-primary-action">{copy.createBot}</Link> : null}
       </header>
 
       <div className="cga-operation-summary cga-operation-summary--management">
