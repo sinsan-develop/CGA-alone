@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-canonical_remote='git@github-cyhuh428:cyhuh428-sinsan/CGA.git'
+canonical_remote='git@github-cyhuh428:cyhuh428-sinsan/CGA-alone.git'
 : "${HEAD_BRANCH:?HEAD_BRANCH is required}"
 : "${HEAD_SHA:?HEAD_SHA is required}"
 
