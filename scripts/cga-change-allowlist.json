@@ -128,5 +128,20 @@
     "path": "apps/api/tests/cga_alone/test_edit_lock_owner_scope.py",
     "stage": "S02",
     "reason": "독립 검토 Important: 승인 R02의 타인 봇 편집 잠금/상태/heartbeat/release/force-release 소유 우회 차단. 기존 역할 조건·본인 잠금 동작 유지"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_hub_owner_compatibility.py",
+    "stage": "S02",
+    "reason": "2026-10-29 신산님 승인: 기존 허브 한정 최소 후보 조회 및 타인 파생 학습자료 비노출 보완/회귀 검증"
+  },
+  {
+    "path": "apps/web/components/bot-hub-composition.tsx",
+    "stage": "S02",
+    "reason": "2026-10-29 신산님 승인: 기존 허브 한정 최소 후보 조회 및 타인 파생 학습자료 비노출 보완/회귀 검증"
+  },
+  {
+    "path": "apps/web/lib/studio-bots-api.ts",
+    "stage": "S02",
+    "reason": "2026-10-29 신산님 승인: 본인 허브 한정 최소 후보 조회의 전용 DTO/호출 연결"
   }
 ]

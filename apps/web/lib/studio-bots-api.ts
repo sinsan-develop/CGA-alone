@@ -878,6 +878,17 @@ export async function fetchStudioHubs(token: string) {
   return apiRequest<StudioHub[]>("/api/v1/hubs", {}, token);
 }
 
+export type StudioHubCandidate = {
+  id: string;
+  name: string;
+  active_version_id: string | null;
+  is_trained: boolean;
+};
+
+export async function fetchStudioHubCandidates(token: string, hubId: string) {
+  return apiRequest<StudioHubCandidate[]>(`/api/v1/hubs/${encodeURIComponent(hubId)}/candidates`, {}, token);
+}
+
 export async function fetchStudioHub(token: string, hubId: string) {
   return apiRequest<StudioHub>(`/api/v1/hubs/${encodeURIComponent(hubId)}`, {}, token);
 }

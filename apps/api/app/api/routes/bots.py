@@ -16,7 +16,7 @@ from copy import deepcopy
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session, object_session, defer
 
 from app.api.deps import get_current_user, get_db
 from app.core.cache import cache_aside_json, purge_cache_pattern
@@ -3216,6 +3216,78 @@ def _list_bot_versions(
     return db.scalars(query).all()
 
 
+def _public_hub_payload(bot: Bot, payload: object) -> object:
+    """허브 파생 학습자료의 공개 투영이며 내부 저장·시나리오는 수정하지 않는다."""
+    if (getattr(bot, "data_json", None) or {}).get("bot_kind") != "hub":
+        # 종류 표시 변경으로 우회하지 못하도록 기존 서버 허브 레코드도 확인한다.
+        session = object_session(bot) if isinstance(bot, Bot) else None
+        if session is None or session.get(BotHub, bot.id) is None:
+            return payload
+    scalar_metadata = {"status", "trained_at", "trained_by_login_id", "provider", "model", "engine_type",
+                       "nlu_type", "nlu_model", "nlu_engine", "schema_version", "started_at", "completed_at",
+                       "morph_analyzer", "language", "bot_id", "version_id"}
+
+    def metadata(value: dict) -> dict:
+        result = {key: item for key, item in value.items()
+                  if isinstance(item, (int, float, bool))
+                  or (key in scalar_metadata and isinstance(item, (str, type(None))))}
+        if isinstance(value.get("counts"), dict):
+            result["counts"] = {key: item for key, item in value["counts"].items()
+                                if isinstance(item, (int, float, bool))}
+        return result
+
+    def dialog(value: object) -> object:
+        if not isinstance(value, dict) or not str(value.get("id") or "").startswith("hub-member-"):
+            return deepcopy(value)
+        return {**deepcopy(value), "utterances": []}
+
+    def system_config(value: dict) -> dict:
+        result = deepcopy(value)
+        training = result.get("nlu_training")
+        if isinstance(training, dict):
+            result["nlu_training"] = metadata(training)
+        evaluation = result.get("nlu_evaluation")
+        if isinstance(evaluation, dict):
+            summary = metadata(evaluation)
+            if isinstance(evaluation.get("latest"), dict):
+                summary["latest"] = metadata(evaluation["latest"])
+            if isinstance(evaluation.get("history"), list):
+                summary["history"] = [metadata(item) for item in evaluation["history"] if isinstance(item, dict)]
+            result["nlu_evaluation"] = summary
+        return result
+
+    def visible(value: object) -> object:
+        if not isinstance(value, dict):
+            return deepcopy(value)
+        result = deepcopy(value)
+        result.pop("_aidot_package_compatibility", None)
+        for key in ("version_json", "version", "manifest"):
+            if isinstance(result.get(key), dict):
+                result[key] = visible(result[key])
+        if isinstance(result.get("versions"), list):
+            result["versions"] = [visible(item) for item in result["versions"]]
+        if isinstance(result.get("system_config"), dict):
+            result["system_config"] = system_config(result["system_config"])
+        if isinstance(result.get("dialogs"), list):
+            result["dialogs"] = [dialog(item) for item in result["dialogs"]]
+        if isinstance(result.get("dialog"), dict):
+            result["dialog"] = dialog(result["dialog"])
+        if result.get("section") == "dialogs" and isinstance(result.get("items"), list):
+            result["items"] = [dialog(item) for item in result["items"]]
+        for key in ("model", "nlu_training", "evaluation", "snapshot", "quality_diagnostics", "training_quality_diagnostics"):
+            if isinstance(result.get(key), dict):
+                result[key] = metadata(result[key])
+        if isinstance(result.get("candidates"), list):
+            result["candidates"] = [{**item, "reason": ""} if isinstance(item, dict) else item for item in result["candidates"]]
+            if "raw_content" in result:
+                result["raw_content"] = ""
+        if result.get("job_id") and result.get("error_message"):
+            result["error_message"] = "허브 학습 처리에 실패했습니다. 관리자에게 확인해 주세요."
+        return result
+
+    return visible(payload)
+
+
 def _serialize_version(
     bot: Bot,
     version: BotVersion,
@@ -3251,7 +3323,7 @@ def _serialize_version(
         trained_by_login_id = nlu_training.get("trained_by_login_id")
         if isinstance(trained_by_login_id, str) and trained_by_login_id.strip():
             updated_by_login_id = trained_by_login_id.strip()
-    return {
+    return _public_hub_payload(bot, {
         "id": str(version.id),
         "bot_id": str(version.bot_id),
         "version_no": version.version_no,
@@ -3270,7 +3342,7 @@ def _serialize_version(
         "updated_by_login_id": str(updated_by_login_id) if updated_by_login_id else None,
         "updated_at": _iso(version.updated_at),
         "created_at": _iso(version.created_at),
-    }
+    })
 
 
 def _serialize_version_summary(
@@ -3313,7 +3385,7 @@ def _serialize_version_summary(
         trained_by_login_id = nlu_training.get("trained_by_login_id")
         if isinstance(trained_by_login_id, str) and trained_by_login_id.strip():
             updated_by_login_id = trained_by_login_id.strip()
-    return {
+    return _public_hub_payload(bot, {
         "id": str(version.id),
         "bot_id": str(version.bot_id),
         "version_no": version.version_no,
@@ -3332,7 +3404,7 @@ def _serialize_version_summary(
         "updated_by_login_id": str(updated_by_login_id) if updated_by_login_id else None,
         "updated_at": _iso(version.updated_at),
         "created_at": _iso(version.created_at),
-    }
+    })
 
 
 def _serialize_version_settings_summary(
@@ -3388,7 +3460,7 @@ def _serialize_version_settings_summary(
         payload["version_json"] = {
             **version_payload,
         }
-    return payload
+    return _public_hub_payload(bot, payload)
 
 
 def _serialize_bot_settings_summary(
@@ -3642,7 +3714,7 @@ def _serialize_version_document_items(
     )
     summary_document = None if light_document is not None else version_json
     items = version_json.get(section_key)
-    return {
+    return _public_hub_payload(bot, {
         "bot_id": str(bot.id),
         "version_id": str(version.id),
         "section": section_key,
@@ -3651,7 +3723,7 @@ def _serialize_version_document_items(
         "asset_counts": _version_asset_counts(version, summary_document),
         "scenario_validation": _version_scenario_validation(version, summary_document),
         "updated_at": _iso(version.updated_at),
-    }
+    })
 
 
 def _version_document_with_dialogs(
@@ -3738,7 +3810,7 @@ def _version_document_with_items(
 
 def _serialize_version_reference_items(bot: Bot, version: BotVersion, db: Session | None = None) -> dict[str, object]:
     version_json = _version_document_for_dialog_reads(version, db)
-    return {
+    return _public_hub_payload(bot, {
         "bot_id": str(bot.id),
         "version_id": str(version.id),
         "version": _serialize_version_summary(bot, version, db, version_json),
@@ -3746,7 +3818,7 @@ def _serialize_version_reference_items(bot: Bot, version: BotVersion, db: Sessio
         "dialog_flow_graphs": deepcopy(version_json["dialog_flow_graphs"]),
         "rules": deepcopy(version_json["rules"]),
         "updated_at": _iso(version.updated_at),
-    }
+    })
 
 
 def _find_dialog_document(version_json: dict[str, object], dialog_id: str) -> dict[str, object] | None:
@@ -3785,7 +3857,7 @@ def _serialize_version_dialog_flow(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dialog not found")
 
     graph = _find_dialog_flow_graph(version_json, dialog_id)
-    return {
+    return _public_hub_payload(bot, {
         "bot_id": str(bot.id),
         "version_id": str(version.id),
         "dialog_id": dialog_id,
@@ -3799,7 +3871,7 @@ def _serialize_version_dialog_flow(
         "asset_counts": _version_asset_counts(version, summary_document),
         "scenario_validation": _version_scenario_validation(version, summary_document),
         "updated_at": _iso(version.updated_at),
-    }
+    })
 
 
 def _version_document_with_dialog_flow(
@@ -3855,7 +3927,7 @@ def _serialize_version_configure(
     )
     version_json = light_document or _version_document_for_dialog_reads(version, db)
     summary_document = None if light_document is not None else version_json
-    return {
+    return _public_hub_payload(bot, {
         "bot_id": str(bot.id),
         "version_id": str(version.id),
         "version": _serialize_version_summary(bot, version, db, summary_document),
@@ -3867,7 +3939,7 @@ def _serialize_version_configure(
         "asset_counts": _version_asset_counts(version, summary_document),
         "scenario_validation": _version_scenario_validation(version, summary_document),
         "updated_at": _iso(version.updated_at),
-    }
+    })
 
 
 def _version_document_with_configure(
@@ -3890,7 +3962,7 @@ def _serialize_version_retraining(bot: Bot, version: BotVersion, db: Session | N
     )
     version_json = light_document or _version_document_for_dialog_reads(version, db)
     summary_document = None if light_document is not None else version_json
-    return {
+    return _public_hub_payload(bot, {
         "bot_id": str(bot.id),
         "version_id": str(version.id),
         "version": _serialize_version_summary(bot, version, db, summary_document),
@@ -3899,7 +3971,7 @@ def _serialize_version_retraining(bot: Bot, version: BotVersion, db: Session | N
         "asset_counts": _version_asset_counts(version, summary_document),
         "scenario_validation": _version_scenario_validation(version, summary_document),
         "updated_at": _iso(version.updated_at),
-    }
+    })
 
 
 def _version_document_with_retraining(
@@ -5893,7 +5965,7 @@ def _prepare_natural_hub_training_document(db: Session, bot: Bot, version: BotVe
     system_config = document.get("system_config") if isinstance(document.get("system_config"), dict) else {}
     document["system_config"] = {**system_config, "hub_routing": {"members": routes}}
     _assign_version_document(version, document)
-    sync_version_dialog_split_tables(db, version)
+    sync_version_dialog_split_tables(db, bot, version, document, include_dialogs=True, include_graphs=False)
     db.add(version)
     db.flush()
 
@@ -6016,7 +6088,7 @@ def _run_version_nlu_training(
         _purge_version_cache(version)
         return success_response(
             request,
-            {
+            _public_hub_payload(bot, {
                 "schema_version": training_snapshot.get("schema_version"),
                 "engine_type": "llm",
                 "model_path": None,
@@ -6032,7 +6104,7 @@ def _run_version_nlu_training(
                 },
                 "evaluation": system_config["nlu_evaluation"]["latest"],
                 "answer_training": answer_training_result,
-            },
+            }),
         )
     if str(data_json.get("nlu_type") or "ml") in SEMANTIC_NLU_TYPES:
         training_started_at = datetime.now(timezone.utc)
@@ -6121,7 +6193,7 @@ def _run_version_nlu_training(
             "quality_diagnostics": split_quality_diagnostics,
             "training_quality_diagnostics": training_quality_diagnostics,
         }
-        return success_response(request, result)
+        return success_response(request, _public_hub_payload(bot, result))
 
     if int(training_summary["intent_count"]) < 2:
         raise HTTPException(
@@ -6215,7 +6287,7 @@ def _run_version_nlu_training(
     db.commit()
     _purge_version_cache(version)
 
-    return success_response(request, result)
+    return success_response(request, _public_hub_payload(bot, result))
 
 
 def _require_nlu_training_version_exists(db: Session, bot_id: UUID, version_id: UUID) -> None:
@@ -6314,7 +6386,7 @@ def enqueue_version_nlu_training(
         .order_by(ChannelQueueEvent.created_at.asc())
     )
     if existing is not None:
-        return success_response(request, _serialize_nlu_training_job(existing))
+        return success_response(request, _public_hub_payload(bot, _serialize_nlu_training_job(existing)))
 
     payload_json = payload.model_dump(mode="json") if payload is not None else {}
     queue_event = ChannelQueueEvent(
@@ -6366,7 +6438,7 @@ def enqueue_version_nlu_training(
             },
         },
     )
-    return success_response(request, _serialize_nlu_training_job(queue_event))
+    return success_response(request, _public_hub_payload(bot, _serialize_nlu_training_job(queue_event)))
 
 
 @router.get("/{bot_id}/versions/{version_id}/nlu/train/jobs/{job_id}")
@@ -6391,7 +6463,7 @@ def get_version_nlu_training_job(
     )
     if queue_event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="학습 작업을 찾을 수 없습니다.")
-    return success_response(request, _serialize_nlu_training_job(queue_event))
+    return success_response(request, _public_hub_payload(bot, _serialize_nlu_training_job(queue_event)))
 
 
 def recover_interrupted_nlu_training_events(db: Session) -> int:
@@ -6826,7 +6898,7 @@ def test_version_llm_intent(
     ]
     return success_response(
         request,
-        {
+        _public_hub_payload(bot, {
             "provider": result.provider,
             "model": result.model,
             "latency_ms": result.latency_ms,
@@ -6834,7 +6906,7 @@ def test_version_llm_intent(
             "top_k": payload.top_k,
             "candidates": candidates,
             "raw_content": result.raw_content,
-        },
+        }),
     )
 
 
@@ -6873,7 +6945,7 @@ def test_version_ml_intent(
     ]
     return success_response(
         request,
-        {
+        _public_hub_payload(bot, {
             "provider": "deep-learning-lite",
             "model": "deep_learning_lite",
             "latency_ms": 0,
@@ -6883,7 +6955,7 @@ def test_version_ml_intent(
             "similar_intent_score": similar_intent_score,
             "max_intent_results": max_intent_results,
             "candidates": candidates,
-        },
+        }),
     )
 
 @router.post("/{bot_id}/versions/{version_id}/nlu/semantic/test")
@@ -6910,7 +6982,7 @@ def test_version_semantic_intent(
     if exact_match:
         return success_response(
             request,
-            {
+            _public_hub_payload(bot, {
                 "provider": "vector-worker",
                 "model": _safe_text_value(ai_config.get("nlu_model") or ai_config.get("nlu_engine"))
                 or "semantic_engine_default",
@@ -6927,13 +6999,13 @@ def test_version_semantic_intent(
                         "reason": exact_match.get("matched_text") or exact_match.get("source") or "exact",
                     }
                 ],
-            },
+            }),
         )
     label_match = _semantic_label_intent_match(vector_documents, payload.utterance)
     if label_match:
         return success_response(
             request,
-            {
+            _public_hub_payload(bot, {
                 "provider": "vector-worker",
                 "model": _safe_text_value(ai_config.get("nlu_model") or ai_config.get("nlu_engine"))
                 or "semantic_engine_default",
@@ -6950,7 +7022,7 @@ def test_version_semantic_intent(
                         "reason": "intent-label-match",
                     }
                 ],
-            },
+            }),
         )
     try:
         matches = IntentVectorSearchClient(vector_config).search(
@@ -6976,14 +7048,14 @@ def test_version_semantic_intent(
     ]
     return success_response(
         request,
-        {
+        _public_hub_payload(bot, {
             "provider": "vector-worker",
             "model": _safe_text_value(ai_config.get("nlu_model") or ai_config.get("nlu_engine")) or "semantic_engine_default",
             "latency_ms": 0,
             "utterance": payload.utterance,
             "top_k": payload.top_k,
             "candidates": candidates,
-        },
+        }),
     )
 
 
@@ -7358,7 +7430,7 @@ def get_version_nlu_model(
 ) -> dict[str, object]:
     bot = _get_bot_or_404(db, bot_id, current_user)
     version = _get_version_or_404(db, bot.id, version_id)
-    return success_response(request, get_deep_learning_lite_model_manifest(bot.id, version.id))
+    return success_response(request, _public_hub_payload(bot, get_deep_learning_lite_model_manifest(bot.id, version.id)))
 
 
 @router.get("/{bot_id}/versions/{version_id}/export")
@@ -7375,7 +7447,7 @@ def export_version_package(
     answer_vector_index = _export_answer_vector_index(bot, version, ai_config)
     return success_response(
         request,
-        {
+        _public_hub_payload(bot, {
             "schema_version": "aidot-version-package-v1",
             "bot": {
                 "id": str(bot.id),
@@ -7391,7 +7463,7 @@ def export_version_package(
             },
             "version_json": normalize_version_document(version.version_json),
             "answer_vector_index": answer_vector_index,
-        },
+        }),
     )
 
 
@@ -7406,7 +7478,7 @@ def export_aidot_bot_package(
     bot = _get_bot_or_404(db, bot_id, current_user)
     version = _get_version_or_404(db, bot.id, version_id)
     package = version_document_to_aidot_bot_package(
-        version.version_json,
+        _public_hub_payload(bot, version.version_json),
         bot={
             "id": str(bot.id),
             "name": bot.name,
