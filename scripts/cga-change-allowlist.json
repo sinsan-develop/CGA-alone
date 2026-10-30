@@ -443,5 +443,15 @@
     "path": "apps/api/tests/cga_alone/fixtures/client_templates/google-chat.json",
     "stage": "S11",
     "reason": "기승인 WORK_PLAN S11 여섯 기본 RED와 공식 Google Chat 합성 공간/thread 표본. 제품 계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/clients/test_line.py",
+    "stage": "S12",
+    "reason": "기승인 WORK_PLAN S12 기본6 RED와 공식 LINE 합성 message/webhook 표본. 제품 계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/line.json",
+    "stage": "S12",
+    "reason": "기승인 WORK_PLAN S12 기본6 RED와 공식 LINE 합성 message/webhook 표본. 제품 계약 적용은 별도 승인 후"
   }
 ]
