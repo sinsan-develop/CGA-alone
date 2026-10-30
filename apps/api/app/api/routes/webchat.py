@@ -5,6 +5,8 @@ import hashlib
 import secrets
 import hmac
 import logging
+from contextlib import contextmanager
+from threading import Event, Thread
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,7 +20,7 @@ from app.db.session import SessionLocal
 from app.core.config import settings
 from app.core.responses import success_response
 from app.core.version_documents import normalize_version_document
-from app.models import AdminChannel, Bot, BotVersion, Group, ChannelRoom
+from app.models import AdminChannel, Bot, BotVersion, Group, ChannelRoom, ChannelMessage, ChannelQueueEvent
 from app.services.default_messages import resolve_default_message_text
 from app.services.bot_ai_policy import runtime_block_reason, secondary_llm_block_reason
 from app.services.llm_client import LlmClientError
@@ -34,6 +36,11 @@ logger = logging.getLogger(__name__)
 class WebchatMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     participant_id: str | None = Field(default=None, max_length=120)
+    addressed: bool | None = None
+
+
+class WebchatSharedParticipantRequest(BaseModel):
+    participant_name: str = Field(default="사용자", min_length=1, max_length=120)
 
 
 def _verify_webchat_key(api_key: str | None) -> None:
@@ -648,6 +655,233 @@ def _create_native_webchat_message(bot, version, room_id, payload, request, api_
     })
 
 
+@contextmanager
+def _shared_processing_lease(room_id, actor, generation, context):
+    from app.services.room_turn import renew_room_turn_processing_lease
+    stop = Event()
+    def renew():
+        while not stop.wait(10):
+            try:
+                with SessionLocal() as db:
+                    # 갱신 transaction은 짧게 끝내고 외부 응답을 기다리는 동안 유지하지 않는다.
+                    from sqlalchemy import text
+                    db.execute(text("SET LOCAL lock_timeout = '2s'"))
+                    if not renew_room_turn_processing_lease(db, room_id, actor, generation, lease_seconds=30):
+                        context["lease_lost"] = True
+                        return
+                    db.commit()
+            except Exception:
+                context["lease_lost"] = True
+                return
+    worker = Thread(target=renew, name="cga-shared-turn-lease", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=max(5, int(settings.db_connect_timeout_seconds) + 3))
+
+
+def _shared_runtime_message(bot, version, room_id, payload, request, api_key, credential):
+    from app.api.routes import channels
+    from app.services.room_turn import claim_room_turn, renew_room_turn_processing_lease
+    try:
+        native_id = UUID(room_id)
+    except (ValueError, TypeError):
+        raise _credential_denied() from None
+    with SessionLocal() as db:
+        room, _binding = _shared_room(db, bot, native_id, lock=True)
+        room, member = _shared_member(db, bot, native_id, credential)
+        actor = member["actor_id"]
+        if payload.addressed is not True:
+            token = channels._shared_turn_capability.set(None)
+            try:
+                message = channels._add_message(db, room, actor, "user", member.get("participant_name") or "사용자", payload.message)
+            finally:
+                channels._shared_turn_capability.reset(token)
+            db.commit();db.refresh(message)
+            return success_response(request, {"roomId": room_id, "userMessage": channels._serialize_message(message),
+                "botMessage": None, "botMessages": [], "turn": _shared_turn_view(db, room, actor)})
+        previous_generation = _as_dict(_as_dict(room.metadata_json).get("__roomTurn")).get("generation")
+        version_replaced = room.bot_version_id != version.id
+        if version_replaced:
+            previous_version_id = channels._apply_active_version_to_room(room, bot, version, "webchat")
+            channels._write_channel_audit_log(db, request, "channel.session.version_applied", room.id,
+                {"channel": "webchat", "bot_id": str(bot.id), "previous_version_id": previous_version_id, "active_version_id": str(version.id)})
+            db.flush()
+        decision = claim_room_turn(db, room, actor, True)
+        if not decision.allowed:
+            raise HTTPException(status_code=409, detail="이 방의 다른 질문이 진행 중입니다.")
+        if decision.reason in {"expired", "version_changed"} or version_replaced:
+            previous = _as_dict(room.metadata_json)
+            fresh = channels._initial_runtime_state_for_version(bot, version, "webchat")
+            for key in ("__webchatAccess", "__roomTurn", "conversationHistory", "language"):
+                if key in previous:
+                    fresh[key] = previous[key]
+            room.metadata_json = fresh
+            flag_modified(room, "metadata_json")
+            if previous_generation:
+                abandoned = db.scalars(select(ChannelQueueEvent).where(ChannelQueueEvent.room_id == room.id,
+                    ChannelQueueEvent.status == "processing",
+                    ChannelQueueEvent.parameter_json["sharedTurnGeneration"].astext == previous_generation)).all()
+                for event in abandoned:
+                    event.status = "unknown";event.receive_status = "failed"
+                    event.status_changed_at = datetime.now(timezone.utc)
+                    event.result_json = {"outcome": "unknown", "reason": "shared_turn_expired"}
+            db.flush()
+        if not renew_room_turn_processing_lease(db, room.id, actor, decision.generation, lease_seconds=30):
+            raise HTTPException(status_code=409, detail="질문 차례를 확보하지 못했습니다.")
+        db.commit()
+    with channels._webchat_room_access(native_id), channels._shared_room_turn_access(native_id, actor, decision.generation, member.get("participant_name") or "사용자") as context:
+        try:
+            with _shared_processing_lease(native_id, actor, decision.generation, context):
+                result = channels.create_channel_room_message("webchat", native_id,
+                    channels.ChannelMessageRequest(message=payload.message, participant_id=actor), request, api_key)["data"]
+        except Exception:
+            # 결과가 불명확한 이전 API를 자동 재실행하지 않는다.
+            if context["queue_event_id"] is not None:
+                with SessionLocal() as db:
+                    event = db.get(ChannelQueueEvent, context["queue_event_id"])
+                    if event is not None and event.status == "processing":
+                        event.status = "unknown";event.receive_status = "failed"
+                        event.result_json = {"outcome": "unknown", "reason": "shared_turn_interrupted"}
+                        db.commit()
+            raise
+    with SessionLocal() as db:
+        room = db.scalar(select(ChannelRoom).where(ChannelRoom.id == native_id).with_for_update().execution_options(populate_existing=True))
+        access = _as_dict(_as_dict(room.metadata_json).get("__webchatAccess"))
+        members = dict(_as_dict(access.get("members")))
+        if actor in members:
+            members[actor] = {**_as_dict(members[actor]), "expires_at": _webchat_credential_expiry(bot, version)}
+            room.metadata_json = {**_as_dict(room.metadata_json), "__webchatAccess": {**access, "members": members}}
+            flag_modified(room, "metadata_json");db.commit()
+        result["turn"] = _shared_turn_view(db, room, actor)
+    return success_response(request, result)
+
+
+def _shared_target(bot_id, api_key):
+    _verify_webchat_key(api_key)
+    bot, version, _group = _get_active_bot_version(bot_id)
+    if not isinstance(_version_ai_config(bot, version).get("secondary_llm"), dict) or _as_dict(bot.data_json).get("bot_kind") == "hub":
+        raise HTTPException(status_code=409, detail="공유방은 2차 답변 모듈이 설정된 운영봇에서 사용합니다.")
+    return bot, version
+
+
+def _shared_room(db, bot, room_id, *, lock=False):
+    from app.api.routes import channels
+    query = select(ChannelRoom).where(ChannelRoom.id == room_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    room = db.scalar(query)
+    if (room is None or room.deleted_at is not None or room.status != "open" or room.channel_type != "webchat"
+        or room.bot_id != bot.id or channels._is_persistent_room(db, room_id)):
+        raise _credential_denied()
+    binding = _as_dict(_as_dict(room.metadata_json).get("__webchatAccess"))
+    if (binding.get("mode") != "shared" or binding.get("bot_id") != str(bot.id)
+        or binding.get("organization_id") != str(bot.organization_id) or binding.get("channel") != "webchat"
+        or binding.get("client_room_hash") != hashlib.sha256(str(room.id).encode("utf-8")).hexdigest()
+        or not isinstance(binding.get("members"), dict)):
+        raise _credential_denied()
+    return room, binding
+
+
+def _shared_member(db, bot, room_id, token):
+    room, binding = _shared_room(db, bot, room_id)
+    try:
+        if not isinstance(token, str) or len(token) > 256:
+            raise ValueError
+        token_room, secret = token.split(".", 1)
+        if UUID(token_room) != room.id or not re.fullmatch(r"[A-Za-z0-9_-]{43}", secret):
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise _credential_denied() from None
+    matched = None
+    digest = _webchat_secret_digest(secret)
+    for actor, value in binding["members"].items():
+        member = _as_dict(value)
+        stored = member.get("digest")
+        if (isinstance(actor, str) and re.fullmatch(r"wc:[0-9a-f]{32}", actor)
+            and isinstance(stored, str) and re.fullmatch(r"[0-9a-f]{64}", stored)
+            and hmac.compare_digest(stored, digest)):
+            matched = {**member, "actor_id": actor}
+    if matched is None:
+        raise _credential_denied()
+    expires = matched.get("expires_at")
+    if expires is not None:
+        try:
+            deadline = datetime.fromisoformat(expires)
+            if deadline.tzinfo is None or deadline <= datetime.now(timezone.utc):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise _credential_denied() from None
+    return room, matched
+
+
+def _shared_turn_view(db, room, actor):
+    from app.services import room_turn
+    turn = _as_dict(room.metadata_json).get("__roomTurn")
+    idle = {"state": "idle", "ownerParticipantId": None, "canAskBot": True}
+    if turn is None:
+        return idle
+    if not room_turn._valid_turn(turn):
+        return {"state": "processing", "ownerParticipantId": None, "canAskBot": False}
+    try:
+        if room_turn._expired(db, turn, "waiting_expires_at" if turn["phase"] == "waiting_input" else "processing_expires_at"):
+            return idle
+    except (ValueError, TypeError):
+        return {"state": "processing", "ownerParticipantId": None, "canAskBot": False}
+    waiting = turn["phase"] == "waiting_input"
+    return {"state": "waiting_input" if waiting else "processing", "ownerParticipantId": turn["actor_id"],
+        "canAskBot": waiting and turn["actor_id"] == actor}
+
+
+def _issue_shared_member(db, room, binding, bot, version, name):
+    actor, secret = "wc:" + uuid4().hex, secrets.token_urlsafe(32)
+    members = {**binding["members"], actor: {"digest": _webchat_secret_digest(secret),
+        "participant_name": name, "expires_at": _webchat_credential_expiry(bot, version)}}
+    room.metadata_json = {**_as_dict(room.metadata_json), "__webchatAccess": {**binding, "members": members}}
+    flag_modified(room, "metadata_json")
+    db.commit()
+    return {"roomId": str(room.id), "participantId": actor, "conversationToken": str(room.id) + "." + secret,
+        "turn": _shared_turn_view(db, room, actor)}
+
+
+@router.post("/bots/{bot_id}/shared-rooms")
+def create_shared_webchat_room(bot_id: str, payload: WebchatSharedParticipantRequest, request: Request,
+    x_aidot_webchat_key: str | None = Header(default=None)):
+    from app.api.routes import channels
+    bot, version = _shared_target(bot_id, x_aidot_webchat_key)
+    created = channels.create_channel_room("webchat", channels.ChannelRoomCreateRequest(bot_id=str(bot.id),
+        client_room_id="wc-auth:" + uuid4().hex, participant_id="wc:" + uuid4().hex,
+        participant_name=payload.participant_name, start_immediately=False), request, x_aidot_webchat_key)["data"]
+    with SessionLocal() as db:
+        room = db.get(ChannelRoom, UUID(created["room"]["id"]))
+        binding = {"mode": "shared", "bot_id": str(bot.id), "organization_id": str(bot.organization_id),
+            "channel": "webchat", "client_room_hash": hashlib.sha256(str(room.id).encode("utf-8")).hexdigest(), "members": {}}
+        return success_response(request, _issue_shared_member(db, room, binding, bot, version, payload.participant_name))
+
+
+@router.post("/bots/{bot_id}/shared-rooms/{room_id}/participants")
+def join_shared_webchat_room(bot_id: str, room_id: UUID, payload: WebchatSharedParticipantRequest, request: Request,
+    x_aidot_webchat_key: str | None = Header(default=None)):
+    bot, version = _shared_target(bot_id, x_aidot_webchat_key)
+    with SessionLocal() as db:
+        room, binding = _shared_room(db, bot, room_id, lock=True)
+        return success_response(request, _issue_shared_member(db, room, binding, bot, version, payload.participant_name))
+
+
+@router.get("/bots/{bot_id}/shared-rooms/{room_id}/messages")
+def get_shared_webchat_messages(bot_id: str, room_id: UUID, request: Request,
+    x_aidot_webchat_key: str | None = Header(default=None), x_aidot_conversation_token: str | None = Header(default=None)):
+    from app.api.routes import channels
+    bot, _version = _shared_target(bot_id, x_aidot_webchat_key)
+    with SessionLocal() as db:
+        room, member = _shared_member(db, bot, room_id, x_aidot_conversation_token)
+        messages = db.scalars(select(ChannelMessage).where(ChannelMessage.room_id == room.id).order_by(ChannelMessage.created_at, ChannelMessage.id)).all()
+        return success_response(request, {"roomId": str(room.id), "messages": [channels._serialize_message(item) for item in messages],
+            "turn": _shared_turn_view(db, room, member["actor_id"])})
+
+
 @router.post("/bots/{bot_id}/rooms/{room_id}/messages")
 def create_webchat_room_message(
     bot_id: str,
@@ -663,6 +897,16 @@ def create_webchat_room_message(
     secondary_enabled = isinstance(_version_ai_config(bot, version).get("secondary_llm"), dict) and _as_dict(bot.data_json).get("bot_kind") != "hub"
     if credential is not None and not secondary_enabled:
         raise _credential_denied()
+    if secondary_enabled and credential is not None:
+        try:
+            candidate_id = UUID(credential.split(".", 1)[0])
+        except (ValueError, TypeError, AttributeError):
+            raise _credential_denied() from None
+        with SessionLocal() as db:
+            candidate = db.get(ChannelRoom, candidate_id)
+            shared = _as_dict(_as_dict(candidate.metadata_json if candidate else None).get("__webchatAccess")).get("mode") == "shared"
+        if shared:
+            return _shared_runtime_message(bot, version, room_id, payload, request, x_aidot_webchat_key, credential)
     if secondary_enabled:
         return _create_native_webchat_message(bot, version, room_id, payload, request, x_aidot_webchat_key, credential)
     document = normalize_version_document(version.version_json)

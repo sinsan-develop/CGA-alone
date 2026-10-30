@@ -791,6 +791,69 @@ def _is_persistent_room(db: Session, room_id: UUID | None) -> bool:
 _webchat_room_capability: ContextVar[UUID | None] = ContextVar("webchat_room_capability", default=None)
 
 
+# 검증된 공유방 참가자에 대해서만 사용하는 서버 내부 실행 권한이다.
+_shared_turn_capability: ContextVar[dict | None] = ContextVar("shared_turn_capability", default=None)
+
+
+@contextmanager
+def _shared_room_turn_access(room_id, actor_id, generation, participant_name):
+    context = {"room_id": room_id, "actor_id": actor_id, "generation": generation,
+        "participant_name": participant_name, "fenced": False, "protected": {}, "queue_event_id": None, "lease_lost": False}
+    token = _shared_turn_capability.set(context)
+    try:
+        yield context
+    finally:
+        _shared_turn_capability.reset(token)
+
+
+@contextmanager
+def _shared_room_execution_db(db):
+    previous = db.expire_on_commit
+    if _shared_turn_capability.get() is not None:
+        db.expire_on_commit = False
+    try:
+        yield
+    finally:
+        db.expire_on_commit = previous
+
+
+def _fence_shared_room_write(db, room):
+    context = _shared_turn_capability.get()
+    if context is None or context["room_id"] != room.id:
+        return
+    from app.services.room_turn import lock_current_room_turn
+    candidate = _as_dict(room.metadata_json)
+    if context["lease_lost"]:
+        raise HTTPException(status_code=409, detail="질문 차례가 만료되어 이전 결과를 저장하지 않았습니다.")
+    if not context["fenced"]:
+        with db.no_autoflush:
+            current = lock_current_room_turn(db, room.id, context["actor_id"], context["generation"])
+        if current is None:
+            raise HTTPException(status_code=409, detail="질문 차례가 변경되어 이전 결과를 저장하지 않았습니다.")
+        context["protected"] = {key: deepcopy(_as_dict(current.metadata_json).get(key)) for key in ("__webchatAccess", "__roomTurn")}
+        # 외부 응답 중 저장된 일반 대화의 이력은 최신 DB를 유지한다.
+        history = deepcopy(_as_dict(candidate.get("conversationHistory")))
+        latest_history = _as_dict(_as_dict(current.metadata_json).get("conversationHistory"))
+        for key in ("message_count", "user_message_count", "transcript", "last_message_at", "last_user_message_at",
+                    "started_at", "user_utterances", "user_raw_utterances", "first_user_utterance"):
+            if key in latest_history:
+                history[key] = deepcopy(latest_history[key])
+        if history:
+            candidate["conversationHistory"] = history
+        context["fenced"] = True
+    candidate.update(deepcopy(context["protected"]))
+    written_history = context.get("written_history")
+    if written_history is not None:
+        history = _as_dict(candidate.get("conversationHistory"))
+        for key in ("message_count", "user_message_count", "transcript", "last_message_at", "last_user_message_at",
+                    "started_at", "user_utterances", "user_raw_utterances", "first_user_utterance"):
+            if key in written_history:
+                history[key] = deepcopy(written_history[key])
+        candidate["conversationHistory"] = history
+    room.metadata_json = candidate
+    flag_modified(room, "metadata_json")
+
+
 def _is_credential_room(room: ChannelRoom) -> bool:
     return str(getattr(room, "client_room_id", None) or "").startswith("wc-auth:") or "__webchatAccess" in _as_dict(getattr(room, "metadata_json", None))
 
@@ -3717,6 +3780,7 @@ def _add_message(
     message_type: str = "text",
     payload_json: dict[str, Any] | None = None,
 ) -> ChannelMessage:
+    _fence_shared_room_write(db, room)
     created_at = datetime.now(timezone.utc)
     message = ChannelMessage(
         room_id=room.id,
@@ -3731,6 +3795,9 @@ def _add_message(
     )
     db.add(message)
     _update_room_conversation_history_for_message(room, message)
+    context = _shared_turn_capability.get()
+    if context is not None and context["room_id"] == room.id:
+        context["written_history"] = deepcopy(_as_dict(room.metadata_json).get("conversationHistory"))
     flag_modified(room, "metadata_json")
     db.add(room)
     return message
@@ -6403,7 +6470,7 @@ def create_channel_room_message(
     channel = _ensure_channel(channel_type)
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
-    with SessionLocal() as db:
+    with SessionLocal() as db, _shared_room_execution_db(db):
         _assert_legacy_room_access(db, room_id)
         room = db.scalar(
             select(ChannelRoom).where(
@@ -6453,7 +6520,7 @@ def create_channel_room_message(
             room,
             participant_id=payload.participant_id or room.participant_id,
             participant_kind="user",
-            participant_name=room.participant_name,
+            participant_name=(_shared_turn_capability.get() or {}).get("participant_name") or room.participant_name,
             text=payload.message,
         )
         db.flush()
@@ -6482,6 +6549,10 @@ def create_channel_room_message(
         document = normalize_version_document(version.version_json)
         default_messages = _load_default_messages(db, bot.organization_id, message_languages)
         runtime_state_before = _as_dict(room.metadata_json) or _initial_runtime_state_for_version(bot, version, room.channel_type)
+        if _shared_turn_capability.get() is not None:
+            # 이번 실행의 실제 대기를 이전 질문의 종료 flag와 분리한다.
+            runtime_state_before["dialogEnded"] = False
+            runtime_state_before["sessionEnded"] = False
         _reset_stalled_waiting_talk_state(document, runtime_state_before, channel_code)
         runtime_state_snapshot = deepcopy(runtime_state_before)
         _set_runtime_system_variables(
@@ -6490,7 +6561,7 @@ def create_channel_room_message(
             channel_code=channel_code,
             room=room,
             participant_id=payload.participant_id or room.participant_id,
-            participant_name=room.participant_name,
+            participant_name=(_shared_turn_capability.get() or {}).get("participant_name") or room.participant_name,
             message=payload.message,
         )
         runtime_state_after = runtime_state_before
@@ -6507,6 +6578,17 @@ def create_channel_room_message(
             channel_code,
             None if payload.source_talk_node_id is None else str(runtime_state_before.get("waitingNodeId") or None),
         )
+
+        shared_turn = _shared_turn_capability.get()
+        if shared_turn is not None:
+            shared_turn["queue_event_id"] = queue_event.id
+            queue_event.parameter_json = {**_as_dict(queue_event.parameter_json), "sharedTurnGeneration": shared_turn["generation"]}
+            flag_modified(queue_event, "parameter_json")
+            # 입력/processing을 영속화한 뒤 외부 실행 전 transaction을 종료한다.
+            db.commit()
+            shared_turn["fenced"] = False
+            shared_turn["protected"] = {}
+            shared_turn["written_history"] = None
 
         try:
             item = _append_runtime_event(
@@ -6749,6 +6831,8 @@ def create_channel_room_message(
                 },
             )
             if runtime_state.get("sessionEnded") is True:
+                # 출력 없는 End에서도 생명주기 변경 전에 세대를 검증한다.
+                _fence_shared_room_write(db, room)
                 _archive_room_for_new_session(db, room, "end_session_immediately")
                 _write_channel_audit_log(
                     db,
@@ -6840,6 +6924,29 @@ def create_channel_room_message(
                     text=_runtime_message(default_messages, "system_error", DEFAULT_MESSAGE_FALLBACKS["system_error"]),
                 )
             )
+        if shared_turn is not None:
+            from app.services.room_turn import hold_room_turn_for_input, release_room_turn
+            if queue_event.status == "failed":
+                # 실패한 질문의 대기/변수를 다음 참가자가 이어받지 않는다.
+                previous = _as_dict(room.metadata_json)
+                fresh = _initial_runtime_state_for_version(bot, version, channel)
+                for key in ("__webchatAccess", "__roomTurn", "conversationHistory", "language", "runtimeEvents"):
+                    if key in previous:
+                        fresh[key] = previous[key]
+                fresh["dialogEnded"] = True
+                room.metadata_json = fresh
+                flag_modified(room, "metadata_json")
+                runtime_state_after = fresh
+                _set_queue_status(queue_event, "failed", receive_status=queue_event.receive_status,
+                    result_json=queue_event.result_json, error_message=queue_event.error_message)
+            _fence_shared_room_write(db, room)
+            db.flush()
+            waiting_input = bool(str(runtime_state_after.get("waitingNodeId") or "").strip())
+            if queue_event.status == "failed" or runtime_state_after.get("sessionEnded") is True or not waiting_input:
+                release_room_turn(db, room.id, shared_turn["actor_id"], shared_turn["generation"],
+                    "error" if queue_event.status == "failed" else "session_ended" if runtime_state_after.get("sessionEnded") is True else "dialog_ended")
+            else:
+                hold_room_turn_for_input(db, room.id, shared_turn["actor_id"], shared_turn["generation"])
         room.updated_at = datetime.now(timezone.utc)
         db.add(room)
         db.commit()
