@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import secrets
+import hmac
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.db.session import SessionLocal
 from app.core.config import settings
 from app.core.responses import success_response
 from app.core.version_documents import normalize_version_document
-from app.models import AdminChannel, Bot, BotVersion, Group
+from app.models import AdminChannel, Bot, BotVersion, Group, ChannelRoom
 from app.services.default_messages import resolve_default_message_text
 from app.services.bot_ai_policy import runtime_block_reason, secondary_llm_block_reason
 from app.services.llm_client import LlmClientError
@@ -539,6 +543,111 @@ def bootstrap_webchat(
         },
     )
 
+
+def _webchat_secret_digest(secret: str) -> str:
+    return hashlib.sha256(("cga-alone:webchat:v1:" + secret).encode("utf-8")).hexdigest()
+
+
+def _webchat_credential_expiry(bot, version):
+    timeout = _as_dict(_as_dict(_version_settings(bot, version).get("conversationDefaults")).get("timeout"))
+    if timeout.get("enabled") is False:
+        return None
+    try:
+        seconds = max(1, int(timeout.get("seconds", 120)))
+    except (ValueError, TypeError, OverflowError):
+        seconds = 120
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _credential_denied():
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="채팅방을 찾을 수 없습니다.")
+
+
+def _validate_webchat_credential(db, bot, client_room_id, token):
+    from app.api.routes import channels
+    try:
+        if not isinstance(token, str) or len(token) > 256:
+            raise ValueError
+        raw_room_id, secret = token.split(".", 1)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", secret):
+            raise ValueError
+        room_id = UUID(raw_room_id)
+    except (ValueError, TypeError, AttributeError):
+        raise _credential_denied() from None
+    room = db.get(ChannelRoom, room_id)
+    if room is None or room.deleted_at is not None or room.status != "open" or room.channel_type != "webchat" or room.bot_id != bot.id or channels._is_persistent_room(db, room_id):
+        raise _credential_denied()
+    binding = _as_dict(_as_dict(room.metadata_json).get("__webchatAccess"))
+    digest = binding.get("digest")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise _credential_denied()
+    if (binding.get("bot_id") != str(bot.id) or binding.get("organization_id") != str(bot.organization_id)
+        or binding.get("channel") != "webchat" or binding.get("actor_id") != room.participant_id
+        or binding.get("client_room_hash") != hashlib.sha256(client_room_id.encode("utf-8")).hexdigest()
+        or not hmac.compare_digest(digest, _webchat_secret_digest(secret))):
+        raise _credential_denied()
+    expires = binding.get("expires_at")
+    if expires is not None:
+        try:
+            if datetime.fromisoformat(expires) <= datetime.now(timezone.utc):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise _credential_denied() from None
+    return room.id, dict(binding)
+
+
+def _create_native_webchat_message(bot, version, room_id, payload, request, api_key, credential):
+    """주소·참여자 입력은 표시 식별자이고, 저장 방 재사용은 서버 자격 증명으로만 허용한다."""
+    from app.api.routes import channels
+    issued_token = None
+    if credential is not None:
+        with SessionLocal() as db:
+            native_room_id, binding = _validate_webchat_credential(db, bot, room_id, credential)
+    else:
+        actor_id = "wc:" + uuid4().hex
+        created = channels.create_channel_room(
+            "webchat", channels.ChannelRoomCreateRequest(bot_id=str(bot.id), client_room_id="wc-auth:" + uuid4().hex,
+                participant_id=actor_id, start_immediately=False), request, api_key,
+        )["data"]
+        native_room_id = UUID(created["room"]["id"])
+        secret = secrets.token_urlsafe(32)
+        binding = {"digest": _webchat_secret_digest(secret), "actor_id": actor_id, "bot_id": str(bot.id),
+            "organization_id": str(bot.organization_id), "channel": "webchat",
+            "client_room_hash": hashlib.sha256(room_id.encode("utf-8")).hexdigest(),
+            "expires_at": _webchat_credential_expiry(bot, version)}
+        with SessionLocal() as db:
+            room = db.get(ChannelRoom, native_room_id)
+            room.metadata_json = {**_as_dict(room.metadata_json), "__webchatAccess": binding}
+            flag_modified(room, "metadata_json")
+            db.commit()
+        issued_token = str(native_room_id) + "." + secret
+    with channels._webchat_room_access(native_room_id):
+        result = channels.create_channel_room_message(
+            "webchat", native_room_id, channels.ChannelMessageRequest(message=payload.message,
+                participant_id=binding["actor_id"]), request, api_key,
+        )["data"]
+    with SessionLocal() as db:
+        room = db.get(ChannelRoom, native_room_id)
+        if room is not None:
+            # 일반 운영 버전 전환과 종료에서도 보호 marker는 사라지면 안 된다.
+            binding["expires_at"] = _webchat_credential_expiry(bot, version)
+            room.metadata_json = {**_as_dict(room.metadata_json), "__webchatAccess": binding}
+            flag_modified(room, "metadata_json")
+            db.commit()
+    messages = result.get("botMessages") or []
+    user_message = {**_as_dict(result.get("userMessage")), "participantId": payload.participant_id or "visitor"}
+    return success_response(request, {
+        "roomId": room_id,
+        "bot": {"id": str(bot.id), "name": bot.name},
+        "activeVersion": {"id": str(version.id), "name": version.name, "versionNo": version.version_no},
+        "userMessage": user_message,
+        "botMessage": messages[-1] if messages else None,
+        "botMessages": messages,
+        "intent": result.get("intent"),
+        **({"conversationToken": issued_token} if issued_token else {}),
+    })
+
+
 @router.post("/bots/{bot_id}/rooms/{room_id}/messages")
 def create_webchat_room_message(
     bot_id: str,
@@ -546,9 +655,16 @@ def create_webchat_room_message(
     payload: WebchatMessageRequest,
     request: Request,
     x_aidot_webchat_key: str | None = Header(default=None),
+    x_aidot_conversation_token: str | None = Header(default=None),
 ) -> dict[str, object]:
     _verify_webchat_key(x_aidot_webchat_key)
     bot, version, _group = _get_active_bot_version(bot_id)
+    credential = x_aidot_conversation_token if isinstance(x_aidot_conversation_token, str) else None
+    secondary_enabled = isinstance(_version_ai_config(bot, version).get("secondary_llm"), dict) and _as_dict(bot.data_json).get("bot_kind") != "hub"
+    if credential is not None and not secondary_enabled:
+        raise _credential_denied()
+    if secondary_enabled:
+        return _create_native_webchat_message(bot, version, room_id, payload, request, x_aidot_webchat_key, credential)
     document = normalize_version_document(version.version_json)
     selected_dialog, score = _select_dialog_for_bot(
         document,

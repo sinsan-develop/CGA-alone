@@ -98,8 +98,15 @@ MODELS_BY_LLM_PROVIDER: dict[str, set[str]] = {
 }
 
 
+class SecondaryLlmOutcome(BaseModel):
+    variableName: str = Field(default="", max_length=300)
+    answeredValue: str = Field(default="", max_length=512)
+    unrecognizedValue: str = Field(default="", max_length=512)
+
+
 class SecondaryLlmConfig(BaseModel):
     module_id: str = Field(default="", max_length=150)
+    outcome: SecondaryLlmOutcome | None = None
 
 
 class BotNluAnswerConfigMixin(BaseModel):

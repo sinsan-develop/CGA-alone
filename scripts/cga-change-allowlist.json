@@ -141,8 +141,8 @@
   },
   {
     "path": "apps/web/lib/studio-bots-api.ts",
-    "stage": "S02/S03",
-    "reason": "2026-10-29 신산님 승인: 본인 허브 한정 최소 후보 조회의 전용 DTO/호출 연결; 승인된 S03 기존 PATCH 설정 payload에 모듈 ID 전달"
+    "stage": "S02/S03/S04",
+    "reason": "2026-10-29 신산님 승인: 본인 허브 한정 최소 후보 조회의 전용 DTO/호출 연결; 승인된 S03 기존 PATCH 설정 payload에 모듈 ID 전달; 승인 S04 기존 PATCH의 결과 매핑 타입 전달"
   },
   {
     "path": "apps/web/components/bot-hub-home.tsx",
@@ -226,8 +226,8 @@
   },
   {
     "path": "apps/api/app/api/routes/channels.py",
-    "stage": "P03/S03",
-    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04"
+    "stage": "P03/S03·S04",
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음)"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
@@ -246,8 +246,8 @@
   },
   {
     "path": "apps/web/components/simulator-page.tsx",
-    "stage": "P03",
-    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화"
+    "stage": "P03·S04",
+    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화; S04 LegacySimulator local miss·Function/Talk·End에 결과판정 연결, 보류 지속LLM 경로 불변"
   },
   {
     "path": "apps/web/components/persistent-llm-runtime.test.mjs",
@@ -266,43 +266,73 @@
   },
   {
     "path": "apps/api/app/schemas/bot.py",
-    "stage": "S03",
-    "reason": "승인된 S03 secondary_llm.module_id를 기존 BotUpdate/버전 AI 저장 경로에 전달"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 secondary_llm.module_id를 기존 BotUpdate/버전 AI 저장 경로에 전달; 사용자 추가 승인 S04 secondary_llm.outcome 변수/답변성공값/미인식값 저장 전달"
   },
   {
     "path": "apps/api/app/services/bot_ai_policy.py",
-    "stage": "S03",
-    "reason": "승인된 S03 local ML/시멘틱 및 제작자 지정 2차 모듈의 공통 운영 준비 검사"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 local ML/시멘틱 및 제작자 지정 2차 모듈의 공통 운영 준비 검사; 사용자 추가 승인 S04 운영 준비 시 명확한 결과 매핑 필수, 초안 저장/허브 유지"
   },
   {
     "path": "apps/api/tests/cga_alone/test_secondary_llm_config.py",
-    "stage": "S03",
-    "reason": "승인된 S03 초안/저장/ID/운영/잘못된 모듈·로컬엔진 회귀"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 초안/저장/ID/운영/잘못된 모듈·로컬엔진 회귀; 승인 S04 필수 결과 매핑에 맞춰 기존 정상 운영/복제/직접Webchat fixture만 준비, 기존 검증기준 보존"
   },
   {
     "path": "apps/web/lib/bot-settings.ts",
-    "stage": "S03",
-    "reason": "승인된 S03 버전 AI 모듈 ID 타입 및 정규화"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 버전 AI 모듈 ID 타입 및 정규화; 승인 S04 결과 매핑 타입·정규화/기존 모듈 ID 보존"
   },
   {
     "path": "apps/web/components/bot-settings-page.tsx",
-    "stage": "S03",
-    "reason": "승인된 S03 기존 AI 설정 카드 안의 모듈 선택만 추가, 메뉴/공용 CSS/편집기 불변"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 기존 AI 설정 카드 안의 모듈 선택만 추가, 메뉴/공용 CSS/편집기 불변; 승인 S04 기존 AI 설정 카드에 결과 변수/두값 입력만 추가, 메뉴/CSS/편집기 유지"
   },
   {
     "path": "apps/web/lib/i18n/bot-settings.ts",
-    "stage": "S03",
-    "reason": "승인된 S03 새 모듈 선택 문구의 기존 7개 언어 보존"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 새 모듈 선택 문구의 기존 7개 언어 보존; 승인 S04 새 결과 설정 문구의 기존 7언어 유지"
   },
   {
     "path": "apps/web/components/secondary-llm-config.test.mjs",
-    "stage": "S03",
-    "reason": "승인된 S03 미구성 초안과 안정 모듈 ID 정규화 검증"
+    "stage": "S03/S04",
+    "reason": "승인된 S03 미구성 초안과 안정 모듈 ID 정규화 검증; 승인 S04 변수/두값만 보존하고 임의 필드 소거 회귀"
   },
   {
     "path": "apps/api/app/api/routes/webchat.py",
-    "stage": "S03",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존"
+    "stage": "S03·S04",
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음)"
+  },
+  {
+    "path": "apps/api/app/services/secondary_llm.py",
+    "stage": "S04",
+    "reason": "승인 S04 기존 변수/모듈 실행을 소비하는 결과 판정·재진입/pending 재개 helper, Provider/새세션 없음"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_two_stage_runtime.py",
+    "stage": "S04",
+    "reason": "승인 S04 명시 결과값·오류/미인식 분리·fresh 판정값·원질문/변수 보존·단일 실행/재개 회귀"
+  },
+  {
+    "path": "apps/web/lib/secondary-llm.ts",
+    "stage": "S04",
+    "reason": "승인 S04 client 공통 결과 판정·이전 결과 alias 정리, 기존 simulator 엔진 재사용"
+  },
+  {
+    "path": "apps/web/components/secondary-llm-runtime.test.mjs",
+    "stage": "S04",
+    "reason": "승인 S04 client 결과값·오류/pending·기존 변수 보존 회귀"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_webchat_credentials.py",
+    "stage": "S04",
+    "reason": "신산님 승인 대화 자격 증명의 실제 PG·HTTP header·타인/위조/만료·공용채널/큐 우회·보호marker 보존 회귀"
+  },
+  {
+    "path": "apps/api/app/api/routes/am.py",
+    "stage": "S04",
+    "reason": "승인Webchat자격증명방만 기존AM직접조회/종료우회차단, 일반/기존허브경로유지"
   },
   {
     "path": "apps/api/app/services/room_turn.py",

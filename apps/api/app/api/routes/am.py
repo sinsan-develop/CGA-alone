@@ -14,6 +14,7 @@ from app.api.routes.channels import (
     ChannelRoomCreateRequest,
     _as_dict,
     _ensure_channel,
+    _is_credential_room,
     _list_active_channel_bots,
     _serialize_room,
     _verify_channel_key,
@@ -236,7 +237,7 @@ def _resolve_room(channel_type: str, room_id: UUID | None, session_id: str | Non
         else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="roomId, sessionId 또는 clientRoomId가 필요합니다.")
         room = db.scalar(select(ChannelRoom).where(*conditions).order_by(ChannelRoom.updated_at.desc()))
-        if room is None:
+        if room is None or _is_credential_room(room):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="열린 대화 세션을 찾을 수 없습니다.")
         return room
 
