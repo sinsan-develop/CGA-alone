@@ -1,0 +1,47 @@
+{
+  "channel": "slack",
+  "code": "SLACK",
+  "renderer": "button",
+  "type": "button",
+  "talk": {
+    "messageType": "button",
+    "basicMessages": [
+      "슬랙 한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "확인",
+      "다음"
+    ]
+  },
+  "connection": {
+    "teamId": "TQA001",
+    "botUserId": "UQA999",
+    "botId": "BQA999"
+  },
+  "addressed": {
+    "type": "event_callback",
+    "team_id": "TQA001",
+    "event_id": "EvQA001",
+    "event": {
+      "type": "app_mention",
+      "channel": "CQA001",
+      "channel_type": "channel",
+      "user": "UQA001",
+      "text": "<@UQA999> 미등록 슬랙 질문",
+      "ts": "1793376000.000100"
+    }
+  },
+  "general": {
+    "type": "event_callback",
+    "team_id": "TQA001",
+    "event_id": "EvQA002",
+    "event": {
+      "type": "message",
+      "channel": "CQA001",
+      "channel_type": "channel",
+      "user": "UQA002",
+      "text": "일반 대화입니다",
+      "ts": "1793376000.000200"
+    }
+  }
+}

@@ -49,6 +49,8 @@ function isKakaoTemplateChannel(value: string) {
   return value.trim().toUpperCase() === "KAKAO";
 }
 
+const SLACK_RENDERER_TYPES = ["text", "button", "card", "table", "link-button", "carousel"];
+
 const TEMPLATE_RENDERER_DEFAULTS: Record<string, { itemTypes: string }> = {
   text: { itemTypes: "text" }, html: { itemTypes: "html" }, card: { itemTypes: "title, imageUrl, description" },
   table: { itemTypes: "table" }, button: { itemTypes: "button" }, "link-button": { itemTypes: "label, url" },
@@ -71,7 +73,9 @@ function normalizeTemplateDraftByChannel(
 ) {
   const allowedRendererTypes = isKakaoTemplateChannel(draft.channel_code)
     ? ["simple-text", "quick-reply", "basic-card", "list-card", "carousel"]
-    : RENDERER_OPTIONS.map((option) => option.value).filter(
+    : draft.channel_code.trim().toUpperCase() === "SLACK"
+      ? SLACK_RENDERER_TYPES
+      : RENDERER_OPTIONS.map((option) => option.value).filter(
         (value) => !["simple-text", "quick-reply", "basic-card", "list-card"].includes(value),
       );
   const normalizedRendererType = allowedRendererTypes.includes(draft.renderer_type)
@@ -499,6 +503,9 @@ export default function AdminTemplatesPage() {
       return RENDERER_OPTIONS.filter((option) =>
         ["simple-text", "quick-reply", "basic-card", "list-card", "carousel"].includes(option.value),
       );
+    }
+    if (draft.channel_code.trim().toUpperCase() === "SLACK") {
+      return RENDERER_OPTIONS.filter((option) => SLACK_RENDERER_TYPES.includes(option.value) && !option.label.startsWith("Kakao"));
     }
     return RENDERER_OPTIONS.filter(
       (option) => !["simple-text", "quick-reply", "basic-card", "list-card"].includes(option.value),

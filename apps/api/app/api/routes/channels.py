@@ -60,7 +60,7 @@ from app.services.vector_search import (
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 logger = get_logger("aidot.channels")
-SUPPORTED_CHANNELS = {"webchat", "kakao", "ms-teams"}
+SUPPORTED_CHANNELS = {"webchat", "kakao", "ms-teams", "slack"}
 NON_CHANNEL_QUEUE_TYPES = {"training"}
 DEFAULT_LLM_ANSWER_SYSTEM_PROMPT = "사용자 질문에 답변한다."
 LLM_RAG_ANSWER_SAFETY_PROMPT = (
