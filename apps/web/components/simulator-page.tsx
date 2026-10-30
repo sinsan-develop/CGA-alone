@@ -66,6 +66,12 @@ import { isSemanticNluType, type NluType } from "@/lib/nlu-options";
 import { normalizeSupportedLanguage, type SupportedLanguage } from "@/lib/language";
 import { formatSimulatorText, getSimulatorLabel, SIMULATOR_CATALOGS, SIMULATOR_DTMF_CATALOGS } from "@/lib/i18n/simulator";
 
+import {
+  createAidotSharedRoom, joinAidotSharedRoom, fetchAidotSharedRoom, sendAidotSharedRoomMessage,
+  canAskAidotRoomBot, canSendAidotRoomChat,
+  type AidotSharedRoomIdentity, type AidotSharedRoomHistoryResponse,
+} from "../../../packages/shared/src/channel";
+
 const ADAPTIVE_CARD_SCHEMA_VERSION = "1.6";
 const SIMULATOR_RUNTIME_MESSAGES = {
   systemError: "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
@@ -82,6 +88,7 @@ const SIMULATOR_RUNTIME_MESSAGES = {
 } as const;
 
 type SimulatorMessage = {
+  participantName?: string;
   id: string;
   sender: "bot" | "user" | "system";
   text: string;
@@ -119,6 +126,55 @@ type SimulatorMessage = {
   sourceTalkNodeId?: string;
   debugLogs?: Array<{ level: SimulatorLogLevel; event: string; detail: Record<string, unknown> }>;
 };
+
+// 저장된 Webchat 메시지를 기존 카드 렌더러의 표시 모델에 연결한다.
+function sharedMessageToSimulatorMessage(message: import("../../../packages/shared/src/channel").AidotChannelStoredMessage): SimulatorMessage {
+  const payload = (message.payload || {}) as Record<string, unknown>;
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const text = (value: unknown) => typeof value === "string" ? value : value == null ? "" : String(value);
+  const safeUrl = (value: unknown) => {
+    const valueText = text(value);
+    try { const url = new URL(valueText); return ["http:", "https:"].includes(url.protocol) ? url.href : ""; } catch { return ""; }
+  };
+  const result: SimulatorMessage = {
+    id: message.id, sender: message.participantKind, participantName: message.participantName,
+    text: message.text, timestamp: message.createdAt, sourceTalkNodeId: text(payload.sourceTalkNodeId) || undefined,
+  };
+  if (message.messageType === "button") {
+    result.quickReplies = Array.isArray(payload.options) ? payload.options.filter((value): value is string => typeof value === "string") : [];
+  } else if (message.messageType === "link-button") {
+    result.cardTitle = message.text || "링크";
+    result.cardItems = (Array.isArray(payload.options) ? payload.options : []).flatMap(value => {
+      const item = record(value); const href = safeUrl(item.url);
+      return href ? [{ label: text(item.label), value: href, href }] : [];
+    });
+  } else if (message.messageType === "card" || message.messageType === "carousel") {
+    const card = record(message.messageType === "card" ? payload.card : payload.carousel);
+    result.cardTitle = text(card.itemTitle || card.title) || message.text || "카드";
+    result.cardDescription = text(card.itemContents || card.description);
+    result.cardImageUrl = safeUrl(card.imageUrl);
+    if (card.itemButtonValue) result.quickReplies = [text(card.itemButtonValue)];
+  } else if (message.messageType === "table") {
+    const columns = Array.isArray(payload.columns) ? payload.columns.map(text) : [];
+    const keyColumn = text(payload.keyColumn) || columns[0] || "";
+    const rows = (Array.isArray(payload.rows) ? payload.rows : []).map(value => {
+      const row = record(value);
+      return { key: text(row[keyColumn]), values: columns.slice(1).map(column => text(row[column])) };
+    });
+    result.table = { columns, rows, selectable: payload.selectable === true };
+  } else if (message.messageType === "dtmf") {
+    const dtmf = record(payload.dtmf);
+    result.dtmf = { minLength: Number(dtmf.minLength) || 1, maxLength: Number(dtmf.maxLength) || 1,
+      endCharacter: text(dtmf.endCharacter) || "#", firstInputTimeoutMs: Number(dtmf.firstInputTimeoutMs) || 1000,
+      overallInputTimeoutMs: Number(dtmf.overallInputTimeoutMs) || 1000 };
+  } else if (message.messageType === "form" || message.messageType === "form-a-card") {
+    const rich = message.messageType === "form";
+    const source = rich ? payload.richForm : payload.adaptiveCard;
+    result.template = { kind: rich ? "rich-form" : "adaptive-card", title: rich ? "Rich Form" : "Adaptive Card",
+      lines: [], actions: [], rawJson: source, valid: Boolean(source), active: true };
+  }
+  return result;
+}
 
 type SimulatorAnalysis = {
   id: string;
@@ -3693,6 +3749,113 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   const [pendingIntentSelection, setPendingIntentSelection] = useState<PendingIntentSelection | null>(null);
   const [nluSupplementSaving, setNluSupplementSaving] = useState(false);
   const [nluSupplementMessage, setNluSupplementMessage] = useState("");
+  const [sharedMode, setSharedMode] = useState(false);
+  const [sharedMember, setSharedMember] = useState<AidotSharedRoomIdentity | null>(null);
+  const [sharedHistory, setSharedHistory] = useState<AidotSharedRoomHistoryResponse | null>(null);
+  const [sharedRoomInput, setSharedRoomInput] = useState("");
+  const [sharedName, setSharedName] = useState("");
+  const [sharedError, setSharedError] = useState("");
+  const [sharedSendError, setSharedSendError] = useState("");
+  const [sharedConnecting, setSharedConnecting] = useState(false);
+  const [sharedSendingBot, setSharedSendingBot] = useState(false);
+  const [sharedSendingGeneral, setSharedSendingGeneral] = useState(false);
+  const sharedEpoch = useRef(0);
+  const sharedReadSequence = useRef(0);
+  const sharedSendGuard = useRef({ bot: false, general: false });
+  const sharedConnectGuard = useRef(false);
+  const sharedStorageKey = authSession ? `aidot.simulator.shared.${authSession.user.id}.${botId}` : "";
+  const sharedConnected = Boolean(sharedMember && sharedHistory);
+  const sharedCanAsk = canAskAidotRoomBot(sharedHistory?.turn, sharedMember?.participantId || "", sharedConnected, sharedSendingBot);
+  const sharedCanChat = canSendAidotRoomChat(sharedConnected, sharedSendingGeneral);
+  const displayedMessages = sharedMode ? (sharedHistory?.messages || []).map(sharedMessageToSimulatorMessage) : messages;
+
+  useEffect(() => {
+    if (!sharedStorageKey) return;
+    sharedEpoch.current += 1;
+    setSharedMember(null); setSharedHistory(null); setSharedError("");
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(sharedStorageKey) || "null") as AidotSharedRoomIdentity | null;
+      if (saved && typeof saved.roomId === "string" && typeof saved.participantId === "string" && typeof saved.conversationToken === "string") {
+        setSharedMember(saved); setSharedRoomInput(saved.roomId);
+      }
+    } catch { sessionStorage.removeItem(sharedStorageKey); }
+    return () => { sharedEpoch.current += 1; };
+  }, [sharedStorageKey]);
+
+  async function refreshSharedRoom(member: AidotSharedRoomIdentity, epoch: number, signal?: AbortSignal) {
+    const sequence = ++sharedReadSequence.current;
+    try {
+      const history = await fetchAidotSharedRoom(window.location.origin, botId, member, signal);
+      if (sharedEpoch.current === epoch && sharedReadSequence.current === sequence) {
+        setSharedHistory(history); setSharedError("");
+      }
+    } catch (error) {
+      if (sharedEpoch.current !== epoch || sharedReadSequence.current !== sequence) return;
+      throw error;
+    }
+  }
+
+  useEffect(() => {
+    if (!sharedMode || !sharedMember) return;
+    const member = sharedMember; const epoch = sharedEpoch.current;
+    let disposed = false; let timer: ReturnType<typeof setTimeout>;
+    let controller: AbortController | null = null;
+    async function poll() {
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 10000);
+      try { await refreshSharedRoom(member, epoch, controller.signal); }
+      catch (error) {
+        if (!disposed && sharedEpoch.current === epoch) {
+          setSharedHistory(null);
+          setSharedError(error instanceof Error ? error.message : "공유방 상태를 확인하지 못했습니다.");
+        }
+      } finally {
+        clearTimeout(timeout);
+        if (!disposed) timer = setTimeout(poll, 1500);
+      }
+    }
+    void poll();
+    return () => { disposed = true; clearTimeout(timer); controller?.abort(); sharedReadSequence.current += 1; };
+  }, [sharedMode, sharedMember, botId]);
+
+  async function connectSharedRoom(join: boolean) {
+    if (sharedConnectGuard.current || sharedSendingBot || sharedSendingGeneral || !sharedStorageKey) return;
+    sharedConnectGuard.current = true;
+    const epoch = ++sharedEpoch.current;
+    setSharedConnecting(true); setSharedError(""); setSharedSendError(""); setSharedHistory(null); setSharedMember(null);
+    try {
+      const member = join
+        ? await joinAidotSharedRoom(window.location.origin, botId, sharedRoomInput.trim(), sharedName || authSession?.user.name || "사용자")
+        : await createAidotSharedRoom(window.location.origin, botId, sharedName || authSession?.user.name || "사용자");
+      if (sharedEpoch.current !== epoch) return;
+      sessionStorage.setItem(sharedStorageKey, JSON.stringify({ roomId: member.roomId, participantId: member.participantId, conversationToken: member.conversationToken }));
+      setSharedMember(member); setSharedRoomInput(member.roomId);
+    } catch (error) {
+      if (sharedEpoch.current === epoch) setSharedError(error instanceof Error ? error.message : "공유방 연결에 실패했습니다.");
+    } finally { sharedConnectGuard.current = false; if (sharedEpoch.current === epoch) setSharedConnecting(false); }
+  }
+
+  async function sendSharedMessage(value: string, addressed: boolean) {
+    const member = sharedMember;
+    const kind = addressed ? "bot" : "general";
+    if (!member || !value.trim() || sharedSendGuard.current[kind] || (addressed ? !sharedCanAsk : !sharedCanChat)) return;
+    const epoch = sharedEpoch.current;
+    sharedSendGuard.current[kind] = true;
+    if (addressed) setSharedSendingBot(true); else setSharedSendingGeneral(true);
+    setSharedSendError(""); setInputValue("");
+    try {
+      await sendAidotSharedRoomMessage(window.location.origin, botId, member, value, addressed, AbortSignal.timeout(60000));
+    } catch (error) {
+      if (sharedEpoch.current === epoch) setSharedSendError(`${error instanceof Error ? error.message : "메시지 전송을 확인하지 못했습니다."} 자동으로 다시 보내지 않습니다. 기록을 확인해 주세요.`);
+    } finally {
+      sharedSendGuard.current[kind] = false;
+      if (sharedEpoch.current === epoch) {
+        if (addressed) setSharedSendingBot(false); else setSharedSendingGeneral(false);
+        try { await refreshSharedRoom(member, epoch); }
+        catch { if (sharedEpoch.current === epoch) setSharedHistory(null); }
+      }
+    }
+  }
   const simulatorSessionIdRef = useRef(crypto.randomUUID());
   const transcriptLogCursorRef = useRef({ sessionId: simulatorSessionIdRef.current, count: 0 });
   const intentFallbackCountRef = useRef(0);
@@ -5682,6 +5845,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     return Boolean(response && typeof response === "object" && !Array.isArray(response) && Object.keys(response as Record<string, unknown>).length === 0);
   }
   function submitTemplateAction(message: SimulatorMessage, value: string) {
+    if (sharedMode) return; // 서버 대기 카드 상태 계약 연결 전에는 실행하지 않는다.
     const variables = richFormResultVariables(message, value);
     const sourceNode = message.sourceTalkNodeId && runtime ? getNodeById(runtime.graph, message.sourceTalkNodeId) : null;
     const sourceConfig = sourceNode?.kind === "talk" ? getTalkConfigForChannel(sourceNode, "SM_CHAT") : null;
@@ -5734,6 +5898,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     sourceTalkNodeId?: string,
   ) {
     const utterance = rawUtterance.trim();
+    if (sharedMode) { void sendSharedMessage(utterance, true); return; }
     if (!utterance || loading) {
       return;
     }
@@ -6171,6 +6336,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   }
 
   function handleRestart() {
+    if (sharedMode) { void connectSharedRoom(false); return; }
     startConversation();
   }
 
@@ -6179,8 +6345,8 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       version: 1,
       bot: bot?.name ?? "",
       savedAt: nowText(),
-      messages,
-      analyses,
+      messages: displayedMessages,
+      analyses: sharedMode ? [] : analyses,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -6194,6 +6360,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   }
 
   async function handleUploadConversation(file: File) {
+    if (sharedMode) return;
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as unknown;
@@ -6735,6 +6902,21 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               </button>
             </div>
 
+            <div className="simulator-script-status">
+              <label>대화 방식 <select aria-label="대화 방식" value={sharedMode ? "shared" : "preview"} disabled={sharedSendingBot || sharedSendingGeneral || sharedConnecting} onChange={event => setSharedMode(event.target.value === "shared")}>
+                <option value="preview">1:1 미리보기</option><option value="shared">공유방</option>
+              </select></label>
+            </div>
+            {sharedMode ? <div className="simulator-alert">
+              <p>공유방은 운영 버전으로 대화합니다. 방 ID로 다른 참여자를 초대할 수 있습니다.</p>
+              <label>참여자 이름 <input aria-label="참여자 이름" value={sharedName} onChange={event => setSharedName(event.target.value)} maxLength={120} /></label>
+              <label>방 ID <input aria-label="공유방 ID" value={sharedRoomInput} onChange={event => setSharedRoomInput(event.target.value)} /></label>
+              <button type="button" disabled={sharedConnecting || sharedSendingBot || sharedSendingGeneral} onClick={() => void connectSharedRoom(false)}>새 공유방</button>
+              <button type="button" disabled={!sharedRoomInput.trim() || sharedConnecting || sharedSendingBot || sharedSendingGeneral} onClick={() => void connectSharedRoom(true)}>참가자로 입장</button>
+              {sharedMember ? <p>현재 방: {sharedMember.roomId} / {sharedHistory?.turn.state === "processing" ? "답변 처리 중" : sharedHistory?.turn.state === "waiting_input" ? sharedHistory.turn.ownerParticipantId === sharedMember.participantId ? "내 후속 답변을 기다립니다." : "다른 참여자가 봇과 대화 중입니다. 일반 대화는 가능합니다." : sharedHistory ? "봇에게 질문할 수 있습니다." : "방 상태 확인 중"}</p> : null}
+              {sharedError ? <p role="alert">{sharedError}</p> : null}
+              {sharedSendError ? <p role="alert">{sharedSendError}</p> : null}
+            </div> : null}
             {errorMessage ? <div className="simulator-alert">{errorMessage}</div> : null}
 
             <div ref={scrollRef} className="simulator-window__body simulator-window__body--scroll">
@@ -6742,7 +6924,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                 <div className="simulator-empty">{copy.loading}</div>
               ) : (
                 <div className="chat-stack">
-                  {messages.filter(isVisibleSimulatorMessage).map((message) => (
+                  {displayedMessages.filter(isVisibleSimulatorMessage).map((message) => (
                     <div
                       key={message.id}
                       className={`chat-row chat-row--${message.sender === "user" ? "user" : "bot"}${message.sender === "system" ? " chat-row--system" : ""}`}
@@ -6751,9 +6933,10 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                       <div className="chat-message">
                         {message.sender === "bot" ? (
                           <div className="chat-message__meta">
-                            <strong>{bot?.name ?? getSimulatorLabel(uiLanguage, "봇")}</strong>
+                            <strong>{message.participantName || bot?.name || getSimulatorLabel(uiLanguage, "봇")}</strong>
                           </div>
                         ) : null}
+                        {sharedMode && message.sender === "user" ? <div className="chat-message__meta"><strong>{message.participantName}</strong></div> : null}
                         <div className="chat-message__line">
                           {message.sender === "user" ? (
                             <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp, uiLanguage)}</time>
@@ -6811,16 +6994,16 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                       message.table.rows.map((row, rowIndex) => (
                                         <tr
                                           key={`${message.id}-row-${rowIndex}`}
-                                          className={message.table?.selectable ? "is-selectable" : undefined}
-                                          role={message.table?.selectable ? "button" : undefined}
-                                          tabIndex={message.table?.selectable ? 0 : undefined}
+                                          className={message.table?.selectable && !sharedMode ? "is-selectable" : undefined}
+                                          role={message.table?.selectable && !sharedMode ? "button" : undefined}
+                                          tabIndex={message.table?.selectable && !sharedMode ? 0 : undefined}
                                           onClick={() => {
-                                            if (message.table?.selectable) {
+                                            if (message.table?.selectable && !sharedMode) {
                                               submitUtterance(row.key, {}, message.sourceTalkNodeId);
                                             }
                                           }}
                                           onKeyDown={(event) => {
-                                            if (message.table?.selectable && (event.key === "Enter" || event.key === " ")) {
+                                            if (!sharedMode && message.table?.selectable && (event.key === "Enter" || event.key === " ")) {
                                               event.preventDefault();
                                               submitUtterance(row.key, {}, message.sourceTalkNodeId);
                                             }
@@ -6847,7 +7030,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                               <div
                                 className={`simulator-template-card${
                                   message.sourceTalkNodeId &&
-                                  runtime?.waitingTalkNodeId === message.sourceTalkNodeId &&
+                                  !sharedMode && runtime?.waitingTalkNodeId === message.sourceTalkNodeId &&
                                   !runtime.ended
                                     ? " is-active"
                                     : ""
@@ -6856,14 +7039,14 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                 {(message.template.kind === "adaptive-card" && message.template.rawJson) ? (
                                   <AdaptiveCardRenderer
                                     template={message.template}
-                                    disabled={loading}
+                                    disabled={loading || sharedMode}
                                     onAction={(value) => submitTemplateAction(message, value)}
                                     onRenderError={(error) => handleAdaptiveCardRenderError(message, error)}
                                   />
                                 ) : (message.template.kind === "rich-form" && message.template.rawJson) ? (
                                   <RichFormRenderer
                                     template={message.template}
-                                    disabled={loading}
+                                    disabled={loading || sharedMode}
                                     onAction={(value) => submitTemplateAction(message, value)}
                                   />
                                 ) : (
@@ -6880,7 +7063,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                             type="button"
                                             disabled={
                                               !message.sourceTalkNodeId ||
-                                              runtime?.waitingTalkNodeId !== message.sourceTalkNodeId ||
+                                              sharedMode || runtime?.waitingTalkNodeId !== message.sourceTalkNodeId ||
                                               runtime.ended
                                             }
                                             onClick={() => submitUtterance(action, {}, message.sourceTalkNodeId)}
@@ -6896,7 +7079,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                             ) : null}
                             {message.dtmf ? (() => {
                               const value = dtmfValues[message.id] ?? "";
-                              const disabled = !message.sourceTalkNodeId || runtime?.waitingTalkNodeId !== message.sourceTalkNodeId || runtime.ended;
+                              const disabled = !message.sourceTalkNodeId || sharedMode || runtime?.waitingTalkNodeId !== message.sourceTalkNodeId || runtime.ended;
                               const appendDigit = (digit: string) => {
                                 setDtmfValues((current) => {
                                   const currentValue = current[message.id] ?? "";
@@ -6945,7 +7128,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                       !(
                                         (pendingIntentSelection && !runtime && message.id === messages.at(-1)?.id) ||
                                         (message.sourceTalkNodeId &&
-                                          runtime?.waitingTalkNodeId === message.sourceTalkNodeId &&
+                                          !sharedMode && runtime?.waitingTalkNodeId === message.sourceTalkNodeId &&
                                           !runtime.ended)
                                       )
                                     }
@@ -6968,7 +7151,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               )}
             </div>
 
-            {floatingButtonsVisible && floatingButtons.length > 0 ? (
+            {!sharedMode && floatingButtonsVisible && floatingButtons.length > 0 ? (
               <div className="simulator-floating-area">
                 <div className="simulator-floating-list">
                   {floatingButtons.map((button) => (
@@ -7003,6 +7186,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               <button
                 type="button"
                 className="tool-link"
+                disabled={sharedMode}
                 onClick={() => fileInputRef.current?.click()}
                 aria-label={getSimulatorLabel(uiLanguage, "대화 불러오기")}
                 title={getSimulatorLabel(uiLanguage, "대화 불러오기")}
@@ -7018,7 +7202,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               >
                 <SimulatorToolbarIcon name="download" />
               </button>
-              {loadedScript ? (
+              {!sharedMode && loadedScript ? (
                 <button
                   type="button"
                   className="tool-link"
@@ -7044,7 +7228,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
             </div>
 
             <form className="simulator-composer simulator-composer--messenger" onSubmit={handleSubmit}>
-              {loadedScript ? (
+              {!sharedMode && loadedScript ? (
                 <div className="simulator-script-status">
                   <span>{loadedScript.fileName}</span>
                   <b>
@@ -7065,8 +7249,9 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                   }
                 }}
               />
-              <button type="submit" className="primary-action" disabled={!inputValue.trim() || loading}>
-                {copy.send}
+              {sharedMode ? <button type="button" disabled={!inputValue.trim() || !sharedCanChat} onClick={() => void sendSharedMessage(inputValue, false)}>일반 대화</button> : null}
+              <button type="submit" className="primary-action" disabled={!inputValue.trim() || loading || (sharedMode && !sharedCanAsk)}>
+                {sharedMode ? "봇에게 질문" : copy.send}
               </button>
             </form>
 

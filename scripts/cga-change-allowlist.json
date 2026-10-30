@@ -246,8 +246,8 @@
   },
   {
     "path": "apps/web/components/simulator-page.tsx",
-    "stage": "P03·S04",
-    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화; S04 LegacySimulator local miss·Function/Talk·End에 결과판정 연결, 보류 지속LLM 경로 불변"
+    "stage": "P03·S04·S06",
+    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화; S04 LegacySimulator local miss·Function/Talk·End에 결과판정 연결, 보류 지속LLM 경로 불변; S06 기존 저장 메시지의 카드·폼 표시 연결, 개인 미리보기와 보류 지속 경로 보존"
   },
   {
     "path": "apps/web/components/persistent-llm-runtime.test.mjs",
@@ -348,5 +348,20 @@
     "path": "apps/api/tests/cga_alone/test_shared_webchat.py",
     "stage": "S05",
     "reason": "승인된 공유방 생성·입장·참가자별 서버증명·공유기록·인증/개인방격리의 실제PG API 검증"
+  },
+  {
+    "path": "packages/shared/src/channel.ts",
+    "stage": "S06",
+    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지"
+  },
+  {
+    "path": "apps/web/components/room-turn-controls.test.mjs",
+    "stage": "S06",
+    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_simulator_turn_contract.py",
+    "stage": "S06",
+    "reason": "기존 개인/공유 HTTP 계약의 실제 PG 참가자 입력·저장·후속·재접속 읽기 검증, 외부 모델 없음"
   }
 ]
