@@ -986,7 +986,7 @@ function lineReply(message: AidotChannelStoredMessage): { packet: Record<string,
   const paragraph = (value: unknown) => { if (value !== undefined && value !== null && value !== "") body.push({ type: "text", text: lineText(value, "카드 본문"), wrap: true }); };
   const url = (value: unknown, image = false): string => {
     if (typeof value !== "string" || !/^https?:\/\/[^\s]+$/i.test(value) || (image && !/^https:\/\//i.test(value))) throw new Error("LINE 이미지 URL은 HTTPS, 링크는 HTTP/HTTPS여야 합니다.");
-    const encoded = new URL(value).href; if (encoded.length > 2000) throw new Error("LINE URL이 너무 깁니다."); return encoded;
+    const encoded = new URL(value).href; if (encoded.length > (image ? 2000 : 10000)) throw new Error("LINE URL이 너무 깁니다."); return encoded;
   };
   const label = (value: unknown) => { const text = lineText(value, "버튼 이름"); if (text.length > 40) throw new Error("LINE 버튼 이름은 40자 이내여야 합니다."); return text; };
   const choice = (name: unknown, value: unknown) => {

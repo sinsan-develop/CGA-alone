@@ -632,3 +632,15 @@ test("LINE packet preserves zero output and enforces five native messages and UT
  const reply=api.buildAidotLineReplyPayload(Array(5).fill({id:"known",text:"응답"}),lineNative(),lineFixture.connection,lineDelivery());assert.equal(reply.replyToken,lineNative().events[0].replyToken);assert.equal(reply.messages.length,5);
  assert.throws(()=>api.buildAidotLineReplyPayload(Array(6).fill({id:"known",text:"응답"}),lineNative(),lineFixture.connection,lineDelivery()));
 });
+
+test("LINE URI and image use distinct encoded limits and preserve failed CGA result",async()=>{
+ const makeUrl=(length)=>"https://example.com/"+"a".repeat(length-20),source={id:"known",messageType:"link-button",text:"본문",payload:{options:[{label:"문서",url:""}]}};
+ // URL prefix has 20 characters; length is checked after percent encoding.
+ assert.equal(makeUrl(2001).length,2001);
+ for(const length of [2001,10000]){source.payload.options[0].url=makeUrl(length);assert.equal(api.buildAidotLineMessage(source).contents.footer.contents[0].action.uri.length,length);}
+ source.payload.options[0].url=makeUrl(10001);assert.throws(()=>api.buildAidotLineMessage(source));
+ const image={id:"known",messageType:"card",text:"본문",payload:{card:{imageUrl:makeUrl(2000)}}};assert.equal(api.buildAidotLineMessage(image).contents.body.contents[1].url.length,2000);image.payload.card.imageUrl=makeUrl(2001);assert.throws(()=>api.buildAidotLineMessage(image));
+ const original=globalThis.fetch;let count=0;
+ globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:source,botMessages:[source]}}),{status:200});};
+ try{await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineNative(),lineFixture.connection,lineDelivery()),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);}finally{globalThis.fetch=original;}
+});
