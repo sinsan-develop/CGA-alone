@@ -122,3 +122,87 @@ def test_template_round_trip_to_client_payload(discord_context,template_context)
     assert packet["channel_id"]==FIXTURE["connection"]["channelId"] and packet["content"]=="디스코드 한국어 답변\n둘째 줄"
     assert packet["allowed_mentions"]=={"parse":[],"replied_user":False}
     assert packet["components"][0]["components"][0]["type"]==2
+
+
+def test_discord_dm_group_and_bot_identity():
+    dm=event("직접 질문");dm["d"].pop("guild_id")
+    connection={**FIXTURE["connection"],"guildId":None,"channelType":1}
+    assert normalized(dm,connection)["roomMode"]=="private" and normalized(dm,connection)["addressed"]
+    group=normalized(dm,{**connection,"channelType":3});assert group["roomMode"]=="shared" and not group["addressed"]
+    other=event();other["d"]["author"]["bot"]=True
+    assert normalized(other)["participantKind"]=="bot"
+    own=event(user=FIXTURE["connection"]["botUserId"]);assert normalized(own) is None
+    changed=event();changed["t"]="MESSAGE_UPDATE";assert normalized(changed) is None
+    deleted=event();deleted["t"]="MESSAGE_DELETE";assert normalized(deleted) is None
+
+
+@pytest.mark.parametrize("patch", [{"guildId":"100000000000000099"},{"channelId":"100000000000000099"},{"channelType":999},{"channelId":100000000000000002}],ids=["guild","channel","kind","numeric-id"])
+def test_discord_rejects_wrong_native_scope(patch):
+    with pytest.raises(ValueError):normalized(event(),{**FIXTURE["connection"],**patch})
+
+
+@pytest.mark.parametrize("kind",["text","button","card","table","link-button","carousel"])
+def test_discord_real_talk_to_native_expressions(kind):
+    from app.api.routes import channels
+    config={"messageType":kind,"basicMessages":["한국어 본문\n둘째 줄"],"responseType":"single-select"}
+    values={}
+    if kind=="button":config["messages"]=["선택"]
+    elif kind=="card":config["messages"]=["카드 제목","","카드 설명"]
+    elif kind=="link-button":config["linkButtonItems"]=[{"label":"문서","url":"https://example.com/한국어"}]
+    elif kind=="table":
+        config.update(tableVariableItemId="rows",tableColumnMappings=[{"column":"name"},{"column":"id"}],tableKeyColumn="id")
+        values={"__items":{"rows":[{"name":"표시 이름","id":"선택 키"}]}}
+    elif kind=="carousel":config["messages"]=["목록 제목","","항목 제목","항목 내용","선택","값","Button","하단","하단 값"]
+    output=channels._talk_output({"id":"followup","config":{"channelTemplates":{"DISCORD":config}}},values,channel_code="DISCORD")
+    packet=sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001","messageType":output["type"],"text":output["text"],"payload":{**output["payload"],"options":output["options"]}},"destination":{"channelId":FIXTURE["connection"]["channelId"]}})
+    assert packet["content"]=="한국어 본문\n둘째 줄" and packet["allowed_mentions"]=={"parse":[],"replied_user":False}
+    if kind in {"card","carousel"}:assert "image" not in packet["embeds"][0]
+    if kind=="card":assert packet["embeds"][0]["description"]=="카드 설명"
+    if kind=="table":assert "선택 키" in json.dumps(packet,ensure_ascii=False)
+    if kind in {"button","table","carousel"}:
+        button=packet["components"][0]["components"][0]
+        assert button["custom_id"].startswith("cga:00000000-0000-4000-8000-000000000001:") and len(button["custom_id"])<=100
+    if kind=="link-button":assert packet["components"][0]["components"][0]["style"]==5
+
+
+@pytest.mark.parametrize("kind",["html","form","form-a-card","dtmf"])
+def test_discord_unsupported_template_is_explicit(kind):
+    assert admin._template_renderer_issues(channel_code="DISCORD",renderer_type=kind)
+    with pytest.raises(ValueError):sdk("render",{"message":{"id":"known","messageType":kind,"text":"본문","payload":{}},"destination":{"channelId":FIXTURE["connection"]["channelId"]}})
+
+
+@pytest.mark.parametrize("message",[
+ {"messageType":"text","text":"x"*2001},
+ {"messageType":"button","text":"선택","payload":{"options":["x"*81]}},
+ {"messageType":"button","text":"선택","payload":{"options":["선택"]*26}},
+ {"messageType":"card","text":"카드","payload":{"card":{"title":"카드","imageUrl":"javascript:alert(1)"}}},
+],ids=["content","label","choices","url"])
+def test_discord_native_limits_are_explicit(message):
+    with pytest.raises(ValueError):sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001",**message},"destination":{"channelId":FIXTURE["connection"]["channelId"]}})
+
+
+def test_discord_callback_source_identity_and_replay(discord_context):
+    c,_=discord_context;member=create(discord_context,"discord")
+    first=post(discord_context,member,event()).json()["data"]["botMessage"]
+    wire=json.dumps({"webchatRichFormVersion":"1.0","sourceMessageId":first["id"],"sourceTalkNodeId":"followup","response":{"buttonValue":"추가 설명"}},ensure_ascii=False)
+    answer=send(discord_context,member,wire,"discord",addressed=True,event="discord-interaction:100000000000000201");assert answer.status_code==200
+    repeated=send(discord_context,member,wire,"discord",addressed=True,event="discord-interaction:100000000000000201")
+    assert repeated.status_code==200 and repeated.json()["data"]["botMessage"]["id"]==answer.json()["data"]["botMessage"]["id"] and len(c[3])==1
+    stale=send(discord_context,member,wire,"discord",addressed=True,event="discord-interaction:100000000000000202");assert stale.status_code==409 and len(c[3])==1
+
+
+@pytest.mark.parametrize("kind",["card","carousel"])
+def test_discord_basic_text_with_empty_optional_card_fields(kind):
+    from app.api.routes import channels
+    output=channels._talk_output({"id":"followup","config":{"channelTemplates":{"DISCORD":{"messageType":kind,"basicMessages":["본문만 표시"],"messages":[],"responseType":"none"}}}}, {},channel_code="DISCORD")
+    packet=sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001","messageType":output["type"],"text":output["text"],"payload":output["payload"]},"destination":{"channelId":FIXTURE["connection"]["channelId"]}})
+    assert packet["content"]=="본문만 표시" and not packet.get("embeds")
+
+
+def test_discord_health_retains_existing_provider_descriptor():
+    from app.api.routes import channels
+    details=channels._channel_health_summary()
+    discord=next(item for item in details if item["channel"]=="discord")
+    assert discord["provider"]=="discord" and discord["renderer"]=="shared-sdk"
+    assert discord["supported_outputs"]==["content","embeds","components"]
+    assert next(item for item in details if item.get("provider")=="kakao")["supported_outputs"]==["simpleText","quickReplies","basicCard","listCard","carousel"]
