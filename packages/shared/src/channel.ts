@@ -1,4 +1,4 @@
-export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord";
+export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord" | "telegram";
 
 export type AidotInitialChannelMessage = {
   type?: string;
@@ -568,4 +568,172 @@ export async function sendAidotDiscordEvent(serverUrl: string, member: AidotDisc
   const response = await sendAidotClientMessage(serverUrl, "discord", member, message, event.addressed, event.eventId, signal);
   try { return { response, replies: (response.botMessages ?? (response.botMessage ? [response.botMessage] : [])).map(item => buildAidotDiscordReplyPayload(item, { channelId: event.channelId })) }; }
   catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 Discord 표현을 변환하지 못했습니다."), { cause, cgaResponse: response }); }
+}
+
+
+export type AidotTelegramConnection = { botUserId: string; botUsername: string; chatId: string; chatType: "private" | "group" | "supergroup" };
+export type AidotTelegramEvent = {
+  nativeRoomKey: string; nativeParticipantKey: string; participantKind: AidotClientParticipantKind;
+  chatId: string; threadId: number | null; roomMode: "private" | "shared"; eventId: string; message: string; addressed: boolean;
+  sourceMessageId?: string; choiceIndex?: number;
+};
+export type AidotTelegramReplyPayload = { method: "sendMessage" | "sendPhoto"; parameters: {
+  chat_id: string; message_thread_id?: number; text?: string; photo?: string; caption?: string; parse_mode?: "HTML";
+  reply_markup?: { inline_keyboard: Record<string, unknown>[][] };
+} };
+function telegramRecord(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function telegramId(value: unknown, positive = false) {
+  const source = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value;
+  if (typeof source !== "string" || !/^-?[1-9]\d*$/.test(source) || !Number.isSafeInteger(Number(source)) || (positive && Number(source) < 1)) throw new Error("Telegram ID를 정확히 확인할 수 없습니다.");
+  return source;
+}
+function telegramInteger(value: unknown, minimum: number, field: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new Error(`Telegram ${field}가 올바르지 않습니다.`);
+  return value;
+}
+function telegramText(value: unknown, maximum: number, field: string) {
+  if (typeof value !== "string" || !value.trim() || Array.from(value).length > maximum) throw new Error(`Telegram ${field}는 1~${maximum}자여야 합니다.`);
+  return value;
+}
+function telegramUrl(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) throw new Error("Telegram URL이 올바르지 않습니다.");
+  let url: URL; try { url = new URL(value); } catch { throw new Error("Telegram URL이 올바르지 않습니다."); }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Telegram 이미지는 HTTP/HTTPS URL을 사용합니다.");
+  return value;
+}
+// 기존 client가 Bot API 연결/검증을 마친 입력이다. anonymous sender_chat을 개인 actor로 합치지 않는다.
+export function normalizeAidotTelegramEvent(input: unknown, connection: AidotTelegramConnection): AidotTelegramEvent | null {
+  const update = telegramRecord(input), query = update.callback_query === undefined ? null : telegramRecord(update.callback_query);
+  if (query === null && update.message === undefined) return null;
+  if (query !== null && update.message !== undefined) throw new Error("Telegram update 종류가 중복되었습니다.");
+  const message = telegramRecord(query ? query.message : update.message), chat = telegramRecord(message.chat);
+  const self = telegramId(connection.botUserId, true), chatId = telegramId(chat.id), expectedChat = telegramId(connection.chatId);
+  if (!["private", "group", "supergroup"].includes(String(chat.type)) || chat.type !== connection.chatType || chatId !== expectedChat) throw new Error("연결된 Telegram 개인/그룹 채팅이 아닙니다.");
+  if (message.sender_chat !== undefined) throw new Error("Telegram 익명/채널 발신자를 개인 질문자로 합칠 수 없습니다.");
+  const from = telegramRecord(query ? query.from : message.from);
+  if (String(from.id) === self) return null;
+  if (!query && typeof message.text !== "string") {
+    if (["photo", "document", "audio", "voice", "video", "caption"].some(key => key in message)) throw new Error("Telegram 미디어 질문은 이번 연결에서 지원하지 않습니다.");
+    return null;
+  }
+  const actor = telegramId(from.id, true), kind: AidotClientParticipantKind = from.is_bot === true ? "bot" : "user";
+  const threadId = message.message_thread_id === undefined ? null : telegramInteger(message.message_thread_id, 1, "주제 ID");
+  if (message.is_topic_message === true && threadId === null) throw new Error("Telegram 주제를 기본 방으로 전환할 수 없습니다.");
+  const common = { nativeRoomKey: "telegram:" + JSON.stringify([self, chat.type, chatId, threadId]), nativeParticipantKey: `telegram:${kind}:${actor}`, participantKind: kind, chatId, threadId, roomMode: chat.type === "private" ? "private" as const : "shared" as const,
+    eventId: `telegram-update:${telegramInteger(update.update_id, 0, "update ID")}` };
+  telegramInteger(message.message_id, 1, "메시지 ID");
+  if (query) {
+    telegramText(query.id, 200, "callback ID");
+    if (telegramInteger(message.date, 1, "원본 메시지 시각") < 1 || telegramId(telegramRecord(message.from).id, true) !== self) throw new Error("Telegram 버튼 원본을 확인할 수 없습니다.");
+    if (typeof query.data !== "string" || !query.data.startsWith("cga:")) return null;
+    if (new TextEncoder().encode(query.data).length > 64) throw new Error("Telegram callback_data는 64바이트 이내여야 합니다.");
+    const match = /^cga:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\d+)$/.exec(query.data);
+    if (!match || !Number.isSafeInteger(Number(match[2]))) throw new Error("Telegram 버튼 식별자가 올바르지 않습니다.");
+    return { ...common, message: "", addressed: true, sourceMessageId: match[1], choiceIndex: Number(match[2]) };
+  }
+  const raw = telegramText(message.text, 4096, "질문"), username = connection.botUsername;
+  if (typeof username !== "string" || !/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username)) throw new Error("Telegram 봇 username이 올바르지 않습니다.");
+  if (message.entities !== undefined && !Array.isArray(message.entities)) throw new Error("Telegram entity 목록이 올바르지 않습니다.");
+  const removals: { start: number; end: number }[] = [];
+  for (const item of (Array.isArray(message.entities) ? message.entities : [])) {
+    const entity = telegramRecord(item), start = telegramInteger(entity.offset, 0, "entity offset"), length = telegramInteger(entity.length, 1, "entity length"), end = start + length;
+    if (end > raw.length) throw new Error("Telegram entity 범위가 올바르지 않습니다.");
+    const selected = raw.slice(start, end);
+    if ((entity.type === "mention" && selected.toLowerCase() === `@${username}`.toLowerCase())
+      || (entity.type === "bot_command" && /^\/[A-Za-z0-9_]+@[A-Za-z0-9_]+$/.test(selected) && selected.split("@")[1].toLowerCase() === username.toLowerCase())
+      || (entity.type === "text_mention" && telegramRecord(entity.user).id !== undefined && telegramId(telegramRecord(entity.user).id, true) === self)) removals.push({ start, end });
+  }
+  const addressed = common.roomMode === "private" || removals.length > 0;
+  let text = raw;
+  if (addressed) for (const range of removals.sort((a, b) => b.start - a.start)) text = text.slice(0, range.start) + text.slice(range.end);
+  return { ...common, addressed, message: telegramText(addressed ? text.trim() : raw, 4000, "CGA 질문") };
+}
+function telegramSelectionMessage(source: AidotChannelStoredMessage, value: string) {
+  const wire = JSON.stringify({ webchatRichFormVersion: "1.0", sourceMessageId: source.id, sourceTalkNodeId: telegramText(source.payload?.sourceTalkNodeId, 120, "원본 Talk ID"), response: { buttonValue: value } });
+  if (Array.from(wire).length > 4000) throw new Error("Telegram 선택 응답이 기존 메시지 한도를 넘습니다.");
+  return wire;
+}
+function telegramReply(message: AidotChannelStoredMessage, destination: { chatId: string; threadId?: number | null }) {
+  const body = telegramText(message.text, 4096, "본문"), parameters: AidotTelegramReplyPayload["parameters"] = { chat_id: telegramId(destination.chatId), text: body };
+  if (destination.threadId !== undefined && destination.threadId !== null) parameters.message_thread_id = telegramInteger(destination.threadId, 1, "응답 주제 ID");
+  const packet: AidotTelegramReplyPayload = { method: "sendMessage", parameters }, type = message.messageType || "text", choices: string[] = [], buttons: Record<string, unknown>[] = [];
+  if (type === "text") return { packet, choices };
+  if (!["button", "card", "table", "link-button", "carousel"].includes(type)) throw new Error(`Telegram에서 지원하지 않는 Talk 표현입니다: ${type}`);
+  const payload = telegramRecord(message.payload), escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  const scalar = (value: unknown): string => value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const label = (value: unknown) => { if (typeof value !== "string" || !value.trim()) throw new Error("Telegram 버튼 이름이 없습니다."); return value; };
+  const choice = (name: unknown, value: unknown) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(message.id)) throw new Error("Telegram 버튼 원본 CGA 메시지 ID가 올바르지 않습니다.");
+    const selected = scalar(value); telegramSelectionMessage(message, selected);
+    const data = `cga:${message.id}:${choices.length}`; if (new TextEncoder().encode(data).length > 64) throw new Error("Telegram callback_data가 너무 깁니다.");
+    choices.push(selected); buttons.push({ text: label(name), callback_data: data });
+  };
+  const link = (name: unknown, value: unknown) => buttons.push({ text: label(name), url: telegramUrl(value) });
+  if (type === "button" || type === "link-button") {
+    if (!Array.isArray(payload.options)) throw new Error("Telegram 버튼 항목이 올바르지 않습니다.");
+    for (const item of payload.options) {
+      if (typeof item === "string" && type === "button") choice(item, item);
+      else { const option = telegramRecord(item), name = option.label ?? option.text ?? option.value;
+        if (type === "link-button" || option.url) link(name, option.url); else choice(name, option.value ?? option.messageText ?? name); }
+    }
+  } else if (type === "table") {
+    const columns = payload.columns, rows = payload.rows;
+    if (!Array.isArray(columns) || columns.some(column => typeof column !== "string" || !column) || !Array.isArray(rows)) throw new Error("Telegram 표 구조가 올바르지 않습니다.");
+    if (!rows.length) return { packet, choices }; if (!columns.length) throw new Error("Telegram 표의 열이 없습니다.");
+    const lines = rows.map(item => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Telegram 표 행이 올바르지 않습니다.");
+      const row = telegramRecord(item), first = row[String(columns[0])], key = typeof payload.keyColumn === "string" && row[payload.keyColumn] !== undefined ? row[payload.keyColumn] : first;
+      if (payload.selectable !== false) choice(scalar(first) || scalar(key) || "선택", key);
+      return columns.map(column => scalar(row[String(column)])).join(" | ");
+    });
+    const table = [columns.join(" | "), ...lines].join("\n"); telegramText(body + "\n\n" + table, 4096, "표 본문");
+    parameters.text = escape(body) + "\n\n<pre>" + escape(table) + "</pre>"; parameters.parse_mode = "HTML";
+  } else {
+    const raw = type === "card" ? payload.card : payload.carousel;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Telegram 카드 구조가 올바르지 않습니다.");
+    const card = telegramRecord(raw), parts = type === "card" ? [body, card.title, card.description] : [body, card.title, card.itemTitle, card.itemContents];
+    const texts = parts.filter(part => part !== undefined && part !== null && part !== "").map(part => { if (typeof part !== "string") throw new Error("Telegram 카드 내용이 올바르지 않습니다."); return part; });
+    const plain = texts.join("\n"); telegramText(plain, card.imageUrl ? 1024 : 4096, card.imageUrl ? "사진 설명" : "카드 본문");
+    parameters.parse_mode = "HTML";
+    if (card.imageUrl) { packet.method = "sendPhoto"; delete parameters.text; parameters.photo = telegramUrl(card.imageUrl); parameters.caption = texts.map(escape).join("\n"); }
+    else parameters.text = texts.map(escape).join("\n");
+    if (type === "carousel") {
+      if (String(card.buttonType).toLowerCase() === "button") choice(card.itemButtonLabel, card.itemButtonValue);
+      if (card.bottomButtonLabel || card.bottomButtonValue) choice(card.bottomButtonLabel, card.bottomButtonValue);
+    }
+  }
+  if (buttons.length) parameters.reply_markup = { inline_keyboard: buttons.map(button => [button]) };
+  return { packet, choices };
+}
+export function buildAidotTelegramReplyPayload(message: AidotChannelStoredMessage, destination: { chatId: string; threadId?: number | null }) { return telegramReply(message, destination).packet; }
+export type AidotTelegramMembership = AidotClientMembership & Pick<AidotTelegramEvent, "nativeRoomKey" | "nativeParticipantKey" | "chatId" | "threadId" | "roomMode">;
+function telegramMembership(member: AidotClientMembership, event: AidotTelegramEvent): AidotTelegramMembership {
+  if (member.participantKind !== event.participantKind) throw new Error("Telegram 질문자 종류와 서버 발급 참가자가 다릅니다.");
+  return { ...member, nativeRoomKey: event.nativeRoomKey, nativeParticipantKey: event.nativeParticipantKey, chatId: event.chatId, threadId: event.threadId, roomMode: event.roomMode };
+}
+export async function createAidotTelegramRoom(serverUrl: string, botId: string, input: unknown, connection: AidotTelegramConnection, signal?: AbortSignal) {
+  const event = normalizeAidotTelegramEvent(input, connection); if (event === null) return null;
+  if (event.sourceMessageId) throw new Error("Telegram 버튼은 기존 대화방에서만 이어갈 수 있습니다.");
+  return telegramMembership(await createAidotClientRoom(serverUrl, "telegram", botId, event.roomMode, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function joinAidotTelegramRoom(serverUrl: string, room: Pick<AidotTelegramMembership, "roomId" | "nativeRoomKey">, input: unknown, connection: AidotTelegramConnection, signal?: AbortSignal) {
+  const event = normalizeAidotTelegramEvent(input, connection); if (event === null) return null;
+  if (event.nativeRoomKey !== room.nativeRoomKey) throw new Error("다른 Telegram 채팅/주제에는 이 방 정보로 입장할 수 없습니다.");
+  return telegramMembership(await joinAidotClientRoom(serverUrl, "telegram", room.roomId, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function sendAidotTelegramEvent(serverUrl: string, member: AidotTelegramMembership, input: unknown, connection: AidotTelegramConnection, signal?: AbortSignal): Promise<{ response: AidotSharedRoomMessageResponse | null; replies: AidotTelegramReplyPayload[] }> {
+  const event = normalizeAidotTelegramEvent(input, connection); if (event === null) return { response: null, replies: [] };
+  if (event.nativeRoomKey !== member.nativeRoomKey || event.nativeParticipantKey !== member.nativeParticipantKey || event.participantKind !== member.participantKind || event.chatId !== member.chatId || event.threadId !== member.threadId || event.roomMode !== member.roomMode) throw new Error("Telegram 방/질문자에 해당하는 서버 발급 증명이 필요합니다.");
+  let message = event.message;
+  if (event.sourceMessageId) {
+    const history = await fetchAidotClientRoom(serverUrl, "telegram", member, signal);
+    const source = history.messages?.find(item => item.id === event.sourceMessageId && item.participantKind === "bot");
+    if (!source) throw new Error("Telegram 버튼 원본 기록을 확인할 수 없어 재실행하지 않습니다.");
+    const value = telegramReply(source, { chatId: event.chatId, threadId: event.threadId }).choices[event.choiceIndex ?? -1];
+    if (value === undefined || !source.payload?.sourceTalkNodeId) throw new Error("Telegram 버튼 선택 출처가 올바르지 않습니다.");
+    message = telegramSelectionMessage(source, value);
+  }
+  const response = await sendAidotClientMessage(serverUrl, "telegram", member, message, event.addressed, event.eventId, signal);
+  try { return { response, replies: (response.botMessages ?? (response.botMessage ? [response.botMessage] : [])).map(item => buildAidotTelegramReplyPayload(item, { chatId: event.chatId, threadId: event.threadId })) }; }
+  catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 Telegram 표현을 변환하지 못했습니다."), { cause, cgaResponse: response }); }
 }

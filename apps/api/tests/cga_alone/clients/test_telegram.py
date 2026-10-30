@@ -146,3 +146,95 @@ def test_telegram_topics_do_not_fallback_to_main_chat():
         with pytest.raises(ValueError):normalized(invalid)
     missing=deepcopy(topic);missing["message"].pop("message_thread_id")
     with pytest.raises(ValueError):normalized(missing)
+
+
+def test_native_mentions_commands_and_utf16_offsets():
+    mention=normalized(FIXTURE["addressed"]);assert mention["addressed"] and mention["message"]=="미등록 텔레그램 질문"
+    command=event("/ask@CgaAloneBot 설명");command["message"]["entities"]=[{"type":"bot_command","offset":0,"length":len("/ask@CgaAloneBot")}]
+    assert normalized(command)["message"]=="설명"
+    generic=event("/ask 설명");generic["message"]["entities"]=[{"type":"bot_command","offset":0,"length":4}];assert not normalized(generic)["addressed"]
+    emoji=event("😀 @CgaAloneBot 질문");emoji["message"]["entities"]=[{"type":"mention","offset":3,"length":12}]
+    parsed=normalized(emoji);assert parsed["message"].startswith("😀") and "@CgaAloneBot" not in parsed["message"] and parsed["addressed"]
+    literal=event("@CgaAloneBot 질문");literal["message"]["entities"]=[];assert not normalized(literal)["addressed"]
+
+
+def test_self_edits_and_service_updates_never_ask():
+    own=event();own["message"]["from"].update(id=10000999,is_bot=True);assert normalized(own) is None
+    edited={"update_id":10004,"edited_message":FIXTURE["addressed"]["message"]};assert normalized(edited) is None
+    service=event();service["message"].pop("text");service["message"]["new_chat_members"]=[];assert normalized(service) is None
+
+
+@pytest.mark.parametrize("problem",["chat","kind","unsafe-id","anonymous"],ids=str)
+def test_unverified_native_identity_is_not_an_owner(problem):
+    native=event();connection=FIXTURE["connection"]
+    if problem=="chat":native["message"]["chat"]["id"]=-10000002
+    elif problem=="kind":native["message"]["chat"]["type"]="private"
+    elif problem=="unsafe-id":native["message"]["from"]["id"]=9007199254740992
+    elif problem=="anonymous":native["message"]["sender_chat"]={"id":-10000001,"type":"supergroup"}
+    with pytest.raises(ValueError):normalized(native,connection)
+
+
+@pytest.mark.parametrize("kind",["text","button","card","table","link-button","carousel"])
+def test_real_talk_six_native_packets(kind):
+    from app.api.routes import channels
+    config={"messageType":kind,"basicMessages":["한국어 본문\n둘째 줄"],"responseType":"single-select"};variables={}
+    if kind=="button":config["messages"]=["선택"]
+    elif kind=="card":config["messages"]=["제목","","설명"]
+    elif kind=="link-button":config["linkButtonItems"]=[{"label":"문서","url":"https://example.com/한국어"}]
+    elif kind=="table":
+        config.update(tableVariableItemId="rows",tableColumnMappings=[{"column":"name"},{"column":"id"}],tableKeyColumn="id");variables={"__items":{"rows":[{"name":"표시","id":"원본 키"}]}}
+    elif kind=="carousel":config["messages"]=["목록","","항목","내용","선택","원본 키","Button","하단","하단 값"]
+    output=channels._talk_output({"id":"followup","config":{"channelTemplates":{"TELEGRAM":config}}},variables,channel_code="TELEGRAM")
+    packet=sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001","messageType":output["type"],"text":output["text"],"payload":{**output["payload"],"options":output["options"]}},"destination":{"chatId":FIXTURE["connection"]["chatId"],"threadId":41}})
+    assert packet["method"]=="sendMessage" and packet["parameters"]["message_thread_id"]==41
+    assert "한국어 본문" in packet["parameters"]["text"]
+    if kind=="table":assert "원본 키" in packet["parameters"]["text"]
+    if kind in {"button","table","carousel"}:
+        data=packet["parameters"]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        assert data.startswith("cga:00000000-0000-4000-8000-000000000001:") and len(data.encode("utf-8"))<=64 and "원본 키" not in data
+    if kind=="link-button":assert packet["parameters"]["reply_markup"]["inline_keyboard"][0][0]["url"]=="https://example.com/한국어"
+    if kind=="card":assert "설명" in packet["parameters"]["text"]
+
+
+@pytest.mark.parametrize("kind",["html","form","form-a-card","dtmf"])
+def test_unsupported_telegram_templates_are_explicit(kind):
+    assert admin._template_renderer_issues(channel_code="TELEGRAM",renderer_type=kind)
+    with pytest.raises(ValueError):sdk("render",{"message":{"id":"known","messageType":kind,"text":"본문","payload":{}},"destination":{"chatId":FIXTURE["connection"]["chatId"],"threadId":None}})
+
+
+@pytest.mark.parametrize("kind,payload",[("button",{"options":[]}),("link-button",{"options":[]}),("table",{"columns":["name"],"rows":[]}),("card",{"card":{"title":"","description":"","imageUrl":""}}),("carousel",{"carousel":{}})],ids=["button","link","zero-rows","card","carousel"])
+def test_valid_empty_optional_payload_keeps_text(kind,payload):
+    packet=sdk("render",{"message":{"id":"known","messageType":kind,"text":"유효한 본문","payload":payload},"destination":{"chatId":FIXTURE["connection"]["chatId"],"threadId":None}})
+    assert packet["method"]=="sendMessage" and "유효한 본문" in packet["parameters"]["text"] and not packet["parameters"].get("reply_markup")
+
+
+@pytest.mark.parametrize("case",["text","caption","url","missing-options","bad-table"],ids=str)
+def test_native_limits_and_invalid_structures_are_not_silently_cut(case):
+    message={"id":"00000000-0000-4000-8000-000000000001","messageType":"text","text":"본문","payload":{}}
+    if case=="text":message["text"]="x"*4097
+    elif case=="caption":message.update(messageType="card",text="x"*1025,payload={"card":{"imageUrl":"https://example.com/image.png"}})
+    elif case=="url":message.update(messageType="card",payload={"card":{"imageUrl":"javascript:alert(1)"}})
+    elif case=="missing-options":message.update(messageType="button",payload={})
+    elif case=="bad-table":message.update(messageType="table",payload={"columns":None,"rows":[]})
+    with pytest.raises(ValueError):sdk("render",{"message":message,"destination":{"chatId":FIXTURE["connection"]["chatId"],"threadId":None}})
+
+
+def test_photo_packet_and_html_escape_preserve_content():
+    packet=sdk("render",{"message":{"id":"known","messageType":"card","text":"본문 <&>","payload":{"card":{"title":"제목","description":"설명","imageUrl":"https://example.com/image.png"}}},"destination":{"chatId":FIXTURE["connection"]["chatId"],"threadId":None}})
+    assert packet["method"]=="sendPhoto" and packet["parameters"]["photo"]=="https://example.com/image.png" and packet["parameters"]["parse_mode"]=="HTML"
+    assert "&lt;&amp;&gt;" in packet["parameters"]["caption"] and "제목" in packet["parameters"]["caption"] and "설명" in packet["parameters"]["caption"]
+
+
+def test_direct_bot_questioner_reuses_existing_api(telegram_context):
+    member=create(telegram_context,"telegram",kind="bot")
+    response=send(telegram_context,member,"API 봇 질문","telegram",addressed=True,event="telegram-direct-bot-1")
+    assert response.status_code==200 and response.json()["data"]["userMessage"]["participantKind"]=="bot"
+
+
+def test_completed_callback_update_restores_and_new_stale_is_rejected(telegram_context):
+    c,_=telegram_context;member=create(telegram_context,"telegram");message=post(telegram_context,member,FIXTURE["addressed"]).json()["data"]["botMessage"]
+    wire=json.dumps({"webchatRichFormVersion":"1.0","sourceMessageId":message["id"],"sourceTalkNodeId":"followup","response":{"buttonValue":"추가 설명"}},ensure_ascii=False)
+    answer=send(telegram_context,member,wire,"telegram",addressed=True,event="telegram-update:10005");assert answer.status_code==200
+    repeated=send(telegram_context,member,wire,"telegram",addressed=True,event="telegram-update:10005")
+    assert repeated.status_code==200 and repeated.json()["data"]["botMessage"]["id"]==answer.json()["data"]["botMessage"]["id"] and len(c[3])==1
+    assert send(telegram_context,member,wire,"telegram",addressed=True,event="telegram-update:10006").status_code==409 and len(c[3])==1
