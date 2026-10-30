@@ -107,7 +107,7 @@ type SimulatorMessage = {
   };
   table?: {
     columns: string[];
-    rows: Array<{ key: string; values: string[] }>;
+    rows: Array<{ key: string; firstCell?: string; values: string[] }>;
     selectable?: boolean;
   };
   template?: {
@@ -159,7 +159,7 @@ function sharedMessageToSimulatorMessage(message: import("../../../packages/shar
     const keyColumn = text(payload.keyColumn) || columns[0] || "";
     const rows = (Array.isArray(payload.rows) ? payload.rows : []).map(value => {
       const row = record(value);
-      return { key: text(row[keyColumn]), values: columns.slice(1).map(column => text(row[column])) };
+      return { key: text(row[keyColumn]), ...(keyColumn !== columns[0] ? { firstCell: text(row[columns[0]]) } : {}), values: columns.slice(1).map(column => text(row[column])) };
     });
     result.table = { columns, rows, selectable: payload.selectable === true };
   } else if (message.messageType === "dtmf") {
@@ -7009,7 +7009,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                             }
                                           }}
                                         >
-                                          <td>{row.key || "-"}</td>
+                                          <td>{(row.firstCell ?? row.key) || "-"}</td>
                                           {message.table?.columns.slice(1).map((_, valueIndex) => (
                                             <td key={`${message.id}-row-${rowIndex}-value-${valueIndex}`}>
                                               {row.values[valueIndex] || "-"}

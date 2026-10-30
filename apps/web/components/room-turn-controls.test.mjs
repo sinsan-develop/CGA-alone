@@ -123,3 +123,11 @@ test("private preview script still asks before editing its current sentence",()=
  const {handler,calls}=inputChangeHandler(false,false);handler("편집 문장");
  assert.equal(calls.confirm,1);assert.equal(calls.script,0);assert.deepEqual(calls.inputs,[]);
 });
+
+test("shared table preserves visible column order when selection key is not first",()=>{
+ const rendered=storedRenderer()(stored("table",{columns:["이름","코드","수량"],rows:[{"이름":"어울","코드":"A-1","수량":2}],keyColumn:"코드",selectable:true}));
+ assert.deepEqual(rendered.table.columns,["이름","코드","수량"]);
+ assert.equal(rendered.table.rows[0].key,"A-1");
+ assert.equal(rendered.table.rows[0].firstCell,"어울");
+ assert.deepEqual(rendered.table.rows[0].values,["A-1","2"]);
+});
