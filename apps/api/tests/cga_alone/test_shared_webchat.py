@@ -202,7 +202,7 @@ def committed_shared_context(turn_context,native_secondary_document,monkeypatch)
         db.add(AdminChannel(organization_id=c.org_id,code="WEBCHAT",name="S05 소유 QA",status="active"));db.commit()
     @contextmanager
     def factory():
-        with Session(c.engine) as db:
+        with Session(c.engine,autoflush=False) as db:
             context=channels._shared_turn_capability.get()
             if context:c.native_sessions.append((context["actor_id"],db))
             yield db
@@ -340,7 +340,7 @@ assert make_url(url).database=='cga_alone_qa'
 engine=create_engine(url)
 @contextmanager
 def factory():
-    with Session(engine) as db:yield db
+    with Session(engine,autoflush=False) as db:yield db
 channels.SessionLocal=factory;webchat.SessionLocal=factory
 channels._select_dialog_for_bot=lambda *a,**kw:(None,0.0)
 settings.webchat_api_key='s05-qa-key'
@@ -387,3 +387,111 @@ def test_shared_end_session_immediately_closes_room_and_keeps_access_marker(cred
     assert "__roomTurn" not in room.metadata_json and room.metadata_json["__webchatAccess"]["mode"]=="shared"
     with pytest.raises(HTTPException) as error:history(c,a["roomId"],a["conversationToken"])
     assert error.value.status_code==404 and len(c[3])==1
+
+
+
+def test_review_local_wait_after_previous_end_retains_new_turn(credential_context,monkeypatch):
+    from app.api.routes import bots
+    c=credential_context;a=create(c);b=join(c,a["roomId"])
+    send_shared(c,a);send_shared(c,a,"완료 입력")
+    document=deepcopy(c[1].version_json)
+    graph=next(item for item in document["dialog_flow_graphs"] if item["dialogId"]=="local")
+    talk=next(item for item in graph["nodes"] if item["kind"]=="talk")
+    talk["config"].update(responseType="relay",responseVariableName="localFollowup")
+    bots._assign_version_document(c[1],document);c[2].flush()
+    local=next(item for item in document["dialogs"] if item["id"]=="local")
+    monkeypatch.setattr(channels,"_select_dialog_for_bot",lambda *args,**kwargs:(local,1.0))
+    response=send_shared(c,a,"로컬 질문")
+    assert response["botMessage"]["text"]=="정의한 로컬 답변"
+    assert response["turn"]["state"]=="waiting_input" and response["turn"]["ownerParticipantId"]==a["participantId"]
+    with pytest.raises(HTTPException) as error:send_shared(c,b,"대신 답변")
+    assert error.value.status_code==409
+
+
+@pytest.mark.parametrize("kind",["smalltalk","direct-qa"])
+def test_review_immediate_local_answer_does_not_keep_turn(credential_context,monkeypatch,kind):
+    from app.api.routes import bots
+    c=credential_context;a=create(c);b=join(c,a["roomId"])
+    if kind=="smalltalk":
+        smalltalk={"items":[{"userMessages":["짧은 질문"],"botMessages":["짧은 답변"]}]}
+        c[0].data_json={**c[0].data_json,"settings_by_version":{str(c[1].id):{"smalltalk":smalltalk}}}
+        c[2].flush()
+    else:
+        document=deepcopy(c[1].version_json)
+        document["dialog_flow_graphs"]=[item for item in document["dialog_flow_graphs"] if item["dialogId"]!="local"]
+        local=next(item for item in document["dialogs"] if item["id"]=="local");local["response"]="정의한 답변"
+        bots._assign_version_document(c[1],document);c[2].flush()
+        monkeypatch.setattr(channels,"_select_dialog_for_bot",lambda *args,**kwargs:(local,1.0))
+    response=send_shared(c,a,"짧은 질문")
+    assert response["botMessage"] is not None and not c[3]
+    assert response["turn"]=={"state":"idle","ownerParticipantId":None,"canAskBot":True}
+    assert send_shared(c,b,"짧은 질문")["botMessage"] is not None
+
+
+def test_review_exception_cannot_leave_previous_actor_scenario_for_next_actor(credential_context,monkeypatch):
+    c=credential_context;a=create(c);b=join(c,a["roomId"]);send_shared(c,a)
+    original=channels._handle_runtime_message;failed=[]
+    def once(*args,**kwargs):
+        if not failed:failed.append(True);raise RuntimeError("S05 QA 일반 예외")
+        return original(*args,**kwargs)
+    monkeypatch.setattr(channels,"_handle_runtime_message",once)
+    response=send_shared(c,a,"실패 입력")
+    assert response["turn"]["state"]=="idle"
+    next_response=send_shared(c,b,"새 질문")
+    assert next_response["botMessage"]["text"]=="추가 설명" and not c[3]
+    room=c[2].get(ChannelRoom,UUID(a["roomId"]))
+    assert room.metadata_json["__roomTurn"]["actor_id"]==b["participantId"]
+
+
+def test_review_outputless_session_end_stays_closed_with_autoflush_disabled(committed_shared_context):
+    from sqlalchemy.orm import Session
+    from app.models import BotVersion
+    from app.api.routes import bots
+    c=committed_shared_context;a=committed_create(c)
+    with Session(c.engine) as db:
+        version=db.get(BotVersion,c.version_id);document=deepcopy(version.version_json);graph=document["dialog_flow_graphs"][0]
+        graph["nodes"]=[node for node in graph["nodes"] if node["id"]!="talk"]
+        graph["links"]=[link for link in graph["links"] if link["sourceNodeId"]!="talk" and link["targetNodeId"]!="talk"]
+        graph["links"].append({"sourceNodeId":"function","sourcePort":"next","targetNodeId":"end"})
+        next(node for node in graph["nodes"] if node["id"]=="end")["config"]={"endSessionImmediately":True}
+        bots._assign_version_document(version,document);db.commit()
+    assert committed_send(c,a,"무출력 질문").status_code==200
+    response=committed_send(c,a,"후속")
+    assert response.status_code==200 and response.json()["data"]["runtime"]["sessionEnded"] is True
+    assert response.json()["data"]["botMessages"]==[]
+    with Session(c.engine) as db:
+        room=db.get(ChannelRoom,UUID(a["roomId"]))
+        assert room.status=="closed" and "__roomTurn" not in room.metadata_json
+    assert c.client.get(c.base+"/shared-rooms/"+a["roomId"]+"/messages",headers={**c.headers,"X-Aidot-Conversation-Token":a["conversationToken"]}).status_code==404
+
+
+def test_review_version_replacement_marks_only_abandoned_generation_unknown(committed_shared_context):
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlalchemy.orm import Session
+    from app.models import Bot,BotVersion,ChannelQueueEvent,AuditLog
+    from app.api.routes import bots
+    c=committed_shared_context;a=committed_create(c)
+    b=c.client.post(c.base+"/shared-rooms/"+a["roomId"]+"/participants",headers=c.headers,json={}).json()["data"]
+    assert committed_send(c,a,"A 질문").status_code==200
+    pool=ThreadPoolExecutor(max_workers=1);future=pool.submit(committed_send,c,a,"A 후속")
+    try:
+        assert c.entered.wait(5)
+        with Session(c.engine) as db:
+            old=db.scalar(select(ChannelQueueEvent).where(ChannelQueueEvent.room_id==UUID(a["roomId"]),ChannelQueueEvent.status=="processing"))
+            old_id=old.id
+            values={column.name:deepcopy(getattr(old,column.name)) for column in ChannelQueueEvent.__table__.columns if column.name not in {"id","created_at","updated_at"}}
+            values["parameter_json"]={**values["parameter_json"],"sharedTurnGeneration":uuid4().hex}
+            unrelated=ChannelQueueEvent(**values);db.add(unrelated);db.flush();unrelated_id=unrelated.id
+            previous=db.get(BotVersion,c.version_id);previous.status="inactive"
+            version=BotVersion(bot_id=c.bot_id,version_no=2,name="v2",created_by=c.user_id,status="active")
+            bots._assign_version_document(version,deepcopy(previous.version_json));db.add(version);db.flush()
+            db.get(Bot,c.bot_id).active_version_id=version.id;new_id=version.id;db.commit()
+        response=committed_send(c,b,"새 버전 질문")
+        assert response.status_code==200 and response.json()["data"]["botMessage"]["text"]=="추가 설명"
+        with Session(c.engine) as db:
+            assert db.get(ChannelQueueEvent,old_id).status=="unknown"
+            assert db.get(ChannelQueueEvent,unrelated_id).status=="processing"
+            assert db.get(ChannelRoom,UUID(a["roomId"])).bot_version_id==new_id
+        c.release.set();assert future.result(timeout=5).status_code==409
+    finally:
+        c.release.set();pool.shutdown(wait=True,cancel_futures=True)

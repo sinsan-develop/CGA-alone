@@ -702,14 +702,17 @@ def _shared_runtime_message(bot, version, room_id, payload, request, api_key, cr
             db.commit();db.refresh(message)
             return success_response(request, {"roomId": room_id, "userMessage": channels._serialize_message(message),
                 "botMessage": None, "botMessages": [], "turn": _shared_turn_view(db, room, actor)})
-        if room.bot_version_id != version.id:
-            channels._apply_active_version_to_room(room, bot, version, "webchat")
-            db.flush()
         previous_generation = _as_dict(_as_dict(room.metadata_json).get("__roomTurn")).get("generation")
+        version_replaced = room.bot_version_id != version.id
+        if version_replaced:
+            previous_version_id = channels._apply_active_version_to_room(room, bot, version, "webchat")
+            channels._write_channel_audit_log(db, request, "channel.session.version_applied", room.id,
+                {"channel": "webchat", "bot_id": str(bot.id), "previous_version_id": previous_version_id, "active_version_id": str(version.id)})
+            db.flush()
         decision = claim_room_turn(db, room, actor, True)
         if not decision.allowed:
             raise HTTPException(status_code=409, detail="이 방의 다른 질문이 진행 중입니다.")
-        if decision.reason in {"expired", "version_changed"}:
+        if decision.reason in {"expired", "version_changed"} or version_replaced:
             previous = _as_dict(room.metadata_json)
             fresh = channels._initial_runtime_state_for_version(bot, version, "webchat")
             for key in ("__webchatAccess", "__roomTurn", "conversationHistory", "language"):

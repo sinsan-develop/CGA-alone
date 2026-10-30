@@ -6549,6 +6549,10 @@ def create_channel_room_message(
         document = normalize_version_document(version.version_json)
         default_messages = _load_default_messages(db, bot.organization_id, message_languages)
         runtime_state_before = _as_dict(room.metadata_json) or _initial_runtime_state_for_version(bot, version, room.channel_type)
+        if _shared_turn_capability.get() is not None:
+            # 이번 실행의 실제 대기를 이전 질문의 종료 flag와 분리한다.
+            runtime_state_before["dialogEnded"] = False
+            runtime_state_before["sessionEnded"] = False
         _reset_stalled_waiting_talk_state(document, runtime_state_before, channel_code)
         runtime_state_snapshot = deepcopy(runtime_state_before)
         _set_runtime_system_variables(
@@ -6827,6 +6831,8 @@ def create_channel_room_message(
                 },
             )
             if runtime_state.get("sessionEnded") is True:
+                # 출력 없는 End에서도 생명주기 변경 전에 세대를 검증한다.
+                _fence_shared_room_write(db, room)
                 _archive_room_for_new_session(db, room, "end_session_immediately")
                 _write_channel_audit_log(
                     db,
@@ -6920,10 +6926,23 @@ def create_channel_room_message(
             )
         if shared_turn is not None:
             from app.services.room_turn import hold_room_turn_for_input, release_room_turn
+            if queue_event.status == "failed":
+                # 실패한 질문의 대기/변수를 다음 참가자가 이어받지 않는다.
+                previous = _as_dict(room.metadata_json)
+                fresh = _initial_runtime_state_for_version(bot, version, channel)
+                for key in ("__webchatAccess", "__roomTurn", "conversationHistory", "language", "runtimeEvents"):
+                    if key in previous:
+                        fresh[key] = previous[key]
+                fresh["dialogEnded"] = True
+                room.metadata_json = fresh
+                flag_modified(room, "metadata_json")
+                runtime_state_after = fresh
+                _set_queue_status(queue_event, "failed", receive_status=queue_event.receive_status,
+                    result_json=queue_event.result_json, error_message=queue_event.error_message)
             _fence_shared_room_write(db, room)
             db.flush()
-            ended = runtime_state_after.get("dialogEnded") is True or runtime_state_after.get("sessionEnded") is True
-            if queue_event.status == "failed" or ended:
+            waiting_input = bool(str(runtime_state_after.get("waitingNodeId") or "").strip())
+            if queue_event.status == "failed" or runtime_state_after.get("sessionEnded") is True or not waiting_input:
                 release_room_turn(db, room.id, shared_turn["actor_id"], shared_turn["generation"],
                     "error" if queue_event.status == "failed" else "session_ended" if runtime_state_after.get("sessionEnded") is True else "dialog_ended")
             else:
