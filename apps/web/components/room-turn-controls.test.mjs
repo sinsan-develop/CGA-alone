@@ -478,3 +478,90 @@ test("telegram_target_command_without_arguments_preserves_command",()=>{
  event.message.entities=[{type:"bot_command",offset:0,length:event.message.text.length}];
  assert.equal(api.normalizeAidotTelegramEvent(event,telegramFixture.connection).addressed,false);
 });
+
+
+const googleChatFixture=JSON.parse(readFileSync(new URL("../../../apps/api/tests/cga_alone/fixtures/client_templates/google-chat.json",import.meta.url),"utf8"));
+const googleChatBinding={roomId:"google-chat-room",participantId:"server:A",participantKind:"user",conversationToken:"opaque-google-chat-fixture",nativeRoomKey:'google-chat:["users/10000999","spaces/QA_SPACE","SPACE","spaces/QA_SPACE/threads/QA_THREAD"]',nativeParticipantKey:"google-chat:user:users/10000010",spaceName:"spaces/QA_SPACE",threadName:"spaces/QA_SPACE/threads/QA_THREAD",roomMode:"shared",turn:idle};
+function googleChatQuery(source,index="0",time="2026-10-31T00:00:02.000001Z"){
+ const item=structuredClone(googleChatFixture.addressed);item.type="CARD_CLICKED";item.eventTime=time;item.message.sender={name:"users/10000999",type:"BOT"};
+ item.action={actionMethodName:"cga.select",parameters:[{key:"sourceMessageId",value:source.id},{key:"choiceIndex",value:index}]};return item;
+}
+
+test("Google Chat caller binds issued proof to app space thread and actor",async()=>{
+ const original=globalThis.fetch,calls=[];globalThis.fetch=async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify({data:{...googleChatBinding,botMessages:[],botMessage:null}}),{status:200});};
+ try{
+  const member=await api.createAidotGoogleChatRoom("http://localhost:8320","bot-id",googleChatFixture.addressed,googleChatFixture.connection);assert.equal(member.nativeRoomKey,googleChatBinding.nativeRoomKey);
+  await api.joinAidotGoogleChatRoom("http://localhost:8320",member,googleChatFixture.addressed,googleChatFixture.connection);
+  await api.sendAidotGoogleChatEvent("http://localhost:8320",member,googleChatFixture.addressed,googleChatFixture.connection);
+  assert.ok(calls[0].url.endsWith("/channels/google-chat/rooms"));assert.equal(calls[2].init.headers.get("X-Aidot-Conversation-Token"),member.conversationToken);
+  const parsed=await api.normalizeAidotGoogleChatEvent(googleChatFixture.addressed,googleChatFixture.connection);assert.equal(calls[2].init.headers.get("X-Aidot-Event-Id"),parsed.eventId);
+  for(const patch of [{nativeParticipantKey:"other"},{threadName:null},{roomMode:"private"}])await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",{...member,...patch},googleChatFixture.addressed,googleChatFixture.connection));
+  await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",member,googleChatFixture.addressed,{...googleChatFixture.connection,botUserName:"users/10000998"}));assert.equal(calls.length,3);
+  const own=structuredClone(googleChatFixture.addressed);own.message.sender={name:"users/10000999",type:"BOT"};assert.deepEqual(await api.sendAidotGoogleChatEvent("http://localhost:8320",member,own,googleChatFixture.connection),{response:null,replies:[]});assert.equal(calls.length,3);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Google Chat callback restores original non-first key after completion",async()=>{
+ const original=globalThis.fetch,calls=[],key="키".repeat(1000);
+ const source={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"table",text:"본문",payload:{sourceTalkNodeId:"followup",columns:["name","id"],rows:[{name:"선택",id:key}],keyColumn:"id",selectable:true}};
+ const packet=api.buildAidotGoogleChatReplyPayload(source,{spaceName:googleChatBinding.spaceName});assert.ok(!JSON.stringify(packet.body.cardsV2[0].card.sections[0].widgets[1].decoratedText.button.onClick.action.parameters).includes(key));
+ const history={messages:[source],turn:idle,runtime:{dialogEnded:true,sessionEnded:false}},result={roomId:"google-chat-room",botMessages:[],botMessage:null,turn:idle};
+ globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({data:init.method==="GET"?history:result}),{status:200});};
+ try{
+  for(let i=0;i<2;i++)await api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatQuery(source),googleChatFixture.connection);
+  assert.deepEqual(calls.map(call=>call.method),["GET","POST","GET","POST"]);const wire=JSON.parse(JSON.parse(calls[1].body).message);assert.equal(wire.response.buttonValue,key);assert.equal(wire.sourceMessageId,source.id);assert.equal(wire.sourceTalkNodeId,"followup");assert.equal(calls[1].body,calls[3].body);assert.equal(calls[1].headers.get("X-Aidot-Event-Id"),calls[3].headers.get("X-Aidot-Event-Id"));
+  calls.length=0;history.messages=[];await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatQuery(source),googleChatFixture.connection));assert.equal(calls.length,1);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Google Chat callback rejects a new room conflicting action and bad origin",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:googleChatBinding}),{status:200});};
+ const source={id:"00000000-0000-4000-8000-000000000001"};
+ try{
+  await assert.rejects(()=>api.createAidotGoogleChatRoom("http://localhost:8320","bot-id",googleChatQuery(source),googleChatFixture.connection));assert.equal(count,0);
+  const other=googleChatQuery(source);other.message.sender.name="users/10000998";await assert.rejects(()=>api.normalizeAidotGoogleChatEvent(other,googleChatFixture.connection));
+  const conflict=googleChatQuery(source);conflict.common={parameters:{sourceMessageId:source.id,choiceIndex:"1"}};await assert.rejects(()=>api.normalizeAidotGoogleChatEvent(conflict,googleChatFixture.connection));
+  const duplicate=googleChatQuery(source);duplicate.action.parameters.push({key:"choiceIndex",value:"1"});await assert.rejects(()=>api.normalizeAidotGoogleChatEvent(duplicate,googleChatFixture.connection));assert.equal(count,0);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Google Chat empty selection and completed response texts are preserved",async()=>{
+ const original=globalThis.fetch;let wire,count=0;
+ const source={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"carousel",text:"본문",payload:{sourceTalkNodeId:"followup",carousel:{title:"제목",itemContents:"내용",buttonType:"Button",itemButtonLabel:"선택",itemButtonValue:""}}};
+ const botMessages=[{id:"1",messageType:"button",text:"빈 버튼",payload:{options:[]}},{id:"2",messageType:"link-button",text:"빈 링크",payload:{options:[]}},{id:"3",messageType:"table",text:"조회0건",payload:{columns:[],rows:[]}}];
+ globalThis.fetch=async(url,init)=>{count++;if(init.method==="POST")wire=JSON.parse(JSON.parse(init.body).message);return new Response(JSON.stringify({data:init.method==="GET"?{messages:[source]}:{botMessages,botMessage:botMessages[0]}}),{status:200});};
+ try{const result=await api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatQuery(source),googleChatFixture.connection);assert.equal(wire.response.buttonValue,"");assert.deepEqual(result.replies.map(item=>item.body.text),botMessages.map(item=>item.text));assert.equal(count,2);}finally{globalThis.fetch=original;}
+});
+
+test("Google Chat conversion and unknown transport preserve result without retry",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:{id:"known",messageType:"html",text:"미지원"},botMessages:[{id:"known",messageType:"html",text:"미지원"}]}}),{status:200});};
+ try{
+  await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatFixture.addressed,googleChatFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);
+  count=0;globalThis.fetch=async()=>{count++;throw new Error("synthetic unknown transport");};await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatFixture.addressed,googleChatFixture.connection));assert.equal(count,1);
+ }finally{globalThis.fetch=original;}
+});
+
+
+test("Google Chat long table rows wrap and preserve line breaks and distinguishing values",()=>{
+ const description="긴 한국어 설명".repeat(50)+"\n다음 줄 <&>";
+ const source={id:"00000000-0000-4000-8000-000000000001",messageType:"table",text:"표 본문",payload:{sourceTalkNodeId:"followup",columns:["name","description","id"],rows:[{name:"같은 이름",description,id:"끝의 구분값"}],keyColumn:"id",selectable:true}};
+ const row=api.buildAidotGoogleChatReplyPayload(source,{spaceName:"spaces/QA_SPACE"}).body.cardsV2[0].card.sections[0].widgets[1].decoratedText;
+ assert.equal(row.wrapText,true);assert.ok(row.text.includes("<br>다음 줄 &lt;&amp;&gt;"));assert.ok(row.text.endsWith("끝의 구분값"));assert.equal(row.button.text,"같은 이름");
+});
+
+test("Google Chat image requires HTTPS while openLink and received response are preserved",async()=>{
+ const original=globalThis.fetch;let count=0;
+ try{
+  for(const kind of ["card","carousel"]){
+   const source={id:"known",messageType:kind,text:"본문",payload:{[kind]:{imageUrl:"http://example.com/image.png"}}};
+   assert.throws(()=>api.buildAidotGoogleChatReplyPayload(source,{spaceName:"spaces/QA_SPACE"}),/HTTPS/);
+   source.payload[kind].imageUrl="https://example.com/image.png";
+   const packet=api.buildAidotGoogleChatReplyPayload(source,{spaceName:"spaces/QA_SPACE"});assert.equal(packet.body.cardsV2[0].card.sections[0].widgets[0].image.imageUrl,source.payload[kind].imageUrl);
+   source.payload[kind].imageUrl="http://example.com/image.png";
+   globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:source,botMessages:[source]}}),{status:200});};
+   await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatFixture.addressed,googleChatFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known");
+  }
+  assert.equal(count,2);
+  const link=api.buildAidotGoogleChatReplyPayload({id:"known",messageType:"link-button",text:"본문",payload:{options:[{label:"문서",url:"http://example.com/document"}]}},{spaceName:"spaces/QA_SPACE"});assert.equal(link.body.cardsV2[0].card.sections[0].widgets[0].buttonList.buttons[0].onClick.openLink.url,"http://example.com/document");
+ }finally{globalThis.fetch=original;}
+});

@@ -1,0 +1,91 @@
+{
+  "connection": {
+    "botUserName": "users/10000999",
+    "spaceName": "spaces/QA_SPACE",
+    "spaceType": "SPACE"
+  },
+  "addressed": {
+    "type": "MESSAGE",
+    "eventTime": "2026-10-31T00:00:01.000000Z",
+    "user": {
+      "name": "users/10000010",
+      "type": "HUMAN"
+    },
+    "space": {
+      "name": "spaces/QA_SPACE",
+      "spaceType": "SPACE"
+    },
+    "message": {
+      "name": "spaces/QA_SPACE/messages/qa-message-101",
+      "sender": {
+        "name": "users/10000010",
+        "type": "HUMAN"
+      },
+      "space": {
+        "name": "spaces/QA_SPACE",
+        "spaceType": "SPACE"
+      },
+      "thread": {
+        "name": "spaces/QA_SPACE/threads/QA_THREAD"
+      },
+      "text": "@CgaAloneBot 질문",
+      "argumentText": "질문",
+      "annotations": [
+        {
+          "type": "USER_MENTION",
+          "startIndex": 0,
+          "length": 12,
+          "userMention": {
+            "user": {
+              "name": "users/10000999",
+              "type": "BOT"
+            },
+            "type": "MENTION"
+          }
+        }
+      ]
+    }
+  },
+  "talk": {
+    "messageType": "button",
+    "basicMessages": [
+      "Google Chat 한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "추가 설명",
+      "다음"
+    ]
+  },
+  "general": {
+    "type": "MESSAGE",
+    "eventTime": "2026-10-31T00:00:01.000000Z",
+    "user": {
+      "name": "users/10000011",
+      "type": "HUMAN"
+    },
+    "space": {
+      "name": "spaces/QA_SPACE",
+      "spaceType": "SPACE"
+    },
+    "message": {
+      "name": "spaces/QA_SPACE/messages/qa-message-102",
+      "sender": {
+        "name": "users/10000011",
+        "type": "HUMAN"
+      },
+      "space": {
+        "name": "spaces/QA_SPACE",
+        "spaceType": "SPACE"
+      },
+      "thread": {
+        "name": "spaces/QA_SPACE/threads/QA_THREAD"
+      },
+      "text": "일반 대화",
+      "argumentText": "일반 대화",
+      "annotations": []
+    }
+  },
+  "channel": "google-chat",
+  "code": "GOOGLE_CHAT",
+  "renderer": "button"
+}

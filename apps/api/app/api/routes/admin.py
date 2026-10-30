@@ -902,9 +902,9 @@ def _template_renderer_issues(
             return ["카카오 템플릿은 simple-text, quick-reply, basic-card, list-card, carousel만 지원합니다."]
         return []
 
-    if normalized_channel_code in {"SLACK", "DISCORD", "TELEGRAM"}:
+    if normalized_channel_code in {"SLACK", "DISCORD", "TELEGRAM", "GOOGLE_CHAT"}:
         if normalized_renderer_type not in {"text", "button", "card", "table", "link-button", "carousel"}:
-            return [f"{'Telegram' if normalized_channel_code == 'TELEGRAM' else 'Discord' if normalized_channel_code == 'DISCORD' else 'Slack'} 템플릿은 text, button, card, table, link-button, carousel만 지원합니다."]
+            return [f"{'Google Chat' if normalized_channel_code == 'GOOGLE_CHAT' else 'Telegram' if normalized_channel_code == 'TELEGRAM' else 'Discord' if normalized_channel_code == 'DISCORD' else 'Slack'} 템플릿은 text, button, card, table, link-button, carousel만 지원합니다."]
         return []
 
     if normalized_renderer_type in {"simple-text", "quick-reply", "basic-card", "list-card"}:
