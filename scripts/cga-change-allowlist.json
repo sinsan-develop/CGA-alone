@@ -227,7 +227,7 @@
   {
     "path": "apps/api/app/api/routes/channels.py",
     "stage": "S04/S05·S06·S07·S08·S09·S10",
-    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 승인 공유방 서버 ContextVar의 actor/세대 fence·외부실행 전 transaction 종료·실제종료/대기정산 최소 hook; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 승인된 Slack 채널 선택값 추가, 기존 매핑 fallback·runtime 재사용; S08 단일검토 Important2: Slack Card/Carousel만 빈 선택 필드 위치 보존, 다른 채널 원본 처리 유지; S09 사용자 직접 승인: Discord 허용값·해당 카드 빈 선택 필드 위치 보존만 추가; Discord health만 기존 optional provider/renderer/supported_outputs 형식에 맞춰 원본 consumer 회귀 보존; S10 직접 승인: telegram 허용값/기존health descriptor/카드빈위치 보존만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음"
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 승인 공유방 서버 ContextVar의 actor/세대 fence·외부실행 전 transaction 종료·실제종료/대기정산 최소 hook; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 승인된 Slack 채널 선택값 추가, 기존 매핑 fallback·runtime 재사용; S08 단일검토 Important2: Slack Card/Carousel만 빈 선택 필드 위치 보존, 다른 채널 원본 처리 유지; S09 사용자 직접 승인: Discord 허용값·해당 카드 빈 선택 필드 위치 보존만 추가; Discord health만 기존 optional provider/renderer/supported_outputs 형식에 맞춰 원본 consumer 회귀 보존; S10 직접 승인: telegram 허용값/기존health descriptor/카드빈위치 보존만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
@@ -302,7 +302,7 @@
   {
     "path": "apps/api/app/api/routes/webchat.py",
     "stage": "S04/S05·S06·S07·S08·S09·S10",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 사용자 직접 승인 callback sourceMessageId 계약: 기존 원장 반환 뒤 같은 방 잠금에서 최신 카드·질문자 검증, 다른 채널 불변; S09 사용자 직접 승인: 사용자 승인 원본메시지ID/같은방잠금 원장우선 최신카드 검증을 Discord에도 적용, Slack 보호 유지; S10 직접 승인: 기존 같은방잠금/원장우선 sourceMessageId 검증을 Telegram에도 적용·다른client보존; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음"
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 사용자 직접 승인 callback sourceMessageId 계약: 기존 원장 반환 뒤 같은 방 잠금에서 최신 카드·질문자 검증, 다른 채널 불변; S09 사용자 직접 승인: 사용자 승인 원본메시지ID/같은방잠금 원장우선 최신카드 검증을 Discord에도 적용, Slack 보호 유지; S10 직접 승인: 기존 같은방잠금/원장우선 sourceMessageId 검증을 Telegram에도 적용·다른client보존; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
   },
   {
     "path": "apps/api/app/services/secondary_llm.py",
@@ -352,12 +352,12 @@
   {
     "path": "packages/shared/src/channel.ts",
     "stage": "S06·S09·S10",
-    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지; S07 승인된 선택 공통 채널 계약의 생성·입장·조회·메시지 SDK, 증명·이벤트 헤더와 재시도 없는 호출; S08 승인된 Slack native event/방·actor·event 식별과 Block Kit 변환 helper, 기존 SDK 유지; S09 사용자 직접 승인: 승인 Discord native parser/표현 packet/기존 공통SDK 호출·인증기록 기반 짧은 버튼출처·응답보존·자동재시도0; S10 직접 승인: 승인 Telegram native parser/6표현packet/개인·그룹·주제·봇연결scope/원본선택복원/기존SDKcaller/자동재시도0; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음"
+    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지; S07 승인된 선택 공통 채널 계약의 생성·입장·조회·메시지 SDK, 증명·이벤트 헤더와 재시도 없는 호출; S08 승인된 Slack native event/방·actor·event 식별과 Block Kit 변환 helper, 기존 SDK 유지; S09 사용자 직접 승인: 승인 Discord native parser/표현 packet/기존 공통SDK 호출·인증기록 기반 짧은 버튼출처·응답보존·자동재시도0; S10 직접 승인: 승인 Telegram native parser/6표현packet/개인·그룹·주제·봇연결scope/원본선택복원/기존SDKcaller/자동재시도0; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
   },
   {
     "path": "apps/web/components/room-turn-controls.test.mjs",
     "stage": "S06·S09·S10",
-    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증; S07 승인된 공통 SDK wire·증명·이벤트 식별·자동 재시도 금지 검증; S08 Slack 공통SDK 실제packet/위조scope·카드최신성·무재시도·받은결과보존·지원renderer 데이터 회귀; S09 실제 Discord SDK 공통HTTP/출처선택복구·재전송/잘못된새방/길이/결과보존 경계 시험; S10 승인 Telegram 실제SDK 호출/짧은버튼·원본선택복원/접근불명·빈결과·결과보존·자동재시도0 경계검증"
+    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증; S07 승인된 공통 SDK wire·증명·이벤트 식별·자동 재시도 금지 검증; S08 Slack 공통SDK 실제packet/위조scope·카드최신성·무재시도·받은결과보존·지원renderer 데이터 회귀; S09 실제 Discord SDK 공통HTTP/출처선택복구·재전송/잘못된새방/길이/결과보존 경계 시험; S10 승인 Telegram 실제SDK 호출/짧은버튼·원본선택복원/접근불명·빈결과·결과보존·자동재시도0 경계검증 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
   },
   {
     "path": "apps/api/tests/cga_alone/test_simulator_turn_contract.py",
@@ -407,12 +407,12 @@
   {
     "path": "apps/api/app/api/routes/admin.py",
     "stage": "S08·S09·S10",
-    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완; S09 사용자 직접 승인: 승인 Discord 6가지 renderer 검증만 추가; S10 직접 승인: 승인 Telegram 6renderer 검증만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음"
+    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완; S09 사용자 직접 승인: 승인 Discord 6가지 renderer 검증만 추가; S10 직접 승인: 승인 Telegram 6renderer 검증만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
   },
   {
     "path": "apps/web/app/admin/templates/page.tsx",
     "stage": "S08·S09·S10",
-    "reason": "승인된 Slack 지원renderer 선택 데이터만 제한, 기존 화면구조 보존; S09 사용자 직접 승인: 승인 Discord renderer 선택 데이터만 추가·기존 디자인 유지; S10 직접 승인: 승인 Telegram renderer 선택 데이터만 추가·디자인보존; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음"
+    "reason": "승인된 Slack 지원renderer 선택 데이터만 제한, 기존 화면구조 보존; S09 사용자 직접 승인: 승인 Discord renderer 선택 데이터만 추가·기존 디자인 유지; S10 직접 승인: 승인 Telegram renderer 선택 데이터만 추가·디자인보존; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
   },
   {
     "path": "apps/api/tests/cga_alone/clients/test_discord.py",
@@ -443,5 +443,15 @@
     "path": "apps/api/tests/cga_alone/fixtures/client_templates/google-chat.json",
     "stage": "S11",
     "reason": "기승인 WORK_PLAN S11 여섯 기본 RED와 공식 Google Chat 합성 공간/thread 표본. 제품 계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/clients/test_line.py",
+    "stage": "S12",
+    "reason": "기승인 WORK_PLAN S12 기본6 RED와 공식 LINE 합성 message/webhook 표본. 제품 계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/line.json",
+    "stage": "S12",
+    "reason": "기승인 WORK_PLAN S12 기본6 RED와 공식 LINE 합성 message/webhook 표본. 제품 계약 적용은 별도 승인 후"
   }
 ]

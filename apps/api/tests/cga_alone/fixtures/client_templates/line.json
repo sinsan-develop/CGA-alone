@@ -1,0 +1,81 @@
+{
+  "channel": "line",
+  "code": "LINE",
+  "renderer": "button",
+  "connection": {
+    "botUserId": "U99999999999999999999999999999999",
+    "sourceType": "group",
+    "sourceId": "C11111111111111111111111111111111"
+  },
+  "talk": {
+    "messageType": "button",
+    "basicMessages": [
+      "LINE 한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "추가 설명",
+      "다음"
+    ]
+  },
+  "addressed": {
+    "destination": "U99999999999999999999999999999999",
+    "events": [
+      {
+        "type": "message",
+        "mode": "active",
+        "timestamp": 1793385601000,
+        "webhookEventId": "01K8XY2Z000000000000000001",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "replyToken": "synthetic-reply-token-101",
+        "source": {
+          "type": "group",
+          "groupId": "C11111111111111111111111111111111",
+          "userId": "Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "message": {
+          "id": "10000000101",
+          "type": "text",
+          "text": "@CgaAloneBot 질문",
+          "mention": {
+            "mentionees": [
+              {
+                "index": 0,
+                "length": 12,
+                "type": "user",
+                "userId": "U99999999999999999999999999999999",
+                "isSelf": true
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "general": {
+    "destination": "U99999999999999999999999999999999",
+    "events": [
+      {
+        "type": "message",
+        "mode": "active",
+        "timestamp": 1793385601000,
+        "webhookEventId": "01K8XY2Z000000000000000002",
+        "deliveryContext": {
+          "isRedelivery": false
+        },
+        "replyToken": "synthetic-reply-token-102",
+        "source": {
+          "type": "group",
+          "groupId": "C11111111111111111111111111111111",
+          "userId": "Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "message": {
+          "id": "10000000102",
+          "type": "text",
+          "text": "일반 대화"
+        }
+      }
+    ]
+  }
+}

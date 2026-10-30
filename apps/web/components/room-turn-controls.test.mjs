@@ -565,3 +565,82 @@ test("Google Chat image requires HTTPS while openLink and received response are 
   const link=api.buildAidotGoogleChatReplyPayload({id:"known",messageType:"link-button",text:"본문",payload:{options:[{label:"문서",url:"http://example.com/document"}]}},{spaceName:"spaces/QA_SPACE"});assert.equal(link.body.cardsV2[0].card.sections[0].widgets[0].buttonList.buttons[0].onClick.openLink.url,"http://example.com/document");
  }finally{globalThis.fetch=original;}
 });
+
+const lineFixture=JSON.parse(readFileSync(new URL("../../../apps/api/tests/cga_alone/fixtures/client_templates/line.json",import.meta.url),"utf8"));
+const lineNative=()=>structuredClone(lineFixture.addressed);
+const lineDelivery=()=>({receivedAtMs:Date.now(),replyStatus:"unused"});
+const lineBinding={roomId:"line-room",participantId:"server:A",participantKind:"user",conversationToken:"opaque-line-fixture",nativeRoomKey:'line:'+JSON.stringify([lineFixture.connection.botUserId,"group",lineFixture.connection.sourceId]),nativeParticipantKey:"line:user:U"+"a".repeat(32),roomMode:"shared",turn:idle};
+function lineQuery(source,index=0){const input=lineNative(),e=input.events[0];e.type="postback";delete e.message;e.postback={data:`cga:${source.id}:${index}`};return input;}
+
+test("LINE consumers bind server proof and explicitly select batched events",async()=>{
+ const original=globalThis.fetch,calls=[];globalThis.fetch=async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify({data:{...lineBinding,botMessages:[],botMessage:null}}),{status:200});};
+ try{
+  const member=await api.createAidotLineRoom("http://localhost:8320","bot",lineNative(),lineFixture.connection,lineDelivery());assert.equal(member.nativeRoomKey,lineBinding.nativeRoomKey);
+  await api.joinAidotLineRoom("http://localhost:8320",member,lineNative(),lineFixture.connection,lineDelivery());
+  await api.sendAidotLineEvent("http://localhost:8320",member,lineNative(),lineFixture.connection,lineDelivery());
+  assert.ok(calls[0].url.endsWith("/channels/line/rooms"));assert.equal(calls[2].init.headers.get("X-Aidot-Conversation-Token"),member.conversationToken);
+  assert.equal(JSON.parse(calls[2].init.body).message,"질문");
+  const other=lineNative();other.events[0].source.userId="U"+"b".repeat(32);await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",member,other,lineFixture.connection,lineDelivery()));assert.equal(calls.length,3);
+  const batch=lineNative();batch.events.push(structuredClone(batch.events[0]));batch.events[1].webhookEventId="other-event";
+  assert.throws(()=>api.normalizeAidotLineEvent(batch,lineFixture.connection));assert.equal(api.normalizeAidotLineEvent(batch,lineFixture.connection,1).eventId,"line:other-event");
+ }finally{globalThis.fetch=original;}
+});
+
+test("LINE used unknown stale and old redelivery reject before any request",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;throw Error("must not request");};
+ try{
+  for(const delivery of [{receivedAtMs:Date.now(),replyStatus:"used"},{receivedAtMs:Date.now(),replyStatus:"unknown"},{receivedAtMs:Date.now()-60000,replyStatus:"unused"},{receivedAtMs:NaN,replyStatus:"unused"}]){
+   await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineNative(),lineFixture.connection,delivery));
+  }
+  const old=lineNative();old.events[0].deliveryContext.isRedelivery=true;old.events[0].timestamp=Date.now()-1200001;
+  await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,old,lineFixture.connection,lineDelivery()));assert.equal(count,0);
+ }finally{globalThis.fetch=original;}
+});
+
+test("LINE expiry after CGA and invalid output preserve response without rerun or push",async()=>{
+ const original=globalThis.fetch,clock=Date.now;let count=0,now=1800000000000;Date.now=()=>now;
+ const response={botMessages:[{id:"known",messageType:"text",text:"응답"}],botMessage:{id:"known",messageType:"text",text:"응답"}};
+ try{
+  globalThis.fetch=async()=>{count++;now+=60000;return new Response(JSON.stringify({data:response}),{status:200});};
+  await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineNative(),lineFixture.connection,lineDelivery()),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);
+  count=0;response.botMessages[0].messageType="html";globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:response}),{status:200});};
+  await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineNative(),lineFixture.connection,lineDelivery()),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);
+  count=0;globalThis.fetch=async()=>{count++;throw Error("unknown");};await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineNative(),lineFixture.connection,lineDelivery()));assert.equal(count,1);
+ }finally{globalThis.fetch=original;Date.now=clock;}
+});
+
+test("LINE postback restores long and empty keys and allows server dedup after End",async()=>{
+ const original=globalThis.fetch,calls=[];
+ const source={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"table",text:"표",payload:{sourceTalkNodeId:"followup",columns:["name","id"],keyColumn:"id",rows:[{name:"긴 표 행 "+"가".repeat(60),id:"키".repeat(200)},{name:"빈 키",id:""}]}};
+ const packet=api.buildAidotLineMessage(source);assert.equal(packet.type,"flex");assert.ok(JSON.stringify(packet).includes("가".repeat(60)));assert.ok(JSON.stringify(packet).includes("키".repeat(200)));assert.equal(packet.contents.body.contents.filter(c=>c.type==="button")[0].action.data,`cga:${source.id}:0`);assert.ok(JSON.stringify(packet).includes('"wrap":true'));
+ const history={messages:[source],turn:idle,runtime:{dialogEnded:true,sessionEnded:false}};
+ globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({data:init.method==="GET"?history:{botMessages:[],botMessage:null}}),{status:200});};
+ try{
+  for(let i=0;i<2;i++)await api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineQuery(source),lineFixture.connection,lineDelivery());
+  assert.deepEqual(calls.map(c=>c.method),["GET","POST","GET","POST"]);assert.equal(calls[1].body,calls[3].body);assert.equal(JSON.parse(JSON.parse(calls[1].body).message).response.buttonValue,"키".repeat(200));
+  await api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineQuery(source,1),lineFixture.connection,lineDelivery());assert.equal(JSON.parse(JSON.parse(calls[5].body).message).response.buttonValue,"");
+  history.messages=[];await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineQuery(source),lineFixture.connection,lineDelivery()));assert.equal(calls.length,7);
+  await assert.rejects(()=>api.createAidotLineRoom("http://localhost:8320","bot",lineQuery(source),lineFixture.connection,lineDelivery()));assert.equal(calls.length,7);
+ }finally{globalThis.fetch=original;}
+});
+
+test("LINE packet preserves zero output and enforces five native messages and UTF16",()=>{
+ assert.equal(api.buildAidotLineReplyPayload([],lineNative(),lineFixture.connection,lineDelivery()),null);
+ const message={id:"known",messageType:"text",text:"😀".repeat(2500)};
+ assert.equal(api.buildAidotLineMessage(message).text.length,5000);
+ assert.throws(()=>api.buildAidotLineMessage({...message,text:message.text+"a"}));
+ const reply=api.buildAidotLineReplyPayload(Array(5).fill({id:"known",text:"응답"}),lineNative(),lineFixture.connection,lineDelivery());assert.equal(reply.replyToken,lineNative().events[0].replyToken);assert.equal(reply.messages.length,5);
+ assert.throws(()=>api.buildAidotLineReplyPayload(Array(6).fill({id:"known",text:"응답"}),lineNative(),lineFixture.connection,lineDelivery()));
+});
+
+test("LINE URI and image use distinct encoded limits and preserve failed CGA result",async()=>{
+ const makeUrl=(length)=>"https://example.com/"+"a".repeat(length-20),source={id:"known",messageType:"link-button",text:"본문",payload:{options:[{label:"문서",url:""}]}};
+ // URL prefix has 20 characters; length is checked after percent encoding.
+ assert.equal(makeUrl(2001).length,2001);
+ for(const length of [2001,10000]){source.payload.options[0].url=makeUrl(length);assert.equal(api.buildAidotLineMessage(source).contents.footer.contents[0].action.uri.length,length);}
+ source.payload.options[0].url=makeUrl(10001);assert.throws(()=>api.buildAidotLineMessage(source));
+ const image={id:"known",messageType:"card",text:"본문",payload:{card:{imageUrl:makeUrl(2000)}}};assert.equal(api.buildAidotLineMessage(image).contents.body.contents[1].url.length,2000);image.payload.card.imageUrl=makeUrl(2001);assert.throws(()=>api.buildAidotLineMessage(image));
+ const original=globalThis.fetch;let count=0;
+ globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:source,botMessages:[source]}}),{status:200});};
+ try{await assert.rejects(()=>api.sendAidotLineEvent("http://localhost:8320",lineBinding,lineNative(),lineFixture.connection,lineDelivery()),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);}finally{globalThis.fetch=original;}
+});
