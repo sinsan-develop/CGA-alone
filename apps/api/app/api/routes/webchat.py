@@ -736,6 +736,29 @@ def _finish_client_event(room, key, result=None):
     flag_modified(room, "metadata_json")
 
 
+def _validate_slack_card_response(db, room, version, actor, message):
+    """완료 이벤트 반환 뒤 같은 방 잠금 안에서 새 Slack 카드 입력만 검증한다."""
+    try:
+        wire = json.loads(message)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(wire, dict) or not any(key in wire for key in ("webchatRichFormVersion", "sourceTalkNodeId", "sourceMessageId")):
+        return
+    source_id, node_id = wire.get("sourceMessageId"), wire.get("sourceTalkNodeId")
+    turn, runtime = _shared_turn_view(db, room, actor), _room_client_state(db, room)["runtime"]
+    if (wire.get("webchatRichFormVersion") != "1.0" or not isinstance(source_id, str) or not source_id
+            or not isinstance(node_id, str) or not node_id or room.bot_version_id != version.id
+            or turn["state"] != "waiting_input" or turn["ownerParticipantId"] != actor or not turn["canAskBot"]
+            or runtime["dialogEnded"] or runtime["sessionEnded"] or runtime["waitingNodeId"] != node_id):
+        raise HTTPException(status_code=409, detail="현재 질문자의 최신 Slack 카드에만 응답할 수 있습니다.")
+    latest = db.scalar(select(ChannelMessage).where(ChannelMessage.room_id == room.id,
+        ChannelMessage.deleted_at.is_(None), ChannelMessage.participant_kind == "bot",
+        ChannelMessage.payload_json["sourceTalkNodeId"].astext == node_id)
+        .order_by(ChannelMessage.created_at.desc(), ChannelMessage.id.desc()).limit(1))
+    if latest is None or str(latest.id) != source_id:
+        raise HTTPException(status_code=409, detail="현재 질문자의 최신 Slack 카드에만 응답할 수 있습니다.")
+
+
 def _shared_runtime_message(bot, version, room_id, payload, request, api_key, credential, *, channel="webchat", allow_private=False, event_id=None):
     from app.api.routes import channels
     from app.services.room_turn import claim_room_turn, renew_room_turn_processing_lease
@@ -764,6 +787,8 @@ def _shared_runtime_message(bot, version, room_id, payload, request, api_key, cr
             _finish_client_event(room, event_key, result)
             db.commit()
             return success_response(request, result)
+        if channel == "slack":
+            _validate_slack_card_response(db, room, version, actor, payload.message)
         # claim의 populate_existing이 예약 metadata를 덮어쓰지 않도록 같은 잠금 transaction에서 먼저 저장한다.
         db.flush()
         previous_generation = _as_dict(_as_dict(room.metadata_json).get("__roomTurn")).get("generation")

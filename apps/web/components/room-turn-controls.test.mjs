@@ -254,3 +254,84 @@ test("registered channel templates use existing Talk selector and preserve nativ
     assert.deepEqual(applied.basicMessages,["보존"]);
   }
 });
+
+
+const slackFixture=JSON.parse(readFileSync(new URL("../../api/tests/cga_alone/fixtures/client_templates/slack.json",import.meta.url),"utf8"));
+const slackBinding={roomId:"slack-room",participantId:"server:A",participantKind:"user",conversationToken:"opaque-slack-fixture",nativeRoomKey:'slack:["TQA001","CQA001",null]',nativeParticipantKey:"slack:user:UQA001",channelId:"CQA001",threadTs:null,roomMode:"shared",turn:idle};
+async function slackCapture(run,history=null){
+  const original=globalThis.fetch,calls=[];
+  globalThis.fetch=async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify({data:init.method==="GET"?history:{...slackBinding,botMessages:[],botMessage:null}}),{status:200});};
+  try{await run(calls);}finally{globalThis.fetch=original;}
+}
+
+test("Slack caller uses common API, native scope and server credentials",async()=>{
+  await slackCapture(async(calls)=>{
+    const member=await api.createAidotSlackRoom("http://localhost:8320","bot-id",slackFixture.addressed,slackFixture.connection);
+    assert.equal(member.nativeRoomKey,slackBinding.nativeRoomKey);
+    const other=structuredClone(slackFixture.general);
+    await api.joinAidotSlackRoom("http://localhost:8320",member,other,slackFixture.connection);
+    const result=await api.sendAidotSlackEvent("http://localhost:8320",member,slackFixture.addressed,slackFixture.connection);
+    assert.deepEqual(result.replies,[]);
+    assert.equal(calls.length,3);
+    assert.equal(calls[0].url,"http://localhost:8320/api/v1/channels/slack/rooms");
+    assert.deepEqual(JSON.parse(calls[0].init.body),{bot_id:"bot-id",room_mode:"shared",participant_kind:"user",participant_name:"slack:user:UQA001"});
+    assert.match(calls[1].url,/slack-room\/participants$/);
+    assert.equal(calls[2].init.headers.get("X-Aidot-Conversation-Token"),slackBinding.conversationToken);
+    assert.equal(calls[2].init.headers.get("X-Aidot-Event-Id"),"slack-message:1793376000.000100");
+    assert.deepEqual(JSON.parse(calls[2].init.body),{message:"미등록 슬랙 질문",addressed:true});
+    assert.ok(calls.every(call=>!call.url.includes("slack.com")));
+  });
+});
+
+test("Slack caller ignores self output and rejects wrong room, actor, kind without a request",async()=>{
+  await slackCapture(async(calls)=>{
+    const own=structuredClone(slackFixture.addressed);own.event.user=slackFixture.connection.botUserId;
+    assert.deepEqual(await api.sendAidotSlackEvent("http://localhost:8320",slackBinding,own,slackFixture.connection),{response:null,replies:[]});
+    for(const patch of [{nativeRoomKey:"other"},{nativeParticipantKey:"other"},{participantKind:"bot"}]){
+      await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",{...slackBinding,...patch},slackFixture.addressed,slackFixture.connection));
+    }
+    assert.equal(calls.length,0);
+  });
+  const original=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;throw new Error("synthetic unknown transport");};
+  try{await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",slackBinding,slackFixture.addressed,slackFixture.connection));assert.equal(calls,1);}
+  finally{globalThis.fetch=original;}
+});
+
+test("Slack callback delegates atomic validation and duplicate recovery to the server",async()=>{
+  const message={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"button",text:"선택",payload:{options:["확인"],sourceTalkNodeId:"followup"}};
+  const button=api.buildAidotSlackReplyPayload(message,{channelId:"CQA001"}).blocks.find(block=>block.type==="actions").elements[0];
+  const action={type:"block_actions",team:{id:"TQA001"},user:{id:"UQA001"},channel:{id:"CQA001"},container:{message_ts:"1793376000.000900"},actions:[{...button,action_ts:"1793376001.000100"}]};
+  const original=globalThis.fetch;let calls=[];const response={roomId:"slack-room",botMessages:[],botMessage:null,turn:idle,runtime:{dialogEnded:true,sessionEnded:false}};
+  globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({data:init.method==="GET"?{...response,messages:[]}:response}),{status:200});};
+  try{
+    for(let i=0;i<2;i++) assert.deepEqual((await api.sendAidotSlackEvent("http://localhost:8320",slackBinding,action,slackFixture.connection)).response,response);
+    assert.equal(calls.length,2);assert.ok(calls.every(call=>call.method==="POST"));
+    const wire=JSON.parse(JSON.parse(calls[0].body).message);assert.equal(wire.sourceMessageId,message.id);assert.equal(wire.sourceTalkNodeId,"followup");
+    assert.equal(calls[0].body,calls[1].body);assert.equal(calls[0].headers.get("X-Aidot-Event-Id"),calls[1].headers.get("X-Aidot-Event-Id"));
+    calls=[];globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({detail:"현재 카드가 아닙니다."}),{status:409});};
+    await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",slackBinding,action,slackFixture.connection),error=>error.status===409);assert.equal(calls.length,1);
+  }finally{globalThis.fetch=original;}
+});
+
+test("Slack template draft preserves supported expressions and excludes unrepresentable ones",()=>{
+  const source=readFileSync(new URL("../app/admin/templates/page.tsx",import.meta.url),"utf8");
+  const ast=ts.createSourceFile("templates.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),pieces=[];
+  const names=new Set(["RENDERER_OPTIONS","SLACK_RENDERER_TYPES","TEMPLATE_RENDERER_DEFAULTS"]);
+  for(const node of ast.statements){
+    if(ts.isVariableStatement(node)&&node.declarationList.declarations.some(d=>names.has(d.name.getText(ast))))pieces.push(node.getText(ast));
+    if(ts.isFunctionDeclaration(node)&&["isKakaoTemplateChannel","normalizeTemplateDraftByChannel"].includes(node.name?.text))pieces.push(node.getText(ast));
+  }
+  const js=ts.transpileModule(pieces.join("\n"),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const normalize=new Function(js+";return normalizeTemplateDraftByChannel;")();
+  for(const renderer of ["text","button","card","table","link-button","carousel"]){assert.equal(normalize({channel_code:"SLACK",renderer_type:renderer,description:"설명",item_types:""},{}).renderer_type,renderer);}
+  for(const renderer of ["form","html","dtmf","form-a-card"]){assert.equal(normalize({channel_code:"SLACK",renderer_type:renderer,description:"설명",item_types:""},{}).renderer_type,"text");}
+  assert.equal(normalize({channel_code:"WEBCHAT",renderer_type:"form",description:"설명",item_types:""},{}).renderer_type,"form");
+});
+
+
+test("Slack payload error retains received CGA result without another request",async()=>{
+  const original=globalThis.fetch;let calls=0;
+  globalThis.fetch=async()=>{calls++;return new Response(JSON.stringify({data:{roomId:"slack-room",turn:idle,botMessages:[{id:"known-result",messageType:"html",text:"미지원 표현",payload:{}}],botMessage:{id:"known-result",messageType:"html",text:"미지원 표현",payload:{}}}}),{status:200});};
+  try{await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",slackBinding,slackFixture.addressed,slackFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known-result");assert.equal(calls,1);}
+  finally{globalThis.fetch=original;}
+});

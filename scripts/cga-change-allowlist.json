@@ -226,8 +226,8 @@
   },
   {
     "path": "apps/api/app/api/routes/channels.py",
-    "stage": "S04/S05·S06·S07",
-    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 승인 공유방 서버 ContextVar의 actor/세대 fence·외부실행 전 transaction 종료·실제종료/대기정산 최소 hook; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지"
+    "stage": "S04/S05·S06·S07·S08",
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 승인 공유방 서버 ContextVar의 actor/세대 fence·외부실행 전 transaction 종료·실제종료/대기정산 최소 hook; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 승인된 Slack 채널 선택값 추가, 기존 매핑 fallback·runtime 재사용; S08 단일검토 Important2: Slack Card/Carousel만 빈 선택 필드 위치 보존, 다른 채널 원본 처리 유지"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
@@ -301,8 +301,8 @@
   },
   {
     "path": "apps/api/app/api/routes/webchat.py",
-    "stage": "S04/S05·S06·S07",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지"
+    "stage": "S04/S05·S06·S07·S08",
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 사용자 직접 승인 callback sourceMessageId 계약: 기존 원장 반환 뒤 같은 방 잠금에서 최신 카드·질문자 검증, 다른 채널 불변"
   },
   {
     "path": "apps/api/app/services/secondary_llm.py",
@@ -352,12 +352,12 @@
   {
     "path": "packages/shared/src/channel.ts",
     "stage": "S06",
-    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지; S07 승인된 선택 공통 채널 계약의 생성·입장·조회·메시지 SDK, 증명·이벤트 헤더와 재시도 없는 호출"
+    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지; S07 승인된 선택 공통 채널 계약의 생성·입장·조회·메시지 SDK, 증명·이벤트 헤더와 재시도 없는 호출; S08 승인된 Slack native event/방·actor·event 식별과 Block Kit 변환 helper, 기존 SDK 유지"
   },
   {
     "path": "apps/web/components/room-turn-controls.test.mjs",
     "stage": "S06",
-    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증; S07 승인된 공통 SDK wire·증명·이벤트 식별·자동 재시도 금지 검증"
+    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증; S07 승인된 공통 SDK wire·증명·이벤트 식별·자동 재시도 금지 검증; S08 Slack 공통SDK 실제packet/위조scope·카드최신성·무재시도·받은결과보존·지원renderer 데이터 회귀"
   },
   {
     "path": "apps/api/tests/cga_alone/test_simulator_turn_contract.py",
@@ -393,5 +393,25 @@
     "path": "apps/api/tests/cga_alone/fixtures/client_templates/ms-teams.json",
     "stage": "S07",
     "reason": "기존3종 템플릿 등록·재조회·Talk 저장·native 출력과 지원불가 표현 거절 회귀, 실제 외부 플랫폼 증거와 구분"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/clients/test_slack.py",
+    "stage": "S08",
+    "reason": "승인 Slack 최소계약의 native 표본·명시호출/차례/중복/스레드격리·실PGtemplate 왕복 RED/GREEN"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/slack.json",
+    "stage": "S08",
+    "reason": "승인 Slack 최소계약의 native 표본·명시호출/차례/중복/스레드격리·실PGtemplate 왕복 RED/GREEN"
+  },
+  {
+    "path": "apps/api/app/api/routes/admin.py",
+    "stage": "S08",
+    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완"
+  },
+  {
+    "path": "apps/web/app/admin/templates/page.tsx",
+    "stage": "S08",
+    "reason": "승인된 Slack 지원renderer 선택 데이터만 제한, 기존 화면구조 보존"
   }
 ]

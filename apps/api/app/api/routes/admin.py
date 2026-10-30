@@ -902,6 +902,11 @@ def _template_renderer_issues(
             return ["카카오 템플릿은 simple-text, quick-reply, basic-card, list-card, carousel만 지원합니다."]
         return []
 
+    if normalized_channel_code == "SLACK":
+        if normalized_renderer_type not in {"text", "button", "card", "table", "link-button", "carousel"}:
+            return ["Slack 템플릿은 text, button, card, table, link-button, carousel만 지원합니다."]
+        return []
+
     if normalized_renderer_type in {"simple-text", "quick-reply", "basic-card", "list-card"}:
         return ["카카오 전용 템플릿은 KAKAO 채널에서만 사용할 수 있습니다."]
 
