@@ -71,6 +71,7 @@ export type AidotChannelMessageResponse = {
     dialogEnded: boolean;
     sessionEnded: boolean;
     completionReason?: string | null;
+    waitingNodeId?: string | null;
   };
 };
 
@@ -136,13 +137,17 @@ export type AidotSharedRoomIdentity = {
   conversationToken: string;
 };
 
-export type AidotSharedRoomMembership = AidotSharedRoomIdentity & { turn: AidotRoomTurnState };
-export type AidotSharedRoomHistoryResponse = {
+export type AidotRoomClientState = {
+  runtime?: AidotChannelMessageResponse["runtime"];
+  activeVersion?: { id: string; name: string; versionNo: number };
+};
+export type AidotSharedRoomMembership = AidotSharedRoomIdentity & AidotRoomClientState & { turn: AidotRoomTurnState };
+export type AidotSharedRoomHistoryResponse = AidotRoomClientState & {
   roomId: string;
   messages: AidotChannelStoredMessage[];
   turn: AidotRoomTurnState;
 };
-export type AidotSharedRoomMessageResponse = Omit<AidotChannelMessageResponse, "intent"> & {
+export type AidotSharedRoomMessageResponse = Omit<AidotChannelMessageResponse, "intent"> & AidotRoomClientState & {
   roomId: string;
   userMessage?: AidotChannelStoredMessage;
   intent?: AidotChannelMessageResponse["intent"];
@@ -154,6 +159,18 @@ export function canAskAidotRoomBot(turn: AidotRoomTurnState | null | undefined, 
   if (!connected || sendingBot || !participantId || turn?.canAskBot !== true) return false;
   if (turn.state === "idle") return turn.ownerParticipantId === null;
   return turn.state === "waiting_input" && turn.ownerParticipantId === participantId;
+}
+
+export function canRespondAidotRoomCard(runtime: AidotChannelMessageResponse["runtime"], sourceTalkNodeId: string | undefined, canAsk: boolean, messageId?: string, messages?: AidotChannelStoredMessage[]) {
+  if (!(canAsk && sourceTalkNodeId && runtime?.waitingNodeId === sourceTalkNodeId && !runtime.dialogEnded && !runtime.sessionEnded)) return false;
+  if (messageId !== undefined || messages !== undefined) {
+    if (!messageId || !messages) return false;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (messages[index].participantKind === "bot" && messages[index].payload?.sourceTalkNodeId === sourceTalkNodeId) return messages[index].id === messageId;
+    }
+    return false;
+  }
+  return true;
 }
 
 export function canSendAidotRoomChat(connected: boolean, sendingGeneral: boolean) {

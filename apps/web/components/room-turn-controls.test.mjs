@@ -131,3 +131,38 @@ test("shared table preserves visible column order when selection key is not firs
  assert.equal(rendered.table.rows[0].firstCell,"어울");
  assert.deepEqual(rendered.table.rows[0].values,["A-1","2"]);
 });
+
+test("only the current server waiting card accepts the owner response",()=>{
+ const runtime={dialogEnded:false,sessionEnded:false,waitingNodeId:"current"};
+ assert.equal(api.canRespondAidotRoomCard(runtime,"current",true),true);
+ assert.equal(api.canRespondAidotRoomCard(runtime,"previous",true),false);
+ assert.equal(api.canRespondAidotRoomCard(runtime,"current",false),false);
+ assert.equal(api.canRespondAidotRoomCard({...runtime,dialogEnded:true},"current",true),false);
+ assert.equal(api.canRespondAidotRoomCard({...runtime,sessionEnded:true},"current",true),false);
+ assert.equal(api.canRespondAidotRoomCard(undefined,"current",true),false);
+});
+
+test("repeated waiting node enables only the latest stored card instance",()=>{
+ const runtime={dialogEnded:false,sessionEnded:false,waitingNodeId:"current"};
+ const messages=[{id:"older",participantKind:"bot",payload:{sourceTalkNodeId:"current"}},{id:"newer",participantKind:"bot",payload:{sourceTalkNodeId:"current"}}];
+ assert.equal(api.canRespondAidotRoomCard(runtime,"current",true,"older",messages),false);
+ assert.equal(api.canRespondAidotRoomCard(runtime,"current",true,"newer",messages),true);
+ assert.equal(api.canRespondAidotRoomCard(runtime,"current",true,"missing",messages),false);
+});
+
+test("shared form result displays the selected answer while keeping stored wire unchanged",()=>{
+ const render=storedRenderer();const wire=JSON.stringify({webchatRichFormVersion:"1.0",sourceTalkNodeId:"followup",response:{input:{value:"폼 확인"},buttonValue:"폼 확인"}});
+ const user={...stored("text"),participantKind:"user",text:wire};
+ assert.equal(render(user).text,"폼 확인");assert.equal(user.text,wire);
+ assert.equal(render({...user,participantKind:"bot"}).text,wire);
+ const ordinary=JSON.stringify({response:{buttonValue:"일반 JSON"}});
+ assert.equal(render({...user,text:ordinary}).text,ordinary);
+});
+
+test("shared room controls use all seven existing simulator languages",()=>{
+ const source=readFileSync(new URL("../lib/i18n/simulator.ts",import.meta.url),"utf8");
+ const output=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+ const holder={exports:{}};new Function("exports","module",output)(holder.exports,holder);
+ const labels=["대화 방식","1:1 미리보기","공유방","참여자 이름","방 ID","공유방 ID","새 공유방","참가자로 입장","현재 방:","답변 처리 중","내 후속 답변을 기다립니다.","다른 참여자가 봇과 대화 중입니다. 일반 대화는 가능합니다.","봇에게 질문할 수 있습니다.","방 상태 확인 중","일반 대화","봇에게 질문","운영 버전 확인 중"];
+ for(const key of labels){assert.equal(holder.exports.getSimulatorLabel("ko",key),key);for(const lang of ["en","zh-CN","ja","vi","fr","de"]){const value=holder.exports.getSimulatorLabel(lang,key);assert.ok(value&&!/[가-힣]/.test(value),`${lang}: ${key}`);}}
+});

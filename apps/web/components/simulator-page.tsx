@@ -68,7 +68,7 @@ import { formatSimulatorText, getSimulatorLabel, SIMULATOR_CATALOGS, SIMULATOR_D
 
 import {
   createAidotSharedRoom, joinAidotSharedRoom, fetchAidotSharedRoom, sendAidotSharedRoomMessage,
-  canAskAidotRoomBot, canSendAidotRoomChat,
+  canAskAidotRoomBot, canSendAidotRoomChat, canRespondAidotRoomCard,
   type AidotSharedRoomIdentity, type AidotSharedRoomHistoryResponse,
 } from "../../../packages/shared/src/channel";
 
@@ -140,6 +140,16 @@ function sharedMessageToSimulatorMessage(message: import("../../../packages/shar
     id: message.id, sender: message.participantKind, participantName: message.participantName,
     text: message.text, timestamp: message.createdAt, sourceTalkNodeId: text(payload.sourceTalkNodeId) || undefined,
   };
+  if (message.participantKind === "user") {
+    try {
+      const submitted = record(JSON.parse(message.text));
+      if (submitted.webchatRichFormVersion === "1.0" && typeof submitted.sourceTalkNodeId === "string") {
+        const response = record(submitted.response);
+        const selected = text(response.buttonValue) || Object.values(response).map(value => text(record(value).value)).filter(Boolean).join(", ");
+        if (selected) result.text = selected;
+      }
+    } catch { /* 일반 텍스트와 JSON 원문은 그대로 표시한다. */ }
+  }
   if (message.messageType === "button") {
     result.quickReplies = Array.isArray(payload.options) ? payload.options.filter((value): value is string => typeof value === "string") : [];
   } else if (message.messageType === "link-button") {
@@ -3767,6 +3777,9 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   const sharedConnected = Boolean(sharedMember && sharedHistory);
   const sharedCanAsk = canAskAidotRoomBot(sharedHistory?.turn, sharedMember?.participantId || "", sharedConnected, sharedSendingBot);
   const sharedCanChat = canSendAidotRoomChat(sharedConnected, sharedSendingGeneral);
+  const canUseMessageCard = (message: SimulatorMessage) => sharedMode
+    ? canRespondAidotRoomCard(sharedHistory?.runtime, message.sourceTalkNodeId, sharedCanAsk, message.id, sharedHistory?.messages)
+    : Boolean(message.sourceTalkNodeId && runtime?.waitingTalkNodeId === message.sourceTalkNodeId && !runtime.ended);
   const displayedMessages = sharedMode ? (sharedHistory?.messages || []).map(sharedMessageToSimulatorMessage) : messages;
 
   useEffect(() => {
@@ -3807,7 +3820,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       catch (error) {
         if (!disposed && sharedEpoch.current === epoch) {
           setSharedHistory(null);
-          setSharedError(error instanceof Error ? error.message : "공유방 상태를 확인하지 못했습니다.");
+          setSharedError(error instanceof Error ? error.message : getSimulatorLabel(uiLanguage, "공유방 상태를 확인하지 못했습니다."));
         }
       } finally {
         clearTimeout(timeout);
@@ -3831,7 +3844,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       sessionStorage.setItem(sharedStorageKey, JSON.stringify({ roomId: member.roomId, participantId: member.participantId, conversationToken: member.conversationToken }));
       setSharedMember(member); setSharedRoomInput(member.roomId);
     } catch (error) {
-      if (sharedEpoch.current === epoch) setSharedError(error instanceof Error ? error.message : "공유방 연결에 실패했습니다.");
+      if (sharedEpoch.current === epoch) setSharedError(error instanceof Error ? error.message : getSimulatorLabel(uiLanguage, "공유방 연결에 실패했습니다."));
     } finally { sharedConnectGuard.current = false; if (sharedEpoch.current === epoch) setSharedConnecting(false); }
   }
 
@@ -3846,7 +3859,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     try {
       await sendAidotSharedRoomMessage(window.location.origin, botId, member, value, addressed, AbortSignal.timeout(60000));
     } catch (error) {
-      if (sharedEpoch.current === epoch) setSharedSendError(`${error instanceof Error ? error.message : "메시지 전송을 확인하지 못했습니다."} 자동으로 다시 보내지 않습니다. 기록을 확인해 주세요.`);
+      if (sharedEpoch.current === epoch) setSharedSendError(`${error instanceof Error ? error.message : getSimulatorLabel(uiLanguage, "메시지 전송을 확인하지 못했습니다.")} ${getSimulatorLabel(uiLanguage, "자동으로 다시 보내지 않습니다. 기록을 확인해 주세요.")}`);
     } finally {
       sharedSendGuard.current[kind] = false;
       if (sharedEpoch.current === epoch) {
@@ -4188,6 +4201,10 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     }, 50);
   }, [messages]);
+
+  useEffect(() => {
+    if (sharedMode) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [sharedMode, sharedHistory?.messages.at(-1)?.id]);
 
   function buildInitialVariables(dialog: VersionDialogAsset, graph: DialogFlowGraph, utterance: string) {
     const variables: Record<string, string> = {
@@ -5845,7 +5862,14 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     return Boolean(response && typeof response === "object" && !Array.isArray(response) && Object.keys(response as Record<string, unknown>).length === 0);
   }
   function submitTemplateAction(message: SimulatorMessage, value: string) {
-    if (sharedMode) return; // 서버 대기 카드 상태 계약 연결 전에는 실행하지 않는다.
+    if (sharedMode) {
+      if (!canUseMessageCard(message)) return;
+      let parsed: unknown;
+      try { parsed = JSON.parse(value); } catch { parsed = { response: value }; }
+      const envelope = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : { response: parsed };
+      void sendSharedMessage(JSON.stringify({ ...envelope, sourceTalkNodeId: message.sourceTalkNodeId }), true);
+      return;
+    }
     const variables = richFormResultVariables(message, value);
     const sourceNode = message.sourceTalkNodeId && runtime ? getNodeById(runtime.graph, message.sourceTalkNodeId) : null;
     const sourceConfig = sourceNode?.kind === "talk" ? getTalkConfigForChannel(sourceNode, "SM_CHAT") : null;
@@ -5898,7 +5922,10 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     sourceTalkNodeId?: string,
   ) {
     const utterance = rawUtterance.trim();
-    if (sharedMode) { void sendSharedMessage(utterance, true); return; }
+    if (sharedMode) {
+      if (sourceTalkNodeId && !canRespondAidotRoomCard(sharedHistory?.runtime, sourceTalkNodeId, sharedCanAsk)) return;
+      void sendSharedMessage(utterance, true); return;
+    }
     if (!utterance || loading) {
       return;
     }
@@ -6879,13 +6906,13 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
         }`}
       >
         <div className="simulator-stage simulator-stage--flat simulator-stage--messenger">
-          <div className="simulator-window simulator-window--messenger">
+          <div className="simulator-window simulator-window--messenger" style={sharedMode ? { minHeight: 0, maxHeight: embedded ? undefined : "calc(100dvh - 260px)" } : undefined}>
             <div className="simulator-window__header">
               <div className="simulator-title">
                 <span className="simulator-avatar" />
                 <span>
                   <strong>{bot?.name ?? getSimulatorLabel(uiLanguage, "봇")}</strong>
-                  <small>{versionId} / Simulator</small>
+                  <small>{sharedMode ? sharedHistory?.activeVersion?.name || getSimulatorLabel(uiLanguage, "운영 버전 확인 중") : versionId} / Simulator</small>
                 </span>
               </div>
               <button
@@ -6903,17 +6930,17 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
             </div>
 
             <div className="simulator-script-status">
-              <label>대화 방식 <select aria-label="대화 방식" value={sharedMode ? "shared" : "preview"} disabled={sharedSendingBot || sharedSendingGeneral || sharedConnecting} onChange={event => setSharedMode(event.target.value === "shared")}>
-                <option value="preview">1:1 미리보기</option><option value="shared">공유방</option>
+              <label>{getSimulatorLabel(uiLanguage, "대화 방식")} <select aria-label={getSimulatorLabel(uiLanguage, "대화 방식")} value={sharedMode ? "shared" : "preview"} disabled={sharedSendingBot || sharedSendingGeneral || sharedConnecting} onChange={event => setSharedMode(event.target.value === "shared")}>
+                <option value="preview">{getSimulatorLabel(uiLanguage, "1:1 미리보기")}</option><option value="shared">{getSimulatorLabel(uiLanguage, "공유방")}</option>
               </select></label>
             </div>
             {sharedMode ? <div className="simulator-alert">
-              <p>공유방은 운영 버전으로 대화합니다. 방 ID로 다른 참여자를 초대할 수 있습니다.</p>
-              <label>참여자 이름 <input aria-label="참여자 이름" value={sharedName} onChange={event => setSharedName(event.target.value)} maxLength={120} /></label>
-              <label>방 ID <input aria-label="공유방 ID" value={sharedRoomInput} onChange={event => setSharedRoomInput(event.target.value)} /></label>
-              <button type="button" disabled={sharedConnecting || sharedSendingBot || sharedSendingGeneral} onClick={() => void connectSharedRoom(false)}>새 공유방</button>
-              <button type="button" disabled={!sharedRoomInput.trim() || sharedConnecting || sharedSendingBot || sharedSendingGeneral} onClick={() => void connectSharedRoom(true)}>참가자로 입장</button>
-              {sharedMember ? <p>현재 방: {sharedMember.roomId} / {sharedHistory?.turn.state === "processing" ? "답변 처리 중" : sharedHistory?.turn.state === "waiting_input" ? sharedHistory.turn.ownerParticipantId === sharedMember.participantId ? "내 후속 답변을 기다립니다." : "다른 참여자가 봇과 대화 중입니다. 일반 대화는 가능합니다." : sharedHistory ? "봇에게 질문할 수 있습니다." : "방 상태 확인 중"}</p> : null}
+              <p>{getSimulatorLabel(uiLanguage, "공유방은 운영 버전으로 대화합니다. 방 ID로 다른 참여자를 초대할 수 있습니다.")}</p>
+              <label>{getSimulatorLabel(uiLanguage, "참여자 이름")} <input aria-label={getSimulatorLabel(uiLanguage, "참여자 이름")} value={sharedName} onChange={event => setSharedName(event.target.value)} maxLength={120} /></label>
+              <label>{getSimulatorLabel(uiLanguage, "방 ID")} <input aria-label={getSimulatorLabel(uiLanguage, "공유방 ID")} value={sharedRoomInput} onChange={event => setSharedRoomInput(event.target.value)} /></label>
+              <button type="button" disabled={sharedConnecting || sharedSendingBot || sharedSendingGeneral} onClick={() => void connectSharedRoom(false)}>{getSimulatorLabel(uiLanguage, "새 공유방")}</button>
+              <button type="button" disabled={!sharedRoomInput.trim() || sharedConnecting || sharedSendingBot || sharedSendingGeneral} onClick={() => void connectSharedRoom(true)}>{getSimulatorLabel(uiLanguage, "참가자로 입장")}</button>
+              {sharedMember ? <p>{getSimulatorLabel(uiLanguage, "현재 방:")} {sharedMember.roomId} / {sharedHistory?.turn.state === "processing" ? getSimulatorLabel(uiLanguage, "답변 처리 중") : sharedHistory?.turn.state === "waiting_input" ? sharedHistory.turn.ownerParticipantId === sharedMember.participantId ? getSimulatorLabel(uiLanguage, "내 후속 답변을 기다립니다.") : getSimulatorLabel(uiLanguage, "다른 참여자가 봇과 대화 중입니다. 일반 대화는 가능합니다.") : sharedHistory ? getSimulatorLabel(uiLanguage, "봇에게 질문할 수 있습니다.") : getSimulatorLabel(uiLanguage, "방 상태 확인 중")}</p> : null}
               {sharedError ? <p role="alert">{sharedError}</p> : null}
               {sharedSendError ? <p role="alert">{sharedSendError}</p> : null}
             </div> : null}
@@ -6994,16 +7021,16 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                       message.table.rows.map((row, rowIndex) => (
                                         <tr
                                           key={`${message.id}-row-${rowIndex}`}
-                                          className={message.table?.selectable && !sharedMode ? "is-selectable" : undefined}
-                                          role={message.table?.selectable && !sharedMode ? "button" : undefined}
-                                          tabIndex={message.table?.selectable && !sharedMode ? 0 : undefined}
+                                          className={message.table?.selectable && (!sharedMode || canUseMessageCard(message)) ? "is-selectable" : undefined}
+                                          role={message.table?.selectable && (!sharedMode || canUseMessageCard(message)) ? "button" : undefined}
+                                          tabIndex={message.table?.selectable && (!sharedMode || canUseMessageCard(message)) ? 0 : undefined}
                                           onClick={() => {
-                                            if (message.table?.selectable && !sharedMode) {
+                                            if (message.table?.selectable && (!sharedMode || canUseMessageCard(message))) {
                                               submitUtterance(row.key, {}, message.sourceTalkNodeId);
                                             }
                                           }}
                                           onKeyDown={(event) => {
-                                            if (!sharedMode && message.table?.selectable && (event.key === "Enter" || event.key === " ")) {
+                                            if ((!sharedMode || canUseMessageCard(message)) && message.table?.selectable && (event.key === "Enter" || event.key === " ")) {
                                               event.preventDefault();
                                               submitUtterance(row.key, {}, message.sourceTalkNodeId);
                                             }
@@ -7029,9 +7056,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                             {message.template ? (
                               <div
                                 className={`simulator-template-card${
-                                  message.sourceTalkNodeId &&
-                                  !sharedMode && runtime?.waitingTalkNodeId === message.sourceTalkNodeId &&
-                                  !runtime.ended
+                                  canUseMessageCard(message)
                                     ? " is-active"
                                     : ""
                                 }`}
@@ -7039,14 +7064,14 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                 {(message.template.kind === "adaptive-card" && message.template.rawJson) ? (
                                   <AdaptiveCardRenderer
                                     template={message.template}
-                                    disabled={loading || sharedMode}
+                                    disabled={loading || (sharedMode && !canUseMessageCard(message))}
                                     onAction={(value) => submitTemplateAction(message, value)}
                                     onRenderError={(error) => handleAdaptiveCardRenderError(message, error)}
                                   />
                                 ) : (message.template.kind === "rich-form" && message.template.rawJson) ? (
                                   <RichFormRenderer
                                     template={message.template}
-                                    disabled={loading || sharedMode}
+                                    disabled={loading || (sharedMode && !canUseMessageCard(message))}
                                     onAction={(value) => submitTemplateAction(message, value)}
                                   />
                                 ) : (
@@ -7062,9 +7087,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                             key={`${message.id}-template-action-${index}`}
                                             type="button"
                                             disabled={
-                                              !message.sourceTalkNodeId ||
-                                              sharedMode || runtime?.waitingTalkNodeId !== message.sourceTalkNodeId ||
-                                              runtime.ended
+                                              !canUseMessageCard(message)
                                             }
                                             onClick={() => submitUtterance(action, {}, message.sourceTalkNodeId)}
                                           >
@@ -7079,7 +7102,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                             ) : null}
                             {message.dtmf ? (() => {
                               const value = dtmfValues[message.id] ?? "";
-                              const disabled = !message.sourceTalkNodeId || sharedMode || runtime?.waitingTalkNodeId !== message.sourceTalkNodeId || runtime.ended;
+                              const disabled = !canUseMessageCard(message);
                               const appendDigit = (digit: string) => {
                                 setDtmfValues((current) => {
                                   const currentValue = current[message.id] ?? "";
@@ -7126,10 +7149,8 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                                     type="button"
                                     disabled={
                                       !(
-                                        (pendingIntentSelection && !runtime && message.id === messages.at(-1)?.id) ||
-                                        (message.sourceTalkNodeId &&
-                                          !sharedMode && runtime?.waitingTalkNodeId === message.sourceTalkNodeId &&
-                                          !runtime.ended)
+                                        (!sharedMode && pendingIntentSelection && !runtime && message.id === messages.at(-1)?.id) ||
+                                        (canUseMessageCard(message))
                                       )
                                     }
                                     onClick={() => submitUtterance(reply, {}, message.sourceTalkNodeId)}
@@ -7227,7 +7248,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               />
             </div>
 
-            <form className="simulator-composer simulator-composer--messenger" onSubmit={handleSubmit}>
+            <form className="simulator-composer simulator-composer--messenger" style={sharedMode ? { gridTemplateColumns: "minmax(0, 1fr) auto auto" } : undefined} onSubmit={handleSubmit}>
               {!sharedMode && loadedScript ? (
                 <div className="simulator-script-status">
                   <span>{loadedScript.fileName}</span>
@@ -7249,9 +7270,9 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                   }
                 }}
               />
-              {sharedMode ? <button type="button" disabled={!inputValue.trim() || !sharedCanChat} onClick={() => void sendSharedMessage(inputValue, false)}>일반 대화</button> : null}
+              {sharedMode ? <button type="button" disabled={!inputValue.trim() || !sharedCanChat} onClick={() => void sendSharedMessage(inputValue, false)}>{getSimulatorLabel(uiLanguage, "일반 대화")}</button> : null}
               <button type="submit" className="primary-action" disabled={!inputValue.trim() || loading || (sharedMode && !sharedCanAsk)}>
-                {sharedMode ? "봇에게 질문" : copy.send}
+                {sharedMode ? getSimulatorLabel(uiLanguage, "봇에게 질문") : copy.send}
               </button>
             </form>
 
