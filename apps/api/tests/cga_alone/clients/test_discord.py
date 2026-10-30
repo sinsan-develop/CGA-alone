@@ -206,3 +206,18 @@ def test_discord_health_retains_existing_provider_descriptor():
     assert discord["provider"]=="discord" and discord["renderer"]=="shared-sdk"
     assert discord["supported_outputs"]==["content","embeds","components"]
     assert next(item for item in details if item.get("provider")=="kakao")["supported_outputs"]==["simpleText","quickReplies","basicCard","listCard","carousel"]
+
+
+@pytest.mark.parametrize("kind,columns",[("button",None),("link-button",None),("table",["name"]),("table",[])],ids=["button","link","table","table-no-columns"])
+def test_discord_valid_empty_result_keeps_talk_text(kind,columns):
+    from app.api.routes import channels
+    config={"messageType":kind,"basicMessages":["조회 결과 안내"],"responseType":"none","messages":[],"linkButtonItems":[]}
+    if kind=="table":config.update(tableVariableItemId="rows",tableColumnMappings=[{"column":column} for column in columns])
+    output=channels._talk_output({"id":"followup","config":{"channelTemplates":{"DISCORD":config}}},{"__items":{"rows":[]}},channel_code="DISCORD")
+    packet=sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001","messageType":output["type"],"text":output["text"],"payload":{**output["payload"],"options":output["options"]}},"destination":{"channelId":FIXTURE["connection"]["channelId"]}})
+    assert packet["content"]=="조회 결과 안내" and not packet.get("components") and not packet.get("embeds")
+
+
+@pytest.mark.parametrize("kind,payload",[("button",{}),("link-button",{"options":None}),("table",{"columns":None,"rows":[]}),("table",{"columns":["name"],"rows":None})],ids=["missing-options","invalid-options","missing-columns","missing-rows"])
+def test_discord_invalid_structure_is_not_an_empty_result(kind,payload):
+    with pytest.raises(ValueError):sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001","messageType":kind,"text":"본문","payload":payload},"destination":{"channelId":FIXTURE["connection"]["channelId"]}})

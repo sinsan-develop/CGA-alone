@@ -391,3 +391,11 @@ test("Discord preserves an explicitly empty original choice value",async()=>{
  globalThis.fetch=async(url,init)=>{if(init.method==="POST")wire=JSON.parse(JSON.parse(init.body).message);return new Response(JSON.stringify({data:init.method==="GET"?{messages:[source]}:{botMessages:[],botMessage:null}}),{status:200});};
  try{await api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordAction(source),discordFixture.connection);assert.equal(wire.response.buttonValue,"");}finally{globalThis.fetch=original;}
 });
+
+
+test("Discord received empty results preserve every completed response text",async()=>{
+ const original=globalThis.fetch;let count=0;
+ const botMessages=[{id:"1",messageType:"button",text:"빈 버튼 안내",payload:{options:[]}},{id:"2",messageType:"link-button",text:"빈 링크 안내",payload:{options:[]}},{id:"3",messageType:"table",text:"조회 0건 안내",payload:{columns:["name"],rows:[],selectable:false}}];
+ globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessages,botMessage:botMessages[0]}}),{status:200});};
+ try{const result=await api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordFixture.addressed,discordFixture.connection);assert.deepEqual(result.replies.map(item=>item.content),botMessages.map(item=>item.text));assert.ok(result.replies.every(item=>!item.components&&!item.embeds));assert.equal(count,1);}finally{globalThis.fetch=original;}
+});

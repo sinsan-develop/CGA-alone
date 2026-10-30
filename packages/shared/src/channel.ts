@@ -494,7 +494,7 @@ function discordReply(message: AidotChannelStoredMessage, destination: { channel
     return embed;
   };
   if (type === "button" || type === "link-button") {
-    if (!Array.isArray(payload.options) || !payload.options.length) throw new Error("Discord 버튼 항목이 없습니다.");
+    if (!Array.isArray(payload.options)) throw new Error("Discord 버튼 항목이 올바르지 않습니다.");
     for (const item of payload.options) {
       if (typeof item === "string" && type === "button") choice(item, item);
       else { const option = discordRecord(item), label = option.label ?? option.text ?? option.value;
@@ -505,7 +505,9 @@ function discordReply(message: AidotChannelStoredMessage, destination: { channel
     if (Object.keys(embed).length) embeds.push(embed);
   } else if (type === "table") {
     const columns = payload.columns, rows = payload.rows;
-    if (!Array.isArray(columns) || !columns.length || columns.some(column => typeof column !== "string" || !column) || !Array.isArray(rows) || !rows.length || rows.length > 25) throw new Error("Discord 표는 1~25행과 유효한 열이 필요합니다.");
+    if (!Array.isArray(columns) || columns.some(column => typeof column !== "string" || !column) || !Array.isArray(rows) || rows.length > 25) throw new Error("Discord 표 구조와 25행 한도를 확인합니다.");
+    if (!rows.length) return { packet, choices };
+    if (!columns.length) throw new Error("Discord 표의 열이 없습니다.");
     const fields = rows.map((item, index) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Discord 표 행이 올바르지 않습니다.");
       const row = discordRecord(item), first = row[String(columns[0])], key = typeof payload.keyColumn === "string" && row[payload.keyColumn] !== undefined ? row[payload.keyColumn] : first;
