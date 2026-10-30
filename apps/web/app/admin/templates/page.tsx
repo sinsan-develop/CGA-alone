@@ -761,7 +761,7 @@ export default function AdminTemplatesPage() {
                   }
                 >
                   {rendererOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
+                    <option key={`${draft.channel_code}:${option.value}:${option.label}`} value={option.value}>
                       {option.value} ({option.label})
                     </option>
                   ))}
