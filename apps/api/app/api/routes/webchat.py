@@ -646,7 +646,8 @@ def _create_native_webchat_message(bot, version, room_id, payload, request, api_
     return success_response(request, {
         "roomId": room_id,
         "bot": {"id": str(bot.id), "name": bot.name},
-        "activeVersion": {"id": str(version.id), "name": version.name, "versionNo": version.version_no},
+        "activeVersion": result["activeVersion"],
+        "runtime": result["runtime"],
         "userMessage": user_message,
         "botMessage": messages[-1] if messages else None,
         "botMessages": messages,
@@ -701,7 +702,7 @@ def _shared_runtime_message(bot, version, room_id, payload, request, api_key, cr
                 channels._shared_turn_capability.reset(token)
             db.commit();db.refresh(message)
             return success_response(request, {"roomId": room_id, "userMessage": channels._serialize_message(message),
-                "botMessage": None, "botMessages": [], "turn": _shared_turn_view(db, room, actor)})
+                "botMessage": None, "botMessages": [], "turn": _shared_turn_view(db, room, actor), **_room_client_state(db, room)})
         previous_generation = _as_dict(_as_dict(room.metadata_json).get("__roomTurn")).get("generation")
         version_replaced = room.bot_version_id != version.id
         if version_replaced:
@@ -835,6 +836,20 @@ def _shared_turn_view(db, room, actor):
         "canAskBot": waiting and turn["actor_id"] == actor}
 
 
+def _room_client_state(db, room):
+    """인증을 마친 방에 실제 적용된 버전과 표시용 최소 실행 상태만 반환한다."""
+    from app.services.runtime_session import runtime_completion_reason
+    version = db.get(BotVersion, room.bot_version_id)
+    if version is None or version.bot_id != room.bot_id:
+        raise _credential_denied()
+    state = _as_dict(room.metadata_json)
+    return {"activeVersion": {"id": str(version.id), "name": version.name, "versionNo": version.version_no},
+        "runtime": {"dialogEnded": state.get("dialogEnded") is True,
+            "sessionEnded": state.get("sessionEnded") is True,
+            "completionReason": runtime_completion_reason(state),
+            "waitingNodeId": str(state.get("waitingNodeId") or "").strip() or None}}
+
+
 def _issue_shared_member(db, room, binding, bot, version, name):
     actor, secret = "wc:" + uuid4().hex, secrets.token_urlsafe(32)
     members = {**binding["members"], actor: {"digest": _webchat_secret_digest(secret),
@@ -843,7 +858,7 @@ def _issue_shared_member(db, room, binding, bot, version, name):
     flag_modified(room, "metadata_json")
     db.commit()
     return {"roomId": str(room.id), "participantId": actor, "conversationToken": str(room.id) + "." + secret,
-        "turn": _shared_turn_view(db, room, actor)}
+        "turn": _shared_turn_view(db, room, actor), **_room_client_state(db, room)}
 
 
 @router.post("/bots/{bot_id}/shared-rooms")
@@ -879,7 +894,7 @@ def get_shared_webchat_messages(bot_id: str, room_id: UUID, request: Request,
         room, member = _shared_member(db, bot, room_id, x_aidot_conversation_token)
         messages = db.scalars(select(ChannelMessage).where(ChannelMessage.room_id == room.id).order_by(ChannelMessage.created_at, ChannelMessage.id)).all()
         return success_response(request, {"roomId": str(room.id), "messages": [channels._serialize_message(item) for item in messages],
-            "turn": _shared_turn_view(db, room, member["actor_id"])})
+            "turn": _shared_turn_view(db, room, member["actor_id"]), **_room_client_state(db, room)})
 
 
 @router.post("/bots/{bot_id}/rooms/{room_id}/messages")

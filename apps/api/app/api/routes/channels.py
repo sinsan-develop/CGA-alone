@@ -6022,6 +6022,7 @@ def _process_channel_queue_event(
             "dialogEnded": runtime_state_after.get("dialogEnded") is True,
             "sessionEnded": runtime_state_after.get("sessionEnded") is True,
             "completionReason": runtime_completion_reason(runtime_state_after),
+                    "waitingNodeId": str(runtime_state_after.get("waitingNodeId") or "").strip() or None,
         },
     }
 
@@ -6975,6 +6976,7 @@ def create_channel_room_message(
                     "dialogEnded": runtime_state_after.get("dialogEnded") is True,
                     "sessionEnded": runtime_state_after.get("sessionEnded") is True,
                     "completionReason": runtime_completion_reason(runtime_state_after),
+                    "waitingNodeId": str(runtime_state_after.get("waitingNodeId") or "").strip() or None,
                 },
             },
         )
