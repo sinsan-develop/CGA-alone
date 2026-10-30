@@ -8,6 +8,8 @@ from app.models import Bot, BotVersion
 from app.schemas.bot import BotCreateRequest, BotUpdateRequest
 from tests.integration.test_bot_persistence_regression import _request
 
+OUTCOME = {"variableName":"$apiResult.phase", "answeredValue":"ok", "unrecognizedValue":"not-found"}
+
 @pytest.fixture
 def secondary_bot(regression_actor, db_session, monkeypatch):
     result = bots.create_bot(BotCreateRequest(name="S03 검증봇"), _request(), regression_actor, db_session)
@@ -67,7 +69,7 @@ def test_local_engine_remains_ml_or_semantic(secondary_bot):
 
 def test_valid_creator_module_can_activate(secondary_bot):
     bot, version, document, user, db = secondary_bot
-    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1"}
+    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1", "outcome":OUTCOME}
     bots._assign_version_document(version, document)
     db.flush()
     result = bots.activate_version(bot.id, version.id, _request(), current_user=user, db=db)
@@ -81,14 +83,14 @@ def test_runtime_preparation_rejects_missing_secondary_module(secondary_bot):
 def test_copy_version_keeps_secondary_reference_inside_copied_document(secondary_bot):
     from app.services.bot_ai_policy import secondary_llm_block_reason
     bot, version, document, user, db = secondary_bot
-    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1"}
+    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1", "outcome":OUTCOME}
     bots._assign_version_document(version, document)
     db.flush()
     copied = bots.copy_version(bot.id, version.id, _request(), user, db)
     copied_version = db.get(BotVersion, UUID(copied["data"]["id"]))
     assert copied_version.id != version.id
     assert secondary_llm_block_reason(copied_version.version_json) is None
-    assert copied_version.version_json["system_config"]["ai_config"]["secondary_llm"] == {"module_id":"module-1"}
+    assert copied_version.version_json["system_config"]["ai_config"]["secondary_llm"] == {"module_id":"module-1", "outcome":OUTCOME}
 
 
 def test_existing_hub_routing_does_not_require_answer_module():
@@ -100,12 +102,12 @@ def test_existing_hub_routing_does_not_require_answer_module():
 def test_direct_webchat_obeys_same_secondary_preparation(secondary_bot, monkeypatch, state):
     from contextlib import contextmanager
     from fastapi.testclient import TestClient
-    from app.api.routes import webchat
+    from app.api.routes import webchat, channels
     from app.core.config import settings
     from app.main import app
     from app.models import AdminChannel
     bot, version, document, user, db = secondary_bot
-    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1"}
+    document["system_config"]["ai_config"]["secondary_llm"] = {"module_id":"module-1", "outcome":OUTCOME}
     bots._assign_version_document(version, document)
     db.flush()
     bots.activate_version(bot.id, version.id, _request(), current_user=user, db=db)
@@ -121,12 +123,14 @@ def test_direct_webchat_obeys_same_secondary_preparation(secondary_bot, monkeypa
     def session():
         yield db
     monkeypatch.setattr(webchat, "SessionLocal", session)
+    monkeypatch.setattr(channels, "SessionLocal", session)
     monkeypatch.setattr(settings, "webchat_api_key", "s03-qa-key")
     calls=[]
     def classify(*args, **kwargs):
         calls.append(True)
         return None, 0
     monkeypatch.setattr(webchat, "_select_dialog_for_bot", classify)
+    monkeypatch.setattr(channels, "_select_dialog_for_bot", classify)
     client=TestClient(app)
     try:
         response=client.post(f"/api/v1/webchat/bots/{bot.id}/rooms/qa-room/messages", headers={"X-Aidot-Webchat-Key":"s03-qa-key"}, json={"message":"검증 질문"})

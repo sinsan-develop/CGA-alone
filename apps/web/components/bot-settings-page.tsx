@@ -183,6 +183,9 @@ function BotEditSection({
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [secondaryModuleId, setSecondaryModuleId] = useState("");
+  const [outcomeVariable, setOutcomeVariable] = useState("");
+  const [answeredValue, setAnsweredValue] = useState("");
+  const [unrecognizedValue, setUnrecognizedValue] = useState("");
 
   useEffect(() => {
     const aiConfig = getSelectedAiConfig(bot);
@@ -190,7 +193,11 @@ function BotEditSection({
     setName(bot.name);
     setLanguage(normalizeSupportedLanguage(aiConfig.language));
     setNluType(nextType);
-    setSecondaryModuleId(normalizeSecondaryLlmConfig(aiConfig.secondary_llm).module_id);
+    const secondaryConfig = normalizeSecondaryLlmConfig(aiConfig.secondary_llm);
+    setSecondaryModuleId(secondaryConfig.module_id);
+    setOutcomeVariable(secondaryConfig.outcome?.variableName ?? "");
+    setAnsweredValue(secondaryConfig.outcome?.answeredValue ?? "");
+    setUnrecognizedValue(secondaryConfig.outcome?.unrecognizedValue ?? "");
     setNluModel(normalizeNluModel(nextType, aiConfig.nlu_model ?? aiConfig.nlu_engine));
     setAnswerMode(normalizeAnswerMode(aiConfig.answer_mode));
     const nextLlmProvider = normalizeLlmProvider(aiConfig.llm_provider);
@@ -257,7 +264,7 @@ function BotEditSection({
       };
       const payload = {
         settings_scope: bot.active_version?.id ?? versionName,
-        secondary_llm: normalizeSecondaryLlmConfig({ module_id: secondaryModuleId }),
+        secondary_llm: normalizeSecondaryLlmConfig({ module_id: secondaryModuleId, outcome: { variableName: outcomeVariable, answeredValue, unrecognizedValue } }),
         name: name.trim(),
         description: description.trim() || undefined,
         profile_key: profileKey,
@@ -408,6 +415,19 @@ function BotEditSection({
                     {secondaryModules.map((module) => <option key={module.id} value={module.id}>{module.displayName || module.name}</option>)}
                   </select>
                   <small className="bot-settings-card__hint">{copy.secondaryLlmHint}</small>
+                </label>
+                <label className="bot-settings-card">
+                  <span>{copy.secondaryOutcomeVariable}</span>
+                  <input className="bot-settings-card__input" value={outcomeVariable} onChange={(event) => setOutcomeVariable(event.target.value)} />
+                  <small className="bot-settings-card__hint">{copy.secondaryOutcomeHint}</small>
+                </label>
+                <label className="bot-settings-card">
+                  <span>{copy.secondaryAnsweredValue}</span>
+                  <input className="bot-settings-card__input" value={answeredValue} onChange={(event) => setAnsweredValue(event.target.value)} />
+                </label>
+                <label className="bot-settings-card">
+                  <span>{copy.secondaryUnrecognizedValue}</span>
+                  <input className="bot-settings-card__input" value={unrecognizedValue} onChange={(event) => setUnrecognizedValue(event.target.value)} />
                 </label>
               </div>
             ) : null}
