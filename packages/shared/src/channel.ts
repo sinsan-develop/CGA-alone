@@ -864,7 +864,7 @@ function googleChatReply(message: AidotChannelStoredMessage, destination: { spac
       for (const item of rows) {
         if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Google Chat 표 행이 올바르지 않습니다.");
         const row = googleChatRecord(item), first = row[String(columns[0])], key = typeof payload.keyColumn === "string" && row[payload.keyColumn] !== undefined ? row[payload.keyColumn] : first;
-        const decoratedText: Record<string, unknown> = { text: escape(columns.map(column => scalar(row[String(column)])).join(" | ")) };
+        const decoratedText: Record<string, unknown> = { text: escape(columns.map(column => scalar(row[String(column)])).join(" | ")).replaceAll("\n", "<br>"), wrapText: true };
         if (payload.selectable !== false) decoratedText.button = choice(scalar(first) || scalar(key) || "선택", key);
         widgets.push({ decoratedText });
       }
@@ -873,7 +873,7 @@ function googleChatReply(message: AidotChannelStoredMessage, destination: { spac
     const value = type === "card" ? payload.card : payload.carousel;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Google Chat 카드 구조가 올바르지 않습니다.");
     const card = googleChatRecord(value); paragraph(card.title);
-    if (card.imageUrl) widgets.push({ image: { imageUrl: url(card.imageUrl), altText: typeof card.title === "string" && card.title ? card.title : "이미지" } });
+    if (card.imageUrl) { const imageUrl = url(card.imageUrl); if (!/^https:\/\//i.test(imageUrl)) throw new Error("Google Chat 이미지 URL은 HTTPS여야 합니다."); widgets.push({ image: { imageUrl, altText: typeof card.title === "string" && card.title ? card.title : "이미지" } }); }
     if (type === "card") paragraph(card.description);
     else {
       paragraph(card.itemTitle); paragraph(card.itemContents);

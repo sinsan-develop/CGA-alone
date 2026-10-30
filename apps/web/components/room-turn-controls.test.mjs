@@ -540,3 +540,28 @@ test("Google Chat conversion and unknown transport preserve result without retry
   count=0;globalThis.fetch=async()=>{count++;throw new Error("synthetic unknown transport");};await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatFixture.addressed,googleChatFixture.connection));assert.equal(count,1);
  }finally{globalThis.fetch=original;}
 });
+
+
+test("Google Chat long table rows wrap and preserve line breaks and distinguishing values",()=>{
+ const description="긴 한국어 설명".repeat(50)+"\n다음 줄 <&>";
+ const source={id:"00000000-0000-4000-8000-000000000001",messageType:"table",text:"표 본문",payload:{sourceTalkNodeId:"followup",columns:["name","description","id"],rows:[{name:"같은 이름",description,id:"끝의 구분값"}],keyColumn:"id",selectable:true}};
+ const row=api.buildAidotGoogleChatReplyPayload(source,{spaceName:"spaces/QA_SPACE"}).body.cardsV2[0].card.sections[0].widgets[1].decoratedText;
+ assert.equal(row.wrapText,true);assert.ok(row.text.includes("<br>다음 줄 &lt;&amp;&gt;"));assert.ok(row.text.endsWith("끝의 구분값"));assert.equal(row.button.text,"같은 이름");
+});
+
+test("Google Chat image requires HTTPS while openLink and received response are preserved",async()=>{
+ const original=globalThis.fetch;let count=0;
+ try{
+  for(const kind of ["card","carousel"]){
+   const source={id:"known",messageType:kind,text:"본문",payload:{[kind]:{imageUrl:"http://example.com/image.png"}}};
+   assert.throws(()=>api.buildAidotGoogleChatReplyPayload(source,{spaceName:"spaces/QA_SPACE"}),/HTTPS/);
+   source.payload[kind].imageUrl="https://example.com/image.png";
+   const packet=api.buildAidotGoogleChatReplyPayload(source,{spaceName:"spaces/QA_SPACE"});assert.equal(packet.body.cardsV2[0].card.sections[0].widgets[0].image.imageUrl,source.payload[kind].imageUrl);
+   source.payload[kind].imageUrl="http://example.com/image.png";
+   globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:source,botMessages:[source]}}),{status:200});};
+   await assert.rejects(()=>api.sendAidotGoogleChatEvent("http://localhost:8320",googleChatBinding,googleChatFixture.addressed,googleChatFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known");
+  }
+  assert.equal(count,2);
+  const link=api.buildAidotGoogleChatReplyPayload({id:"known",messageType:"link-button",text:"본문",payload:{options:[{label:"문서",url:"http://example.com/document"}]}},{spaceName:"spaces/QA_SPACE"});assert.equal(link.body.cardsV2[0].card.sections[0].widgets[0].buttonList.buttons[0].onClick.openLink.url,"http://example.com/document");
+ }finally{globalThis.fetch=original;}
+});
