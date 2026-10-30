@@ -335,3 +335,67 @@ test("Slack payload error retains received CGA result without another request",a
   try{await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",slackBinding,slackFixture.addressed,slackFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known-result");assert.equal(calls,1);}
   finally{globalThis.fetch=original;}
 });
+
+
+const discordFixture=JSON.parse(readFileSync(new URL("../../../apps/api/tests/cga_alone/fixtures/client_templates/discord.json",import.meta.url),"utf8"));
+const discordBinding={roomId:"discord-room",participantId:"server:A",participantKind:"user",conversationToken:"opaque-discord-fixture",nativeRoomKey:'discord:["100000000000000001","100000000000000002"]',nativeParticipantKey:"discord:user:100000000000000010",channelId:"100000000000000002",roomMode:"shared",turn:idle};
+function discordAction(message,index=0){return {type:3,id:"100000000000000201",application_id:discordFixture.connection.applicationId,guild_id:discordFixture.connection.guildId,channel_id:discordFixture.connection.channelId,member:{user:{id:"100000000000000010"}},message:{author:{id:discordFixture.connection.botUserId}},data:{component_type:2,custom_id:`cga:${message.id}:${index}`}};}
+
+test("Discord caller uses existing issued credentials and binds native scope",async()=>{
+ const original=globalThis.fetch,calls=[];
+ globalThis.fetch=async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify({data:{...discordBinding,botMessages:[],botMessage:null}}),{status:200});};
+ try{
+  const member=await api.createAidotDiscordRoom("http://localhost:8320","bot-id",discordFixture.addressed,discordFixture.connection);
+  assert.equal(member.nativeRoomKey,discordBinding.nativeRoomKey);
+  await api.joinAidotDiscordRoom("http://localhost:8320",member,discordFixture.addressed,discordFixture.connection);
+  await api.sendAidotDiscordEvent("http://localhost:8320",member,discordFixture.addressed,discordFixture.connection);
+  assert.ok(calls[0].url.endsWith("/channels/discord/rooms"));assert.equal(calls[2].init.headers.get("X-Aidot-Conversation-Token"),member.conversationToken);
+  assert.equal(calls[2].init.headers.get("X-Aidot-Event-Id"),"discord-message:100000000000000101");
+  const count=calls.length;await assert.rejects(()=>api.sendAidotDiscordEvent("http://localhost:8320",{...member,nativeParticipantKey:"other"},discordFixture.addressed,discordFixture.connection));assert.equal(calls.length,count);
+  const own=structuredClone(discordFixture.addressed);own.d.author.id=discordFixture.connection.botUserId;assert.deepEqual(await api.sendAidotDiscordEvent("http://localhost:8320",member,own,discordFixture.connection),{response:null,replies:[]});assert.equal(calls.length,count);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Discord callback restores original table key and completed event without client turn rejection",async()=>{
+ const original=globalThis.fetch,calls=[];
+ const message={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"table",text:"표",payload:{columns:["name","id"],rows:[{name:"표시",id:"선택 키"}],keyColumn:"id",selectable:true,sourceTalkNodeId:"followup"}};
+ const history={messages:[message],turn:{state:"idle",ownerParticipantId:null,canAskBot:true},runtime:{dialogEnded:true,sessionEnded:false}},result={roomId:"discord-room",botMessage:null,botMessages:[],turn:idle};
+ globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({data:init.method==="GET"?history:result}),{status:200});};
+ try{
+  for(let i=0;i<2;i++)await api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordAction(message),discordFixture.connection);
+  assert.equal(calls.length,4);assert.deepEqual(calls.map(call=>call.method),["GET","POST","GET","POST"]);
+  const wire=JSON.parse(JSON.parse(calls[1].body).message);assert.equal(wire.response.buttonValue,"선택 키");assert.equal(wire.sourceMessageId,message.id);assert.equal(wire.sourceTalkNodeId,"followup");assert.equal(calls[1].body,calls[3].body);
+  calls.length=0;history.messages=[];await assert.rejects(()=>api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordAction(message),discordFixture.connection));assert.equal(calls.length,1);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Discord callback cannot create an unrelated new room",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:discordBinding}),{status:200});};
+ try{await assert.rejects(()=>api.createAidotDiscordRoom("http://localhost:8320","bot-id",discordAction({id:"00000000-0000-4000-8000-000000000001"}),discordFixture.connection));assert.equal(count,0);}finally{globalThis.fetch=original;}
+});
+
+test("Discord rejects a choice which cannot fit the original response wire",()=>{
+ const message={id:"00000000-0000-4000-8000-000000000001",messageType:"carousel",text:"카드",payload:{sourceTalkNodeId:"followup",carousel:{title:"제목",itemTitle:"항목",itemContents:"내용",buttonType:"Button",itemButtonLabel:"선택",itemButtonValue:"x".repeat(3950)}}};
+ assert.throws(()=>api.buildAidotDiscordReplyPayload(message,{channelId:discordBinding.channelId}));
+});
+
+test("Discord conversion failure preserves received result and never retries",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:{id:"known",messageType:"html",text:"미지원"},botMessages:[{id:"known",messageType:"html",text:"미지원"}]}}),{status:200});};
+ try{await assert.rejects(()=>api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordFixture.addressed,discordFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);}finally{globalThis.fetch=original;}
+});
+
+
+test("Discord preserves an explicitly empty original choice value",async()=>{
+ const original=globalThis.fetch;let wire;
+ const source={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"carousel",text:"카드",payload:{sourceTalkNodeId:"followup",carousel:{title:"제목",itemTitle:"항목",itemContents:"내용",buttonType:"Button",itemButtonLabel:"선택",itemButtonValue:""}}};
+ globalThis.fetch=async(url,init)=>{if(init.method==="POST")wire=JSON.parse(JSON.parse(init.body).message);return new Response(JSON.stringify({data:init.method==="GET"?{messages:[source]}:{botMessages:[],botMessage:null}}),{status:200});};
+ try{await api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordAction(source),discordFixture.connection);assert.equal(wire.response.buttonValue,"");}finally{globalThis.fetch=original;}
+});
+
+
+test("Discord received empty results preserve every completed response text",async()=>{
+ const original=globalThis.fetch;let count=0;
+ const botMessages=[{id:"1",messageType:"button",text:"빈 버튼 안내",payload:{options:[]}},{id:"2",messageType:"link-button",text:"빈 링크 안내",payload:{options:[]}},{id:"3",messageType:"table",text:"조회 0건 안내",payload:{columns:["name"],rows:[],selectable:false}}];
+ globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessages,botMessage:botMessages[0]}}),{status:200});};
+ try{const result=await api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordFixture.addressed,discordFixture.connection);assert.deepEqual(result.replies.map(item=>item.content),botMessages.map(item=>item.text));assert.ok(result.replies.every(item=>!item.components&&!item.embeds));assert.equal(count,1);}finally{globalThis.fetch=original;}
+});

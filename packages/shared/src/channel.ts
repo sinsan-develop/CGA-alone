@@ -1,4 +1,4 @@
-export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack";
+export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord";
 
 export type AidotInitialChannelMessage = {
   type?: string;
@@ -409,4 +409,163 @@ export async function sendAidotSlackEvent(serverUrl: string, member: AidotSlackM
     // 생성은 완료되었으며 표현 실패를 새 유료 질문으로 바꾸지 않는다.
     throw Object.assign(new Error("CGA 답변은 수신했지만 Slack 표현을 변환하지 못했습니다."), { cause, cgaResponse: response });
   }
+}
+
+
+export type AidotDiscordConnection = { applicationId: string; botUserId: string; guildId: string | null; channelId: string; channelType: number };
+export type AidotDiscordEvent = {
+  nativeRoomKey: string; nativeParticipantKey: string; participantKind: AidotClientParticipantKind;
+  channelId: string; roomMode: "private" | "shared"; eventId: string; message: string; addressed: boolean;
+  sourceMessageId?: string; choiceIndex?: number;
+};
+export type AidotDiscordReplyPayload = { channel_id: string; content: string; allowed_mentions: { parse: string[]; replied_user: false }; embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] };
+function discordRecord(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function discordId(value: unknown) {
+  if (typeof value !== "string" || !/^[1-9]\d{0,19}$/.test(value) || (value.length === 20 && value > "18446744073709551615")) throw new Error("Discord ID는 유효한 문자열 snowflake여야 합니다.");
+  return value;
+}
+function discordText(value: unknown, maximum: number, field: string) {
+  if (typeof value !== "string" || !value.trim() || value.length > maximum) throw new Error(`Discord ${field}는 1~${maximum}자여야 합니다.`);
+  return value;
+}
+function discordUrl(value: unknown) {
+  const source = discordText(value, 512, "URL"); let parsed: URL;
+  try { parsed = new URL(source); } catch { throw new Error("Discord URL이 올바르지 않습니다."); }
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Discord 링크는 HTTP/HTTPS URL을 사용합니다.");
+  return source;
+}
+
+// 기존 client가 설치·Gateway/서명·채널 접근을 검증한 다음 호출한다. native ID는 CGA 소유권 증명이 아니다.
+export function normalizeAidotDiscordEvent(input: unknown, connection: AidotDiscordConnection): AidotDiscordEvent | null {
+  const envelope = discordRecord(input);
+  const interaction = envelope.type === 3 || (envelope.op === 0 && envelope.t === "INTERACTION_CREATE");
+  if (!interaction && !(envelope.op === 0 && envelope.t === "MESSAGE_CREATE")) return null;
+  const data = envelope.type === 3 ? envelope : discordRecord(envelope.d);
+  if (interaction && data.type !== 3) return null;
+  const app = discordId(connection.applicationId), self = discordId(connection.botUserId), channel = discordId(connection.channelId);
+  const dm = connection.channelType === 1, noGuild = dm || connection.channelType === 3;
+  if (![0, 1, 3, 5, 10, 11, 12].includes(connection.channelType)) throw new Error("Discord 채널 종류를 확인할 수 없습니다.");
+  const guild = connection.guildId === null ? null : discordId(connection.guildId);
+  if (noGuild !== (guild === null)) throw new Error("Discord 채널 종류와 서버 범위가 다릅니다.");
+  if ((data.guild_id ?? null) !== guild || discordId(data.channel_id ?? discordRecord(data.channel).id) !== channel) throw new Error("다른 Discord 서버/채널의 입력입니다.");
+  const author = interaction ? discordRecord(discordRecord(data.member).user ?? data.user) : discordRecord(data.author);
+  if (author.id === self || (!interaction && data.application_id === app)) return null;
+  const actor = discordId(author.id), kind: AidotClientParticipantKind = author.bot === true ? "bot" : "user";
+  const common = { nativeRoomKey: "discord:" + JSON.stringify([guild, channel]), nativeParticipantKey: `discord:${kind}:${actor}`, participantKind: kind, channelId: channel, roomMode: dm ? "private" as const : "shared" as const };
+  if (interaction) {
+    if (discordId(data.application_id) !== app || discordRecord(discordRecord(data.message).author).id !== self) throw new Error("연결된 Discord 봇의 버튼만 처리합니다.");
+    const selected = discordRecord(data.data);
+    if (selected.component_type !== 2 || typeof selected.custom_id !== "string" || !selected.custom_id.startsWith("cga:")) return null;
+    const match = /^cga:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\d{1,2})$/.exec(selected.custom_id);
+    if (!match || Number(match[2]) > 24) throw new Error("Discord 버튼 식별자가 올바르지 않습니다.");
+    return { ...common, eventId: `discord-interaction:${discordId(data.id)}`, message: "", addressed: true, sourceMessageId: match[1], choiceIndex: Number(match[2]) };
+  }
+  if (data.type !== undefined && data.type !== 0 && data.type !== 19) return null;
+  const raw = discordText(data.content, 4000, "질문"), mention = new RegExp(`<@!?${self}>`, "g");
+  const addressed = dm || (Array.isArray(data.mentions) && data.mentions.some(item => discordRecord(item).id === self) && raw.match(mention) !== null);
+  const message = addressed ? discordText(raw.replace(mention, "").trim(), 4000, "질문") : raw;
+  return { ...common, eventId: `discord-message:${discordId(data.id)}`, message, addressed };
+}
+
+function discordSelectionMessage(source: AidotChannelStoredMessage, value: string) {
+  const wire = JSON.stringify({ webchatRichFormVersion: "1.0", sourceMessageId: source.id, sourceTalkNodeId: discordText(source.payload?.sourceTalkNodeId, 120, "원본 Talk ID"), response: { buttonValue: value } });
+  if (Array.from(wire).length > 4000) throw new Error("Discord 선택 응답이 기존 메시지 한도를 넘습니다.");
+  return wire;
+}
+function discordReply(message: AidotChannelStoredMessage, destination: { channelId: string }) {
+  const packet: AidotDiscordReplyPayload = { channel_id: discordId(destination.channelId), content: discordText(message.text, 2000, "본문"), allowed_mentions: { parse: [], replied_user: false } };
+  const type = message.messageType || "text", choices: string[] = [], buttons: Record<string, unknown>[] = [], embeds: Record<string, unknown>[] = [];
+  if (type === "text") return { packet, choices };
+  if (!["button", "card", "table", "link-button", "carousel"].includes(type)) throw new Error(`Discord에서 지원하지 않는 Talk 표현입니다: ${type}`);
+  const payload = discordRecord(message.payload);
+  const choice = (label: unknown, value: unknown) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(message.id)) throw new Error("Discord 버튼 원본 CGA 메시지 ID가 올바르지 않습니다.");
+    const index = choices.length, selected = String(value ?? "");
+    if (selected.length > 4000) throw new Error("Discord 선택값이 기존 메시지 한도를 넘습니다.");
+    discordSelectionMessage(message, selected); choices.push(selected);
+    buttons.push({ type: 2, style: 1, label: discordText(label, 80, "버튼 이름"), custom_id: `cga:${message.id}:${index}` });
+  };
+  const link = (label: unknown, url: unknown) => buttons.push({ type: 2, style: 5, label: discordText(label, 80, "버튼 이름"), url: discordUrl(url) });
+  const cardEmbed = (card: Record<string, unknown>, title: unknown, description: unknown) => {
+    const embed: Record<string, unknown> = {};
+    if (title) embed.title = discordText(title, 256, "제목");
+    if (description) embed.description = discordText(description, 4096, "설명");
+    if (card.imageUrl) embed.image = { url: discordUrl(card.imageUrl) };
+    return embed;
+  };
+  if (type === "button" || type === "link-button") {
+    if (!Array.isArray(payload.options)) throw new Error("Discord 버튼 항목이 올바르지 않습니다.");
+    for (const item of payload.options) {
+      if (typeof item === "string" && type === "button") choice(item, item);
+      else { const option = discordRecord(item), label = option.label ?? option.text ?? option.value;
+        if (type === "link-button" || option.url) link(label, option.url); else choice(label, option.value ?? option.messageText ?? label); }
+    }
+  } else if (type === "card") {
+    const card = discordRecord(payload.card), embed = cardEmbed(card, card.title, card.description);
+    if (Object.keys(embed).length) embeds.push(embed);
+  } else if (type === "table") {
+    const columns = payload.columns, rows = payload.rows;
+    if (!Array.isArray(columns) || columns.some(column => typeof column !== "string" || !column) || !Array.isArray(rows) || rows.length > 25) throw new Error("Discord 표 구조와 25행 한도를 확인합니다.");
+    if (!rows.length) return { packet, choices };
+    if (!columns.length) throw new Error("Discord 표의 열이 없습니다.");
+    const fields = rows.map((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Discord 표 행이 올바르지 않습니다.");
+      const row = discordRecord(item), first = row[String(columns[0])], key = typeof payload.keyColumn === "string" && row[payload.keyColumn] !== undefined ? row[payload.keyColumn] : first;
+      const stringify = (value: unknown) => value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+      const label = stringify(first) || stringify(key) || `행 ${index + 1}`;
+      if (payload.selectable !== false) choice(label, stringify(key));
+      return { name: discordText(label, 256, "표 행 이름"), value: discordText(columns.map(column => `${column}: ${stringify(row[String(column)])}`).join("\n"), 1024, "표 행"), inline: false };
+    });
+    embeds.push({ fields });
+  } else {
+    const card = discordRecord(payload.carousel), embed = cardEmbed(card, card.title, card.itemContents);
+    if (card.itemTitle) embed.fields = [{ name: discordText(card.itemTitle, 256, "항목 제목"), value: "\u200b", inline: false }];
+    if (Object.keys(embed).length) embeds.push(embed);
+    if (String(card.buttonType).toLowerCase() === "button") choice(card.itemButtonLabel, card.itemButtonValue);
+    if (card.bottomButtonLabel || card.bottomButtonValue) choice(card.bottomButtonLabel, card.bottomButtonValue);
+  }
+  if (buttons.length > 25) throw new Error("Discord 버튼은 5행·25개 이내여야 합니다.");
+  if (buttons.length) packet.components = Array.from({ length: Math.ceil(buttons.length / 5) }, (_, index) => ({ type: 1, components: buttons.slice(index * 5, index * 5 + 5) }));
+  if (embeds.some(embed => !Object.keys(embed).length)) throw new Error("Discord 카드 내용이 비어 있습니다.");
+  let total = 0;
+  for (const embed of embeds) {
+    for (const value of [embed.title, embed.description]) if (typeof value === "string") total += value.length;
+    if (Array.isArray(embed.fields)) for (const field of embed.fields) { const value = discordRecord(field); total += String(value.name ?? "").length + String(value.value ?? "").length; }
+  }
+  if (total > 6000) throw new Error("Discord embed 합계는 6000자 이내여야 합니다.");
+  if (embeds.length) packet.embeds = embeds;
+  return { packet, choices };
+}
+export function buildAidotDiscordReplyPayload(message: AidotChannelStoredMessage, destination: { channelId: string }) { return discordReply(message, destination).packet; }
+export type AidotDiscordMembership = AidotClientMembership & Pick<AidotDiscordEvent, "nativeRoomKey" | "nativeParticipantKey" | "channelId" | "roomMode">;
+function discordMembership(member: AidotClientMembership, event: AidotDiscordEvent): AidotDiscordMembership {
+  if (member.participantKind !== event.participantKind) throw new Error("Discord 질문자 종류와 서버 발급 참가자가 다릅니다.");
+  return { ...member, nativeRoomKey: event.nativeRoomKey, nativeParticipantKey: event.nativeParticipantKey, channelId: event.channelId, roomMode: event.roomMode };
+}
+export async function createAidotDiscordRoom(serverUrl: string, botId: string, input: unknown, connection: AidotDiscordConnection, signal?: AbortSignal) {
+  const event = normalizeAidotDiscordEvent(input, connection); if (event === null) return null;
+  if (event.sourceMessageId) throw new Error("Discord 버튼은 기존 대화방에서만 이어갈 수 있습니다.");
+  return discordMembership(await createAidotClientRoom(serverUrl, "discord", botId, event.roomMode, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function joinAidotDiscordRoom(serverUrl: string, room: Pick<AidotDiscordMembership, "roomId" | "nativeRoomKey">, input: unknown, connection: AidotDiscordConnection, signal?: AbortSignal) {
+  const event = normalizeAidotDiscordEvent(input, connection); if (event === null) return null;
+  if (event.nativeRoomKey !== room.nativeRoomKey) throw new Error("다른 Discord 채널/스레드에는 이 방 정보로 입장할 수 없습니다.");
+  return discordMembership(await joinAidotClientRoom(serverUrl, "discord", room.roomId, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function sendAidotDiscordEvent(serverUrl: string, member: AidotDiscordMembership, input: unknown, connection: AidotDiscordConnection, signal?: AbortSignal): Promise<{ response: AidotSharedRoomMessageResponse | null; replies: AidotDiscordReplyPayload[] }> {
+  const event = normalizeAidotDiscordEvent(input, connection); if (event === null) return { response: null, replies: [] };
+  if (event.nativeRoomKey !== member.nativeRoomKey || event.nativeParticipantKey !== member.nativeParticipantKey || event.participantKind !== member.participantKind || event.channelId !== member.channelId || event.roomMode !== member.roomMode) throw new Error("Discord 방/질문자에 해당하는 서버 발급 증명이 필요합니다.");
+  let message = event.message;
+  if (event.sourceMessageId) {
+    // 완료 이벤트의 복구를 막지 않도록 GET에서는 최신 여부/차례를 검사하지 않는다.
+    const history = await fetchAidotClientRoom(serverUrl, "discord", member, signal);
+    const source = history.messages?.find(item => item.id === event.sourceMessageId && item.participantKind === "bot");
+    if (!source) throw new Error("Discord 버튼 원본 기록을 확인할 수 없어 재실행하지 않습니다.");
+    const value = discordReply(source, { channelId: event.channelId }).choices[event.choiceIndex ?? -1];
+    if (value === undefined || !source.payload?.sourceTalkNodeId) throw new Error("Discord 버튼 선택 출처가 올바르지 않습니다.");
+    message = discordSelectionMessage(source, value);
+  }
+  const response = await sendAidotClientMessage(serverUrl, "discord", member, message, event.addressed, event.eventId, signal);
+  try { return { response, replies: (response.botMessages ?? (response.botMessage ? [response.botMessage] : [])).map(item => buildAidotDiscordReplyPayload(item, { channelId: event.channelId })) }; }
+  catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 Discord 표현을 변환하지 못했습니다."), { cause, cgaResponse: response }); }
 }
