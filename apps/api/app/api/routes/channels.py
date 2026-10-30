@@ -838,7 +838,7 @@ def _fence_shared_room_write(db, room):
             current = lock_current_room_turn(db, room.id, context["actor_id"], context["generation"])
         if current is None:
             raise HTTPException(status_code=409, detail="질문 차례가 변경되어 이전 결과를 저장하지 않았습니다.")
-        context["protected"] = {key: deepcopy(_as_dict(current.metadata_json).get(key)) for key in ("__webchatAccess", "__roomTurn", "__clientEvents")}
+        context["protected"] = {key: deepcopy(current.metadata_json[key]) for key in ("__webchatAccess", "__roomTurn", "__clientEvents") if key in _as_dict(current.metadata_json)}
         # 외부 응답 중 저장된 일반 대화의 이력은 최신 DB를 유지한다.
         history = deepcopy(_as_dict(candidate.get("conversationHistory")))
         latest_history = _as_dict(_as_dict(current.metadata_json).get("conversationHistory"))

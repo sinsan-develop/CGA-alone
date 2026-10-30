@@ -694,14 +694,29 @@ def _client_event_entry(room, bot, channel, actor, event_id, payload):
     key = hashlib.sha256(json.dumps(scope, ensure_ascii=False).encode("utf-8")).hexdigest()
     body = payload.model_dump(exclude={"participant_id"})
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
-    entries = _as_dict(_as_dict(room.metadata_json).get("__clientEvents"))
-    previous = _as_dict(entries.get(key))
-    if previous:
+    metadata = _as_dict(room.metadata_json)
+    entries = metadata.get("__clientEvents", {})
+    if not isinstance(entries, dict):
+        raise HTTPException(status_code=409, detail="이벤트 원장 상태를 확인할 수 없어 재실행하지 않습니다.")
+    if key in entries:
+        previous = entries[key]
+        if not isinstance(previous, dict) or not previous:
+            raise HTTPException(status_code=409, detail="기존 이벤트 상태가 손상되어 재실행하지 않습니다.")
         if previous.get("body_hash") != digest:
             raise HTTPException(status_code=409, detail="같은 이벤트 ID의 내용이 다릅니다.")
         if previous.get("status") != "completed":
             raise HTTPException(status_code=409, detail="이전 이벤트의 처리 결과를 확인 중입니다. 자동 재실행하지 않습니다.")
-        return key, deepcopy(previous.get("result"))
+        result = previous.get("result")
+        if (not isinstance(result, dict) or result.get("roomId") != str(room.id)
+            or not isinstance(result.get("userMessage"), dict)
+            or not isinstance(result["userMessage"].get("id"), str)
+            or not result["userMessage"]["id"]
+            or result["userMessage"].get("participantId") != actor
+            or not isinstance(result.get("botMessages"), list)
+            or "botMessage" not in result
+            or (result["botMessage"] is not None and not isinstance(result["botMessage"], dict))):
+            raise HTTPException(status_code=409, detail="완료 이벤트의 결과를 확인할 수 없어 재실행하지 않습니다.")
+        return key, deepcopy(result)
     entries[key] = {"body_hash": digest, "status": "processing", "started_at": datetime.now(timezone.utc).isoformat()}
     room.metadata_json = {**_as_dict(room.metadata_json), "__clientEvents": entries}
     flag_modified(room, "metadata_json")
@@ -809,7 +824,8 @@ def _shared_runtime_message(bot, version, room_id, payload, request, api_key, cr
         if actor in members:
             members[actor] = {**_as_dict(members[actor]), "expires_at": _webchat_credential_expiry(bot, version)}
             room.metadata_json = {**_as_dict(room.metadata_json), "__webchatAccess": {**access, "members": members}}
-            flag_modified(room, "metadata_json");db.commit()
+            flag_modified(room, "metadata_json")
+        # 참가자 갱신·현재 차례·완료 원장을 같은 row lock 아래 한 번에 저장한다.
         result["turn"] = _shared_turn_view(db, room, actor)
         _finish_client_event(room, event_key, result)
         db.commit()

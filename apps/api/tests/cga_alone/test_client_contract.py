@@ -267,3 +267,84 @@ def test_parallel_duplicate_and_reconnect_use_persisted_event(committed_shared_c
         assert len(stored.metadata_json["__clientEvents"]) == 1
         assert next(iter(stored.metadata_json["__clientEvents"].values()))["status"] == "completed"
         assert db.scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == stored.id)) == 5
+
+
+@pytest.mark.parametrize("corruption", ["ledger-null", "ledger-list", "entry-null", "entry-list", "entry-empty", "string-result", "missing-user-message", "missing-result", "null-result", "list-result", "empty-result", "missing-body", "invalid-status"])
+def test_review_corrupt_event_never_enters_runtime(client_context, monkeypatch, corruption):
+    from copy import deepcopy
+    from app.api.routes import channels
+    c, _ = client_context
+    room = create(client_context, mode="private")
+    assert send(client_context, room, "초기 질문", event="corrupted-event").status_code == 200
+    stored = c[2].get(ChannelRoom, UUID(room["roomId"]))
+    metadata = deepcopy(stored.metadata_json)
+    entries = metadata["__clientEvents"]
+    key = next(iter(entries))
+    entry = entries[key]
+    if corruption == "ledger-null": metadata["__clientEvents"] = None
+    elif corruption == "ledger-list": metadata["__clientEvents"] = []
+    elif corruption == "string-result": entry["result"] = "corrupted"
+    elif corruption == "missing-user-message": entry["result"].pop("userMessage")
+    elif corruption == "entry-null": entries[key] = None
+    elif corruption == "entry-list": entries[key] = []
+    elif corruption == "entry-empty": entries[key] = {}
+    elif corruption == "missing-result": entry.pop("result")
+    elif corruption == "null-result": entry["result"] = None
+    elif corruption == "list-result": entry["result"] = []
+    elif corruption == "empty-result": entry["result"] = {}
+    elif corruption == "missing-body": entry.pop("body_hash")
+    elif corruption == "invalid-status": entry["status"] = "made-up"
+    stored.metadata_json = metadata; c[2].flush()
+    before = c[2].scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == stored.id))
+    original = channels.create_channel_room_message
+    entered = []
+    def traced(*args, **kwargs):
+        entered.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(channels, "create_channel_room_message", traced)
+    response = send(client_context, room, "초기 질문", event="corrupted-event")
+    assert response.status_code == 409
+    assert entered == [] and not c[3]
+    assert stored.metadata_json == metadata
+    assert c[2].scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == stored.id)) == before
+
+
+def test_review_completion_holds_lock_through_event_finalization(committed_shared_context, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from sqlalchemy.orm import Session
+    from app.api.routes import webchat
+    c = committed_shared_context
+    c.release.set()
+    base = "/api/v1/channels/webchat/rooms"
+    room = c.client.post(base, headers=c.headers, json={"bot_id": str(c.bot_id), "room_mode": "shared"}).json()["data"]
+    path = base + "/" + room["roomId"] + "/messages"
+    headers = {**c.headers, "X-Aidot-Conversation-Token": room["conversationToken"]}
+    assert c.client.post(path, headers=headers, json={"message": "A 질문", "addressed": True}).status_code == 200
+    reached, release, general_finished = Event(), Event(), Event()
+    original = webchat._finish_client_event
+    def pause(room, key, result=None):
+        if result is not None and result.get("botMessage") is not None and result.get("userMessage", {}).get("text") == "A 후속":
+            reached.set()
+            assert release.wait(8)
+        return original(room, key, result)
+    monkeypatch.setattr(webchat, "_finish_client_event", pause)
+    def general():
+        try: return c.client.post(path, headers={**headers, "X-Aidot-Event-Id": "general-finalize"}, json={"message": "완료 경합 일반 대화", "addressed": False})
+        finally: general_finished.set()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(c.client.post, path, headers={**headers, "X-Aidot-Event-Id": "answer-finalize"}, json={"message": "A 후속", "addressed": True})
+        assert reached.wait(5)
+        other = pool.submit(general)
+        try:
+            assert not general_finished.wait(0.5), "완료 원장을 저장하기 전에 방 잠금이 풀렸습니다"
+        finally: release.set()
+        answer, chat = first.result(timeout=8), other.result(timeout=8)
+    assert answer.status_code == 200 and chat.status_code == 200
+    with Session(c.engine) as db:
+        stored = db.get(ChannelRoom, UUID(room["roomId"]))
+        entries = stored.metadata_json["__clientEvents"]
+        assert len(entries) == 2 and all(value["status"] == "completed" for value in entries.values())
+        assert "완료 경합 일반 대화" in stored.metadata_json["conversationHistory"]["user_raw_utterances"]
+        assert db.scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == stored.id)) == 5
+    assert c.http_calls == ["A 질문"]
