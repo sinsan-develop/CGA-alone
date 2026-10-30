@@ -1,0 +1,16 @@
+{
+  "channel": "webchat",
+  "code": "WEBCHAT",
+  "renderer": "button",
+  "talk": {
+    "messageType": "button",
+    "basicMessages": [
+      "한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "확인",
+      "다음"
+    ]
+  },
+  "type": "button"
+}

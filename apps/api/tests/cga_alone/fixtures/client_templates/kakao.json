@@ -1,0 +1,17 @@
+{
+  "channel": "kakao",
+  "code": "KAKAO",
+  "renderer": "basic-card",
+  "talk": {
+    "messageType": "card",
+    "basicMessages": [
+      "한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "한글 카드",
+      "https://example.invalid/card.png",
+      "기존 설명"
+    ]
+  },
+  "type": "card"
+}

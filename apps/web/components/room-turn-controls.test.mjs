@@ -203,3 +203,54 @@ test("shared Adaptive submit includes collected inputs while legacy serializatio
  class SubmitAction{constructor(){this.data={submitted:true,details:"카드 입력 보존 답변"};}toJSON(){return {type:"Action.Submit",data:{submitted:true}};}}
  for(const includeSubmittedInputs of [true,false]){const calls=[];const execute=new Function("disabled","onActionRef","AdaptiveCards","includeSubmittedInputs",`${output};return handler;`)(false,{current:v=>calls.push(v)},{SubmitAction},includeSubmittedInputs);execute(new SubmitAction());assert.deepEqual(JSON.parse(calls[0]),includeSubmittedInputs?{submitted:true,details:"카드 입력 보존 답변"}:{submitted:true});}
 });
+
+
+test("common client SDK binds channel, credential and external event without retry", async()=>{
+  await capture(async(calls)=>{
+    const member={roomId:"room/id",participantId:"server:A",conversationToken:"opaque-token"};
+    await api.createAidotClientRoom("http://localhost:8320","ms-teams","bot/id","shared","bot","LLM session");
+    await api.joinAidotClientRoom("http://localhost:8320","ms-teams",member.roomId,"user","B");
+    await api.fetchAidotClientRoom("http://localhost:8320","ms-teams",member);
+    await api.sendAidotClientMessage("http://localhost:8320","ms-teams",member,"질문",true,"event-1");
+    assert.equal(calls.length,4);
+    assert.equal(calls[0].url,"http://localhost:8320/api/v1/channels/ms-teams/rooms");
+    assert.deepEqual(JSON.parse(calls[0].init.body),{bot_id:"bot/id",room_mode:"shared",participant_kind:"bot",participant_name:"LLM session"});
+    assert.match(calls[1].url,/room%2Fid\/participants$/);
+    assert.equal(calls[2].init.headers.get("X-Aidot-Conversation-Token"),member.conversationToken);
+    assert.equal(calls[3].init.headers.get("X-Aidot-Event-Id"),"event-1");
+    assert.deepEqual(JSON.parse(calls[3].init.body),{message:"질문",addressed:true});
+    assert.equal(calls[3].init.headers.has("Authorization"),false);
+  });
+  const original=globalThis.fetch;let count=0;
+  globalThis.fetch=async()=>{count++;throw new TypeError("synthetic transport unknown");};
+  try{await assert.rejects(()=>api.sendAidotClientMessage("http://localhost:8320","webchat",{roomId:"r",participantId:"a",conversationToken:"t"},"q",true,"e"));assert.equal(count,1);}
+  finally{globalThis.fetch=original;}
+});
+
+
+test("registered channel templates use existing Talk selector and preserve native fields",()=>{
+  const designer=readFileSync(new URL("./flow-designer-page.tsx",import.meta.url),"utf8");
+  const ast=ts.createSourceFile("designer.tsx",designer,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+  const names=new Set(["normalizeTalkMessageType","getTalkMessageTypeMeta","isActiveTalkTemplate","buildTalkMessageTypeOptions","normalizeTalkChannelTemplateMap","applyTalkChannelTemplateToConfig","isTalkMessageTypeAvailableForBotMode"]);
+  const pieces=[];
+  for(const statement of ast.statements){
+    if(ts.isFunctionDeclaration(statement)&&names.has(statement.name?.text))pieces.push(statement.getText(ast));
+    if(ts.isVariableStatement(statement)&&statement.declarationList.declarations.some(d=>d.name.getText(ast)==="TALK_MESSAGE_TYPE_OPTIONS"))pieces.push(statement.getText(ast));
+  }
+  assert.equal(pieces.length,8);
+  const js=ts.transpileModule(pieces.join("\n"),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+  const subject=new Function(js+";return {buildTalkMessageTypeOptions,normalizeTalkChannelTemplateMap,applyTalkChannelTemplateToConfig};")();
+  for(const name of ["webchat","kakao","ms-teams"]){
+    const fixture=JSON.parse(readFileSync(new URL(`../../api/tests/cga_alone/fixtures/client_templates/${name}.json`,import.meta.url),"utf8"));
+    const registered=[{id:"stored-template-id",channel_code:fixture.code,name:"저장한 템플릿",renderer_type:fixture.renderer,status:"active"},
+      {channel_code:fixture.code,name:"비활성",renderer_type:"text",status:"inactive"}];
+    const options=subject.buildTalkMessageTypeOptions(registered,fixture.code,"text");
+    assert.equal(options.length,1);assert.equal(options[0].value,fixture.type);assert.equal(options[0].label,"저장한 템플릿");
+    const template={...fixture.talk,tableColumnMappings:[],tableManualRows:[],linkButtonItems:[]};
+    const map=subject.normalizeTalkChannelTemplateMap({[fixture.code]:template},registered,"text");
+    const applied=subject.applyTalkChannelTemplateToConfig({channelTemplates:map,basicMessages:["보존"]},fixture.code,"text");
+    assert.equal(applied.messageType,fixture.type);
+    assert.deepEqual(applied.messages,fixture.talk.messages);
+    assert.deepEqual(applied.basicMessages,["보존"]);
+  }
+});
