@@ -214,7 +214,7 @@ def test_native_button_callback_preserves_cga_source():
         "container":{"message_ts":"1793376000.000900"},"actions":[{**button,"action_ts":"1793376001.000100"}]}
     value=normalize(raw);wire=json.loads(value["message"])
     assert value["addressed"] is True and value["sourceMessageId"]==message["id"]
-    assert wire=={"webchatRichFormVersion":"1.0","sourceTalkNodeId":"followup","response":{"buttonValue":"확인"}}
+    assert wire=={"webchatRichFormVersion":"1.0","sourceTalkNodeId":"followup","sourceMessageId":"00000000-0000-4000-8000-000000000001","response":{"buttonValue":"확인"}}
     assert value["nativeRoomKey"]==normalize(event(thread="1793300000.000001"))["nativeRoomKey"]
     assert value["eventId"]==normalize(raw)["eventId"]
 
@@ -245,3 +245,52 @@ def test_slack_optional_image_keeps_talk_field_positions(kind, fields):
     assert expected in json.dumps(packet, ensure_ascii=False)
     assert not any(block["type"] == "image" for block in packet["blocks"])
     assert output["payload"][kind]["imageUrl"] == ""
+
+
+def _callback_wire(message, **changes):
+    wire = {"webchatRichFormVersion": "1.0", "sourceTalkNodeId": "followup",
+        "sourceMessageId": message["id"], "response": {"buttonValue": "추가 설명"}}
+    wire.update(changes)
+    return json.dumps(wire, ensure_ascii=False)
+
+
+def test_slack_callback_completed_event_recovers_without_reexecution(slack_context):
+    c, _ = slack_context; member = room(slack_context)
+    first = post(slack_context, member, event()).json()["data"]["botMessage"]
+    wire = _callback_wire(first)
+    answer = send(slack_context, member, wire, "slack", addressed=True, event="slack-action:1.1:2.1")
+    assert answer.status_code == 200
+    assert len(c[3]) == 1
+    repeated = send(slack_context, member, wire, "slack", addressed=True, event="slack-action:1.1:2.1")
+    assert repeated.status_code == 200
+    assert repeated.json()["data"]["botMessage"]["id"] == answer.json()["data"]["botMessage"]["id"]
+    assert len(c[3]) == 1
+    before = c[2].scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == UUID(member["roomId"])))
+    stale = send(slack_context, member, wire, "slack", addressed=True, event="slack-action:1.1:3.1")
+    assert stale.status_code == 409
+    assert c[2].scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == UUID(member["roomId"]))) == before
+    assert len(c[3]) == 1
+
+
+@pytest.mark.parametrize("problem", ["missing", "wrong-message", "wrong-node", "other-owner", "newer-card"], ids=str)
+def test_slack_callback_rejects_stale_or_wrong_owner_before_mutation(slack_context, problem):
+    from datetime import datetime, timedelta, timezone
+    c, client = slack_context; member = room(slack_context)
+    message = post(slack_context, member, event()).json()["data"]["botMessage"]
+    wire = json.loads(_callback_wire(message))
+    if problem == "missing": wire.pop("sourceMessageId")
+    elif problem == "wrong-message": wire["sourceMessageId"] = "00000000-0000-4000-8000-000000000099"
+    elif problem == "wrong-node": wire["sourceTalkNodeId"] = "other-node"
+    elif problem == "other-owner":
+        joined = client.post(f"/api/v1/channels/slack/rooms/{member['roomId']}/participants", headers={"X-Aidot-Webchat-Key": "s04-qa-key"}, json={"participant_name": "B"})
+        assert joined.status_code == 200
+        member = {**joined.json()["data"], "room": member["room"]}
+    elif problem == "newer-card":
+        c[2].add(ChannelMessage(room_id=UUID(member["roomId"]), channel_type="slack", participant_id="answer-bot", participant_kind="bot", participant_name="봇", message_type="button", text="최근 카드", payload_json=message["payload"], created_at=datetime.now(timezone.utc)+timedelta(seconds=1)))
+        c[2].flush()
+    before = c[2].scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == UUID(member["roomId"])))
+    response = send(slack_context, member, json.dumps(wire, ensure_ascii=False), "slack", addressed=True, event="slack-action:1.1:2.1")
+    assert response.status_code == 409
+    c[2].expire_all()
+    assert c[2].scalar(select(func.count()).select_from(ChannelMessage).where(ChannelMessage.room_id == UUID(member["roomId"]))) == before
+    assert not c[3]

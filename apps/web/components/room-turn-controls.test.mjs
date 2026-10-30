@@ -297,16 +297,20 @@ test("Slack caller ignores self output and rejects wrong room, actor, kind witho
   finally{globalThis.fetch=original;}
 });
 
-test("Slack card callback checks current owner, waiting node and latest card before posting",async()=>{
-  const message={id:"00000000-0000-4000-8000-000000000001",participantId:"answer-bot",participantKind:"bot",participantName:"봇",messageType:"button",text:"선택",payload:{options:["확인"],sourceTalkNodeId:"followup"},createdAt:"2026-10-30T00:00:00+00:00"};
-  const native=api.buildAidotSlackReplyPayload(message,{channelId:"CQA001"});
-  const button=native.blocks.find(block=>block.type==="actions").elements[0];
-  const action={type:"block_actions",team:{id:"TQA001"},user:{id:"UQA001"},channel:{id:"CQA001"},container:{message_ts:"1793376000.000900"},message:{ts:"1793376000.000900"},actions:[{...button,action_ts:"1793376001.000100"}]};
-  const history={messages:[message],turn:{state:"waiting_input",ownerParticipantId:"server:A",canAskBot:true},runtime:{waitingNodeId:"followup",dialogEnded:false,sessionEnded:false}};
-  await slackCapture(async(calls)=>{await api.sendAidotSlackEvent("http://localhost:8320",slackBinding,action,slackFixture.connection);assert.equal(calls.length,2);assert.equal(calls[0].init.method,"GET");assert.equal(calls[1].init.method,"POST");const body=JSON.parse(calls[1].init.body);assert.equal(JSON.parse(body.message).sourceTalkNodeId,"followup");},history);
-  for(const changed of [{...history,messages:[message,{...message,id:"00000000-0000-4000-8000-000000000002"}]},{...history,turn:{...history.turn,ownerParticipantId:"server:B",canAskBot:false}}]){
-    await slackCapture(async(calls)=>{await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",slackBinding,action,slackFixture.connection),error=>error.status===409);assert.equal(calls.length,1);assert.equal(calls[0].init.method,"GET");},changed);
-  }
+test("Slack callback delegates atomic validation and duplicate recovery to the server",async()=>{
+  const message={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"button",text:"선택",payload:{options:["확인"],sourceTalkNodeId:"followup"}};
+  const button=api.buildAidotSlackReplyPayload(message,{channelId:"CQA001"}).blocks.find(block=>block.type==="actions").elements[0];
+  const action={type:"block_actions",team:{id:"TQA001"},user:{id:"UQA001"},channel:{id:"CQA001"},container:{message_ts:"1793376000.000900"},actions:[{...button,action_ts:"1793376001.000100"}]};
+  const original=globalThis.fetch;let calls=[];const response={roomId:"slack-room",botMessages:[],botMessage:null,turn:idle,runtime:{dialogEnded:true,sessionEnded:false}};
+  globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({data:init.method==="GET"?{...response,messages:[]}:response}),{status:200});};
+  try{
+    for(let i=0;i<2;i++) assert.deepEqual((await api.sendAidotSlackEvent("http://localhost:8320",slackBinding,action,slackFixture.connection)).response,response);
+    assert.equal(calls.length,2);assert.ok(calls.every(call=>call.method==="POST"));
+    const wire=JSON.parse(JSON.parse(calls[0].body).message);assert.equal(wire.sourceMessageId,message.id);assert.equal(wire.sourceTalkNodeId,"followup");
+    assert.equal(calls[0].body,calls[1].body);assert.equal(calls[0].headers.get("X-Aidot-Event-Id"),calls[1].headers.get("X-Aidot-Event-Id"));
+    calls=[];globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({detail:"현재 카드가 아닙니다."}),{status:409});};
+    await assert.rejects(()=>api.sendAidotSlackEvent("http://localhost:8320",slackBinding,action,slackFixture.connection),error=>error.status===409);assert.equal(calls.length,1);
+  }finally{globalThis.fetch=original;}
 });
 
 test("Slack template draft preserves supported expressions and excludes unrepresentable ones",()=>{

@@ -288,7 +288,7 @@ export function normalizeAidotSlackEvent(input: unknown, connection: AidotSlackC
     const messageTs = slackTimestamp(container.message_ts ?? message.ts), actionTs = slackTimestamp(action.action_ts);
     return { ...scope, participantKind: "user", roomMode: channel.startsWith("D") ? "private" : "shared", addressed: true,
       eventId: `slack-action:${messageTs}:${actionTs}`, sourceMessageId, sourceTalkNodeId,
-      message: JSON.stringify({ webchatRichFormVersion: "1.0", sourceTalkNodeId, response: { buttonValue } }) };
+      message: JSON.stringify({ webchatRichFormVersion: "1.0", sourceTalkNodeId, sourceMessageId, response: { buttonValue } }) };
   }
   if (envelope.type !== "event_callback") return null;
   const event = slackRecord(envelope.event);
@@ -400,13 +400,7 @@ export async function sendAidotSlackEvent(serverUrl: string, member: AidotSlackM
   if (event === null) return { response: null, replies: [] };
   if (event.nativeRoomKey !== member.nativeRoomKey || event.nativeParticipantKey !== member.nativeParticipantKey || event.participantKind !== member.participantKind) throw new Error("Slack 방/질문자에 해당하는 서버 발급 증명이 필요합니다.");
   if (event.channelId !== member.channelId || event.threadTs !== member.threadTs || event.roomMode !== member.roomMode) throw new Error("Slack 응답 대상이 저장된 방과 다릅니다.");
-  if (event.sourceMessageId) {
-    const history = await fetchAidotClientRoom(serverUrl, "slack", member, signal);
-    const allowed = canAskAidotRoomBot(history.turn, member.participantId, true, false);
-    if (!canRespondAidotRoomCard(history.runtime, event.sourceTalkNodeId, allowed, event.sourceMessageId, history.messages)) {
-      throw Object.assign(new Error("현재 질문자의 최신 Slack 카드에만 응답할 수 있습니다."), { status: 409 });
-    }
-  }
+  // 서버가 방 잠금 안에서 완료 이벤트를 먼저 복구하고 새 카드 응답만 검증한다.
   const response = await sendAidotClientMessage(serverUrl, "slack", member, event.message, event.addressed, event.eventId, signal);
   try {
     const messages = response.botMessages ?? (response.botMessage ? [response.botMessage] : []);

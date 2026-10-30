@@ -301,8 +301,8 @@
   },
   {
     "path": "apps/api/app/api/routes/webchat.py",
-    "stage": "S04/S05·S06·S07",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지"
+    "stage": "S04/S05·S06·S07·S08",
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지; S08 사용자 직접 승인 callback sourceMessageId 계약: 기존 원장 반환 뒤 같은 방 잠금에서 최신 카드·질문자 검증, 다른 채널 불변"
   },
   {
     "path": "apps/api/app/services/secondary_llm.py",
