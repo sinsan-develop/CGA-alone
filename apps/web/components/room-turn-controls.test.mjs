@@ -456,3 +456,25 @@ test("Telegram conversion and unknown transport never trigger another request",a
   count=0;globalThis.fetch=async()=>{count++;throw new Error("synthetic unknown transport");};await assert.rejects(()=>api.sendAidotTelegramEvent("http://localhost:8320",telegramBinding,telegramFixture.addressed,telegramFixture.connection));assert.equal(count,1);
  }finally{globalThis.fetch=original;}
 });
+
+
+test("telegram_target_command_without_arguments_preserves_command",()=>{
+ for(const command of ["start","help"]){
+  for(const suffix of ["", "  "]){
+   const event=structuredClone(telegramFixture.addressed);
+   const target=`/${command}@CgaAloneBot`;
+   event.message.text=target+suffix;
+   event.message.entities=[{type:"bot_command",offset:0,length:target.length}];
+   const normalized=api.normalizeAidotTelegramEvent(event,telegramFixture.connection);
+   assert.equal(normalized.addressed,true);
+   assert.equal(normalized.message,`/${command}`);
+  }
+ }
+ const event=structuredClone(telegramFixture.addressed);
+ event.message.text="/start@CgaAloneBot help";
+ event.message.entities=[{type:"bot_command",offset:0,length:18}];
+ assert.equal(api.normalizeAidotTelegramEvent(event,telegramFixture.connection).message,"help");
+ event.message.text="/help@AnotherBot";
+ event.message.entities=[{type:"bot_command",offset:0,length:event.message.text.length}];
+ assert.equal(api.normalizeAidotTelegramEvent(event,telegramFixture.connection).addressed,false);
+});

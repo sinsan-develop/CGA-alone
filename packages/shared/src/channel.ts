@@ -635,18 +635,21 @@ export function normalizeAidotTelegramEvent(input: unknown, connection: AidotTel
   if (typeof username !== "string" || !/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username)) throw new Error("Telegram 봇 username이 올바르지 않습니다.");
   if (message.entities !== undefined && !Array.isArray(message.entities)) throw new Error("Telegram entity 목록이 올바르지 않습니다.");
   const removals: { start: number; end: number }[] = [];
+  let addressedCommand = "";
   for (const item of (Array.isArray(message.entities) ? message.entities : [])) {
     const entity = telegramRecord(item), start = telegramInteger(entity.offset, 0, "entity offset"), length = telegramInteger(entity.length, 1, "entity length"), end = start + length;
     if (end > raw.length) throw new Error("Telegram entity 범위가 올바르지 않습니다.");
     const selected = raw.slice(start, end);
+    const targetCommand = entity.type === "bot_command" && /^\/[A-Za-z0-9_]+@[A-Za-z0-9_]+$/.test(selected) && selected.split("@")[1].toLowerCase() === username.toLowerCase();
+    if (targetCommand && !addressedCommand) addressedCommand = selected.split("@")[0];
     if ((entity.type === "mention" && selected.toLowerCase() === `@${username}`.toLowerCase())
-      || (entity.type === "bot_command" && /^\/[A-Za-z0-9_]+@[A-Za-z0-9_]+$/.test(selected) && selected.split("@")[1].toLowerCase() === username.toLowerCase())
+      || targetCommand
       || (entity.type === "text_mention" && telegramRecord(entity.user).id !== undefined && telegramId(telegramRecord(entity.user).id, true) === self)) removals.push({ start, end });
   }
   const addressed = common.roomMode === "private" || removals.length > 0;
   let text = raw;
   if (addressed) for (const range of removals.sort((a, b) => b.start - a.start)) text = text.slice(0, range.start) + text.slice(range.end);
-  return { ...common, addressed, message: telegramText(addressed ? text.trim() : raw, 4000, "CGA 질문") };
+  return { ...common, addressed, message: telegramText(addressed ? text.trim() || addressedCommand : raw, 4000, "CGA 질문") };
 }
 function telegramSelectionMessage(source: AidotChannelStoredMessage, value: string) {
   const wire = JSON.stringify({ webchatRichFormVersion: "1.0", sourceMessageId: source.id, sourceTalkNodeId: telegramText(source.payload?.sourceTalkNodeId, 120, "원본 Talk ID"), response: { buttonValue: value } });
