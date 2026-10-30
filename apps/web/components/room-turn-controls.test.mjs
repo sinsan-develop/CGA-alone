@@ -104,3 +104,22 @@ test("stored forms reuse rich renderer payload",()=>{
  const render=storedRenderer();const richForm=[{type:"INPUT",key:"name",title:"이름"}];const adaptiveCard={type:"AdaptiveCard",version:"1.6",body:[]};
  assert.deepEqual(render(stored("form",{richForm})).template.rawJson,richForm);assert.equal(render(stored("form",{richForm})).template.kind,"rich-form");assert.deepEqual(render(stored("form-a-card",{adaptiveCard})).template.rawJson,adaptiveCard);assert.equal(render(stored("form-a-card",{adaptiveCard})).template.kind,"adaptive-card");
 });
+
+function inputChangeHandler(sharedMode, confirmResult=true){
+ const text=readFileSync(new URL("./simulator-page.tsx",import.meta.url),"utf8");
+ const tree=ts.createSourceFile("simulator-page.tsx",text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let found; function visit(node){if(ts.isFunctionDeclaration(node)&&node.name?.text==="handleInputChange")found=node;ts.forEachChild(node,visit);}visit(tree);
+ assert.ok(found);const output=ts.transpileModule(found.getText(tree),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const calls={confirm:0,script:0,inputs:[]};
+ const handler=new Function("sharedMode","loadedScript","window","getStudioRuntimeMessage","uiLanguage","setLoadedScript","setInputValue",`${output};return handleInputChange;`)(
+  sharedMode,{active:true,sentences:["미리보기 문장"],index:0},{confirm:()=>{calls.confirm++;return confirmResult;}},(_,text)=>text,"ko",()=>{calls.script++;},value=>calls.inputs.push(value));
+ return {handler,calls};
+}
+test("shared general input does not stop or prompt for preserved preview script",()=>{
+ const {handler,calls}=inputChangeHandler(true,false);handler("공유방 일반 대화");
+ assert.equal(calls.confirm,0);assert.equal(calls.script,0);assert.deepEqual(calls.inputs,["공유방 일반 대화"]);
+});
+test("private preview script still asks before editing its current sentence",()=>{
+ const {handler,calls}=inputChangeHandler(false,false);handler("편집 문장");
+ assert.equal(calls.confirm,1);assert.equal(calls.script,0);assert.deepEqual(calls.inputs,[]);
+});

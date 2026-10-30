@@ -6324,7 +6324,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   }
 
   function handleInputChange(value: string) {
-    if (loadedScript?.active && value !== (loadedScript.sentences[loadedScript.index] ?? "")) {
+    if (!sharedMode && loadedScript?.active && value !== (loadedScript.sentences[loadedScript.index] ?? "")) {
       const keepEditing = window.confirm(getStudioRuntimeMessage(uiLanguage, "불러온 대화 진행을 중단하시겠습니까?"));
       if (keepEditing) {
         setLoadedScript((current) => (current ? { ...current, active: false } : current));
