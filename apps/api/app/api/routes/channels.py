@@ -12,7 +12,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -80,6 +80,8 @@ class ChannelConnectRequest(BaseModel):
 
 
 class ChannelRoomCreateRequest(BaseModel):
+    room_mode: Literal["private", "shared"] | None = None
+    participant_kind: Literal["user", "bot"] = "user"
     bot_id: str = Field(min_length=1, max_length=150)
     client_room_id: str | None = Field(default=None, max_length=150)
     participant_id: str | None = Field(default="visitor", max_length=120)
@@ -90,6 +92,7 @@ class ChannelRoomCreateRequest(BaseModel):
 
 
 class ChannelMessageRequest(BaseModel):
+    addressed: bool | None = None
     message: str = Field(min_length=1, max_length=4000)
     participant_id: str | None = Field(default="visitor", max_length=120)
     source_talk_node_id: str | None = Field(default=None, max_length=120)
@@ -99,6 +102,11 @@ class ChannelMessageRequest(BaseModel):
     system_name: str | None = Field(default=None, max_length=150)
     direct_dialog_root: bool = False
     language: str | None = Field(default=None, max_length=35)
+
+
+class ChannelParticipantRequest(BaseModel):
+    participant_name: str = Field(default="사용자", min_length=1, max_length=120)
+    participant_kind: Literal["user", "bot"] = "user"
 
 
 class KakaoWebhookRequest(BaseModel):
@@ -796,9 +804,9 @@ _shared_turn_capability: ContextVar[dict | None] = ContextVar("shared_turn_capab
 
 
 @contextmanager
-def _shared_room_turn_access(room_id, actor_id, generation, participant_name):
+def _shared_room_turn_access(room_id, actor_id, generation, participant_name, participant_kind="user"):
     context = {"room_id": room_id, "actor_id": actor_id, "generation": generation,
-        "participant_name": participant_name, "fenced": False, "protected": {}, "queue_event_id": None, "lease_lost": False}
+        "participant_name": participant_name, "participant_kind": participant_kind, "fenced": False, "protected": {}, "queue_event_id": None, "lease_lost": False}
     token = _shared_turn_capability.set(context)
     try:
         yield context
@@ -830,7 +838,7 @@ def _fence_shared_room_write(db, room):
             current = lock_current_room_turn(db, room.id, context["actor_id"], context["generation"])
         if current is None:
             raise HTTPException(status_code=409, detail="질문 차례가 변경되어 이전 결과를 저장하지 않았습니다.")
-        context["protected"] = {key: deepcopy(_as_dict(current.metadata_json).get(key)) for key in ("__webchatAccess", "__roomTurn")}
+        context["protected"] = {key: deepcopy(_as_dict(current.metadata_json).get(key)) for key in ("__webchatAccess", "__roomTurn", "__clientEvents")}
         # 외부 응답 중 저장된 일반 대화의 이력은 최신 DB를 유지한다.
         history = deepcopy(_as_dict(candidate.get("conversationHistory")))
         latest_history = _as_dict(_as_dict(current.metadata_json).get("conversationHistory"))
@@ -3779,8 +3787,14 @@ def _add_message(
     text: str,
     message_type: str = "text",
     payload_json: dict[str, Any] | None = None,
+    *, questioner: bool = False,
 ) -> ChannelMessage:
     _fence_shared_room_write(db, room)
+    context = _shared_turn_capability.get()
+    if context is not None and context["room_id"] == room.id and participant_id == context["actor_id"] and participant_kind == "user":
+        participant_kind = context.get("participant_kind", "user")
+        participant_name = context["participant_name"]
+        questioner = True
     created_at = datetime.now(timezone.utc)
     message = ChannelMessage(
         room_id=room.id,
@@ -3794,7 +3808,7 @@ def _add_message(
         created_at=created_at,
     )
     db.add(message)
-    _update_room_conversation_history_for_message(room, message)
+    _update_room_conversation_history_for_message(room, message, questioner=questioner)
     context = _shared_turn_capability.get()
     if context is not None and context["room_id"] == room.id:
         context["written_history"] = deepcopy(_as_dict(room.metadata_json).get("conversationHistory"))
@@ -4121,7 +4135,7 @@ def _append_room_conversation_transcript(history: dict[str, Any], message: Chann
     return display_text
 
 
-def _update_room_conversation_history_for_message(room: ChannelRoom, message: ChannelMessage) -> None:
+def _update_room_conversation_history_for_message(room: ChannelRoom, message: ChannelMessage, *, questioner: bool = False) -> None:
     _, history = _room_conversation_history(room)
     created_at = message.created_at or datetime.now(timezone.utc)
     history["room_status"] = room.status
@@ -4131,7 +4145,7 @@ def _update_room_conversation_history_for_message(room: ChannelRoom, message: Ch
     history["last_message_at"] = created_at.isoformat()
     history["message_count"] = int(history.get("message_count") or 0) + 1
     display_text = _append_room_conversation_transcript(history, message, created_at)
-    if message.participant_kind != "user":
+    if message.participant_kind != "user" and not questioner:
         return
     text = str(message.text or "").strip()
     history["last_user_message_at"] = created_at.isoformat()
@@ -4253,6 +4267,8 @@ def _apply_active_version_to_room(
     credential = _as_dict(room.metadata_json).get("__webchatAccess")
     if isinstance(credential, dict):
         runtime_state["__webchatAccess"] = deepcopy(credential)
+    if "__clientEvents" in _as_dict(room.metadata_json):
+        runtime_state["__clientEvents"] = deepcopy(room.metadata_json["__clientEvents"])
     room.metadata_json = runtime_state
     if hasattr(room, "_sa_instance_state"):
         flag_modified(room, "metadata_json")
@@ -6232,6 +6248,9 @@ def create_channel_room(
     channel = _ensure_channel(channel_type)
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
+    if payload.room_mode is not None:
+        from app.api.routes import webchat
+        return webchat._create_client_room(channel, payload, request, x_aidot_webchat_key)
     with SessionLocal() as db:
         existing_room = None
         if payload.client_room_id:
@@ -6352,6 +6371,15 @@ def create_channel_room_options(channel_type: str, request: Request) -> dict[str
     channel = _ensure_channel(channel_type)
     return success_response(request, {"channelType": channel, "room": None})
 
+@router.post("/{channel_type}/rooms/{room_id}/participants")
+def join_channel_room(channel_type: str, room_id: UUID, payload: ChannelParticipantRequest, request: Request,
+    x_aidot_webchat_key: str | None = Header(default=None)):
+    from app.api.routes import webchat
+    channel = _ensure_channel(channel_type)
+    _verify_channel_key(x_aidot_webchat_key)
+    return webchat._join_client_room(channel, room_id, payload, request, x_aidot_webchat_key)
+
+
 @router.get("/{channel_type}/rooms")
 def list_channel_rooms(
     channel_type: str,
@@ -6380,10 +6408,14 @@ def get_channel_room(
     room_id: UUID,
     request: Request,
     x_aidot_webchat_key: str | None = Header(default=None),
+    x_aidot_conversation_token: str | None = Header(default=None),
 ) -> dict[str, object]:
     channel = _ensure_channel(channel_type)
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
+    if isinstance(x_aidot_conversation_token, str):
+        from app.api.routes import webchat
+        return webchat._get_client_room(channel, room_id, request, x_aidot_webchat_key, x_aidot_conversation_token)
     with SessionLocal() as db:
         _assert_legacy_room_access(db, room_id)
         room = db.scalar(
@@ -6467,10 +6499,15 @@ def create_channel_room_message(
     payload: ChannelMessageRequest,
     request: Request,
     x_aidot_webchat_key: str | None = Header(default=None),
+    x_aidot_conversation_token: str | None = Header(default=None),
+    x_aidot_event_id: str | None = Header(default=None),
 ) -> dict[str, object]:
     channel = _ensure_channel(channel_type)
     channel_code = _channel_template_code(channel)
     _verify_channel_key(x_aidot_webchat_key)
+    if isinstance(x_aidot_conversation_token, str):
+        from app.api.routes import webchat
+        return webchat._client_runtime_message(channel, room_id, payload, request, x_aidot_webchat_key, x_aidot_conversation_token, x_aidot_event_id if isinstance(x_aidot_event_id, str) else None)
     with SessionLocal() as db, _shared_room_execution_db(db):
         _assert_legacy_room_access(db, room_id)
         room = db.scalar(
@@ -6584,6 +6621,8 @@ def create_channel_room_message(
         if shared_turn is not None:
             shared_turn["queue_event_id"] = queue_event.id
             queue_event.parameter_json = {**_as_dict(queue_event.parameter_json), "sharedTurnGeneration": shared_turn["generation"]}
+            if shared_turn.get("client_event_key"):
+                queue_event.parameter_json["clientEventHash"] = shared_turn["client_event_key"]
             flag_modified(queue_event, "parameter_json")
             # 입력/processing을 영속화한 뒤 외부 실행 전 transaction을 종료한다.
             db.commit()
@@ -6931,7 +6970,7 @@ def create_channel_room_message(
                 # 실패한 질문의 대기/변수를 다음 참가자가 이어받지 않는다.
                 previous = _as_dict(room.metadata_json)
                 fresh = _initial_runtime_state_for_version(bot, version, channel)
-                for key in ("__webchatAccess", "__roomTurn", "conversationHistory", "language", "runtimeEvents"):
+                for key in ("__webchatAccess", "__roomTurn", "__clientEvents", "conversationHistory", "language", "runtimeEvents"):
                     if key in previous:
                         fresh[key] = previous[key]
                 fresh["dialogEnded"] = True

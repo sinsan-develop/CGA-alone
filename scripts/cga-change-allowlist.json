@@ -226,8 +226,8 @@
   },
   {
     "path": "apps/api/app/api/routes/channels.py",
-    "stage": "S04/S05·S06",
-    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 승인 공유방 서버 ContextVar의 actor/세대 fence·외부실행 전 transaction 종료·실제종료/대기정산 최소 hook; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지"
+    "stage": "S04/S05·S06·S07",
+    "reason": "승인된 P03 보호방 shared-key 우회 차단·기존 worker 분리·열린 pin의 운영버전 보존; 승인된 S03 운영 준비 검사: 기존 채널 진입의 구성 미완료 차단만 추가, 실행순서 변경은 S04; S04 기존 sync/queue 미인식에 제작자 2차모듈 ID실행·결과판정·Talk재개 연결, 일반/허브 경로 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 승인 공유방 서버 ContextVar의 actor/세대 fence·외부실행 전 transaction 종료·실제종료/대기정산 최소 hook; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지"
   },
   {
     "path": "apps/api/tests/cga_alone/test_persistent_llm_access.py",
@@ -301,8 +301,8 @@
   },
   {
     "path": "apps/api/app/api/routes/webchat.py",
-    "stage": "S04/S05·S06",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지"
+    "stage": "S04/S05·S06·S07",
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약; 승인 S06 선택 waitingNodeId·방 실제 적용 activeVersion 최소 응답 전달, 기존 인증/변수 비노출 유지; 승인 S07 기존 rooms/messages/GET 선택mode·채널/개별참가자증명·bot입력역할·shared입장 재사용, legacy기본/P04유지"
   },
   {
     "path": "apps/api/app/services/secondary_llm.py",
@@ -352,12 +352,12 @@
   {
     "path": "packages/shared/src/channel.ts",
     "stage": "S06",
-    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지"
+    "reason": "승인 S06 공유방 기존 turn 상태·참가자별 증명 SDK·일반채팅/봇질문 입력허용, 기존 wire/helper 유지; S07 승인된 선택 공통 채널 계약의 생성·입장·조회·메시지 SDK, 증명·이벤트 헤더와 재시도 없는 호출"
   },
   {
     "path": "apps/web/components/room-turn-controls.test.mjs",
     "stage": "S06",
-    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증"
+    "reason": "S06 타인봇질문차단/소유자후속/일반채팅/종료재개 및 기존 공유방 API header/명시호출 wire 검증; S07 승인된 공통 SDK wire·증명·이벤트 식별·자동 재시도 금지 검증"
   },
   {
     "path": "apps/api/tests/cga_alone/test_simulator_turn_contract.py",
@@ -368,5 +368,30 @@
     "path": "apps/web/lib/i18n/simulator.ts",
     "stage": "S06",
     "reason": "기존 다국어 회귀에서 검출된 공유방 UI 문구를 기존 simulator 카탈로그의 7개 언어로 보완, 기존 키/번역/검사 기준 보존"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_client_contract.py",
+    "stage": "S07",
+    "reason": "승인된 기존3종 선택mode·개별증명·명시호출·bot질문자·event중복·방격리의 실제PG HTTP 계약 검증, legacy보존"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_client_templates.py",
+    "stage": "S07",
+    "reason": "기존3종 템플릿 등록·재조회·Talk 저장·native 출력과 지원불가 표현 거절 회귀, 실제 외부 플랫폼 증거와 구분"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/webchat.json",
+    "stage": "S07",
+    "reason": "기존3종 템플릿 등록·재조회·Talk 저장·native 출력과 지원불가 표현 거절 회귀, 실제 외부 플랫폼 증거와 구분"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/kakao.json",
+    "stage": "S07",
+    "reason": "기존3종 템플릿 등록·재조회·Talk 저장·native 출력과 지원불가 표현 거절 회귀, 실제 외부 플랫폼 증거와 구분"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/ms-teams.json",
+    "stage": "S07",
+    "reason": "기존3종 템플릿 등록·재조회·Talk 저장·native 출력과 지원불가 표현 거절 회귀, 실제 외부 플랫폼 증거와 구분"
   }
 ]

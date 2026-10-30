@@ -201,3 +201,33 @@ export async function sendAidotSharedRoomMessage(serverUrl: string, botId: strin
     body: JSON.stringify({ message, addressed }), signal,
   });
 }
+
+
+export type AidotClientParticipantKind = "user" | "bot";
+export type AidotClientMembership = AidotSharedRoomMembership & { participantKind: AidotClientParticipantKind };
+export type AidotClientRoomResponse = AidotChannelRoomResponse & AidotClientMembership;
+
+export async function createAidotClientRoom(serverUrl: string, channel: AidotChannelType, botId: string, roomMode: "private" | "shared", participantKind: AidotClientParticipantKind = "user", participantName = "사용자", signal?: AbortSignal) {
+  return callAidotChannelApi<AidotClientRoomResponse>(serverUrl, `/channels/${channel}/rooms`, {
+    method: "POST", body: JSON.stringify({ bot_id: botId, room_mode: roomMode, participant_kind: participantKind, participant_name: participantName }), signal,
+  });
+}
+
+export async function joinAidotClientRoom(serverUrl: string, channel: AidotChannelType, roomId: string, participantKind: AidotClientParticipantKind = "user", participantName = "사용자", signal?: AbortSignal) {
+  return callAidotChannelApi<AidotClientMembership>(serverUrl, `/channels/${channel}/rooms/${encodeURIComponent(roomId)}/participants`, {
+    method: "POST", body: JSON.stringify({ participant_kind: participantKind, participant_name: participantName }), signal,
+  });
+}
+
+export async function fetchAidotClientRoom(serverUrl: string, channel: AidotChannelType, member: AidotSharedRoomIdentity, signal?: AbortSignal) {
+  return callAidotChannelApi<AidotChannelRoomDetailResponse & AidotRoomClientState & { turn: AidotRoomTurnState }>(serverUrl, `/channels/${channel}/rooms/${encodeURIComponent(member.roomId)}`, {
+    method: "GET", headers: { "X-Aidot-Conversation-Token": member.conversationToken }, signal,
+  });
+}
+
+export async function sendAidotClientMessage(serverUrl: string, channel: AidotChannelType, member: AidotSharedRoomIdentity, message: string, addressed: boolean, eventId?: string, signal?: AbortSignal) {
+  return callAidotChannelApi<AidotSharedRoomMessageResponse>(serverUrl, `/channels/${channel}/rooms/${encodeURIComponent(member.roomId)}/messages`, {
+    method: "POST", headers: { "X-Aidot-Conversation-Token": member.conversationToken, ...(eventId === undefined ? {} : { "X-Aidot-Event-Id": eventId }) },
+    body: JSON.stringify({ message, addressed }), signal,
+  });
+}

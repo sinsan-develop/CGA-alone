@@ -1,0 +1,15 @@
+{
+  "channel": "ms-teams",
+  "code": "TEAMS",
+  "renderer": "form-a-card",
+  "talk": {
+    "messageType": "form-a-card",
+    "basicMessages": [
+      "한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "{\"type\": \"AdaptiveCard\", \"version\": \"1.5\", \"body\": [{\"type\": \"TextBlock\", \"text\": \"한글 카드\\n둘째 줄\"}], \"actions\": [{\"type\": \"Action.Submit\", \"title\": \"확인\", \"data\": {\"answer\": \"유지\"}}]}"
+    ]
+  },
+  "type": "form-a-card"
+}
