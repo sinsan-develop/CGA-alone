@@ -1,4 +1,4 @@
-export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord" | "telegram";
+export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord" | "telegram" | "google-chat";
 
 export type AidotInitialChannelMessage = {
   type?: string;
@@ -739,4 +739,180 @@ export async function sendAidotTelegramEvent(serverUrl: string, member: AidotTel
   const response = await sendAidotClientMessage(serverUrl, "telegram", member, message, event.addressed, event.eventId, signal);
   try { return { response, replies: (response.botMessages ?? (response.botMessage ? [response.botMessage] : [])).map(item => buildAidotTelegramReplyPayload(item, { chatId: event.chatId, threadId: event.threadId })) }; }
   catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 Telegram 표현을 변환하지 못했습니다."), { cause, cgaResponse: response }); }
+}
+
+
+export type AidotGoogleChatConnection = { botUserName: string; spaceName: string; spaceType: "DIRECT_MESSAGE" | "SPACE" | "GROUP_CHAT" };
+export type AidotGoogleChatEvent = {
+  nativeRoomKey: string; nativeParticipantKey: string; participantKind: AidotClientParticipantKind;
+  spaceName: string; threadName: string | null; roomMode: "private" | "shared";
+  eventId: string; addressed: boolean; message: string; sourceMessageId?: string; choiceIndex?: number;
+};
+export type AidotGoogleChatReplyPayload = {
+  parent: string; body: { text: string; cardsV2?: { cardId: string; card: { sections: { widgets: Record<string, unknown>[] }[] } }[]; thread?: { name: string } };
+  messageReplyOption?: "REPLY_MESSAGE_OR_FAIL";
+};
+function googleChatRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function googleChatName(value: unknown, kind: "user" | "space" | "message" | "thread", space?: string): string {
+  const segment = "[A-Za-z0-9_.~-]+", pattern = kind === "user" ? `users/${segment}` : kind === "space" ? `spaces/${segment}` : `spaces/${segment}/${kind === "message" ? "messages" : "threads"}/${segment}`;
+  if (typeof value !== "string" || !new RegExp(`^${pattern}$`).test(value) || (space && !value.startsWith(space + "/"))) throw new Error(`Google Chat ${kind} 범위가 올바르지 않습니다.`);
+  return value;
+}
+function googleChatText(value: unknown, label: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`Google Chat ${label}이 없습니다.`); return value; }
+function googleChatSpaceType(space: Record<string, unknown>): AidotGoogleChatConnection["spaceType"] {
+  const value = space.spaceType ?? (space.type === "DM" ? "DIRECT_MESSAGE" : space.type === "ROOM" ? "SPACE" : undefined);
+  if (value !== "DIRECT_MESSAGE" && value !== "SPACE" && value !== "GROUP_CHAT") throw new Error("Google Chat 공간 종류를 확인할 수 없습니다.");
+  if (space.type !== undefined && ((space.type === "DM") !== (value === "DIRECT_MESSAGE") || !["DM", "ROOM"].includes(String(space.type)))) throw new Error("Google Chat 공간 종류가 모순됩니다.");
+  return value;
+}
+function googleChatUuid(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) throw new Error("Google Chat 원본 CGA 메시지 ID가 올바르지 않습니다."); return value;
+}
+async function googleChatEventId(parts: unknown[]) {
+  const bytes = new TextEncoder().encode(JSON.stringify(parts)), digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return "google-chat:" + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
+}
+export async function normalizeAidotGoogleChatEvent(input: unknown, connection: AidotGoogleChatConnection): Promise<AidotGoogleChatEvent | null> {
+  const event = googleChatRecord(input); if (event.type !== "MESSAGE" && event.type !== "CARD_CLICKED") return null;
+  const self = googleChatName(connection.botUserName, "user"), space = googleChatRecord(event.space), spaceName = googleChatName(space.name, "space"), spaceType = googleChatSpaceType(space);
+  if (spaceName !== googleChatName(connection.spaceName, "space") || spaceType !== connection.spaceType) throw new Error("다른 Google Chat 공간에는 이 연결을 사용할 수 없습니다.");
+  const message = googleChatRecord(event.message), sender = googleChatRecord(message.sender), user = googleChatRecord(event.user), isClick = event.type === "CARD_CLICKED";
+  if (!isClick && sender.name === self) return null;
+  const actor = googleChatName(user.name, "user"); if (user.type !== "HUMAN" && user.type !== "BOT") throw new Error("Google Chat 질문자 종류를 확인할 수 없습니다.");
+  if (!isClick && (sender.name !== actor || sender.type !== user.type)) throw new Error("Google Chat 메시지와 질문자가 다릅니다.");
+  if (isClick && (sender.name !== self || sender.type !== "BOT")) throw new Error("Google Chat 버튼 원본 봇이 다릅니다.");
+  const messageName = googleChatName(message.name, "message", spaceName), messageSpace = googleChatRecord(message.space);
+  if (message.space !== undefined && (messageSpace.name !== spaceName || ((messageSpace.spaceType !== undefined || messageSpace.type !== undefined) && googleChatSpaceType(messageSpace) !== spaceType))) throw new Error("Google Chat 메시지 공간이 다릅니다.");
+  let threadName: string | null = null;
+  for (const thread of [message.thread, event.thread]) if (thread !== undefined) {
+    const name = googleChatName(googleChatRecord(thread).name, "thread", spaceName);
+    if (threadName !== null && threadName !== name) throw new Error("Google Chat 스레드가 모순됩니다."); threadName = name;
+  }
+  if (threadName === null && event.threadKey !== undefined) throw new Error("Google Chat 스레드 키를 기본 방으로 전환할 수 없습니다.");
+  const participantKind: AidotClientParticipantKind = user.type === "BOT" ? "bot" : "user";
+  const common = { nativeRoomKey: "google-chat:" + JSON.stringify([self, spaceName, spaceType, threadName]), nativeParticipantKey: `google-chat:${participantKind}:${actor}`, participantKind, spaceName, threadName, roomMode: spaceType === "DIRECT_MESSAGE" ? "private" as const : "shared" as const };
+  if (isClick) {
+    if (event.isDialogEvent === true) throw new Error("Google Chat 대화상자 입력은 지원하지 않습니다.");
+    const action = googleChatRecord(event.action), commonEvent = googleChatRecord(event.common);
+    const fn = action.actionMethodName ?? commonEvent.invokedFunction; if (fn !== "cga.select") return null;
+    if (action.actionMethodName !== undefined && commonEvent.invokedFunction !== undefined && action.actionMethodName !== commonEvent.invokedFunction) throw new Error("Google Chat 버튼 함수가 모순됩니다.");
+    const parameters: Record<string, string> = {};
+    if (action.parameters !== undefined) {
+      if (!Array.isArray(action.parameters)) throw new Error("Google Chat 버튼 매개변수가 올바르지 않습니다.");
+      for (const entry of action.parameters) { const item = googleChatRecord(entry); if (typeof item.key !== "string" || typeof item.value !== "string" || Object.hasOwn(parameters, item.key)) throw new Error("Google Chat 버튼 매개변수가 중복/누락됐습니다."); parameters[item.key] = item.value; }
+    }
+    if (commonEvent.parameters !== undefined) {
+      const values = googleChatRecord(commonEvent.parameters); for (const [key, value] of Object.entries(values)) { if (typeof value !== "string" || (Object.hasOwn(parameters, key) && parameters[key] !== value)) throw new Error("Google Chat 버튼 매개변수가 모순됩니다."); parameters[key] = value; }
+    }
+    if (Object.keys(parameters).length !== 2 || !Object.hasOwn(parameters, "sourceMessageId") || !/^(0|[1-9]\d*)$/.test(parameters.choiceIndex ?? "") || !Number.isSafeInteger(Number(parameters.choiceIndex))) throw new Error("Google Chat 버튼 선택이 올바르지 않습니다.");
+    const sourceMessageId = googleChatUuid(parameters.sourceMessageId), choiceIndex = Number(parameters.choiceIndex), time = googleChatText(event.eventTime, "이벤트 시각");
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(time) || !Number.isFinite(Date.parse(time))) throw new Error("Google Chat 이벤트 시각이 올바르지 않습니다.");
+    return { ...common, addressed: true, message: "", sourceMessageId, choiceIndex, eventId: await googleChatEventId(["CARD_CLICKED", messageName, actor, time, "cga.select", sourceMessageId, choiceIndex]) };
+  }
+  const raw = googleChatText(message.text, "질문"); if (new TextEncoder().encode(raw).length > 32000) throw new Error("Google Chat 질문이 너무 깁니다.");
+  if (message.annotations !== undefined && !Array.isArray(message.annotations)) throw new Error("Google Chat annotation 목록이 올바르지 않습니다.");
+  const ranges: { start: number; end: number }[] = []; let command = "";
+  for (const value of (Array.isArray(message.annotations) ? message.annotations : [])) {
+    const annotation = googleChatRecord(value), start = annotation.startIndex ?? 0, length = annotation.length ?? 0;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || Number(start) < 0 || Number(length) < 0 || Number(start) + Number(length) > raw.length) throw new Error("Google Chat annotation 범위가 올바르지 않습니다.");
+    const mention = googleChatRecord(annotation.userMention), slash = googleChatRecord(annotation.slashCommand);
+    const targetMention = annotation.type === "USER_MENTION" && mention.type === "MENTION" && googleChatRecord(mention.user).name === self;
+    const targetCommand = annotation.type === "SLASH_COMMAND" && googleChatRecord(slash.bot).name === self;
+    if (targetMention || targetCommand) {
+      if (!length) throw new Error("Google Chat 호출 annotation의 길이가 없습니다.");
+      if (targetCommand && slash.triggersDialog === true) throw new Error("Google Chat 대화상자 명령은 지원하지 않습니다.");
+      if (targetCommand && !command) command = raw.slice(Number(start), Number(start) + Number(length));
+      ranges.push({ start: Number(start), end: Number(start) + Number(length) });
+    }
+  }
+  const addressed = common.roomMode === "private" || ranges.length > 0; let text = raw, previous = raw.length;
+  if (addressed) for (const range of ranges.sort((a, b) => b.start - a.start)) { if (range.end > previous) throw new Error("Google Chat 호출 annotation이 겹칩니다."); text = text.slice(0, range.start) + text.slice(range.end); previous = range.start; }
+  text = addressed ? text.trim() || command : raw;
+  if (!text.trim() || Array.from(text).length > 4000) throw new Error("Google Chat CGA 질문은 1~4000자여야 합니다.");
+  return { ...common, addressed, message: text, eventId: await googleChatEventId(["MESSAGE", messageName]) };
+}
+function googleChatSelectionMessage(source: AidotChannelStoredMessage, value: string) {
+  const wire = JSON.stringify({ webchatRichFormVersion: "1.0", sourceMessageId: source.id, sourceTalkNodeId: googleChatText(source.payload?.sourceTalkNodeId, "원본 Talk ID"), response: { buttonValue: value } });
+  if (Array.from(wire).length > 4000) throw new Error("Google Chat 선택 응답이 기존 메시지 한도를 넘습니다."); return wire;
+}
+function googleChatReply(message: AidotChannelStoredMessage, destination: { spaceName: string; threadName?: string | null }) {
+  const parent = googleChatName(destination.spaceName, "space"); if (typeof message.text !== "string") throw new Error("Google Chat 답변 본문이 올바르지 않습니다.");
+  const packet: AidotGoogleChatReplyPayload = { parent, body: { text: message.text } }, type = message.messageType || "text", widgets: Record<string, unknown>[] = [], choices: string[] = [];
+  if (destination.threadName !== undefined && destination.threadName !== null) { packet.body.thread = { name: googleChatName(destination.threadName, "thread", parent) }; packet.messageReplyOption = "REPLY_MESSAGE_OR_FAIL"; }
+  const payload = googleChatRecord(message.payload), escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  const scalar = (value: unknown): string => value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const url = (value: unknown): string => { if (typeof value !== "string" || !/^https?:\/\/[^\s]+$/i.test(value)) throw new Error("Google Chat URL은 HTTP/HTTPS여야 합니다."); return value; };
+  const choice = (label: unknown, value: unknown) => {
+    const selected = scalar(value); googleChatUuid(message.id); googleChatSelectionMessage(message, selected);
+    const button = { text: googleChatText(label, "버튼 이름"), onClick: { action: { function: "cga.select", parameters: [{ key: "sourceMessageId", value: message.id }, { key: "choiceIndex", value: String(choices.length) }] } } }; choices.push(selected); return button;
+  };
+  const paragraph = (value: unknown) => { if (value !== undefined && value !== null && value !== "") widgets.push({ textParagraph: { text: escape(googleChatText(value, "카드 내용")).replaceAll("\n", "<br>") } }); };
+  if (type === "button" || type === "link-button") {
+    if (!Array.isArray(payload.options)) throw new Error("Google Chat 버튼 항목이 올바르지 않습니다.");
+    const buttons = payload.options.map(item => {
+      if (typeof item === "string" && type === "button") return choice(item, item);
+      const option = googleChatRecord(item), label = option.label ?? option.text ?? option.value;
+      if (type === "link-button" || option.url) return { text: googleChatText(label, "버튼 이름"), onClick: { openLink: { url: url(option.url) } } };
+      return choice(label, option.value ?? option.messageText ?? label);
+    });
+    if (buttons.length) widgets.push({ buttonList: { buttons } });
+  } else if (type === "table") {
+    const columns = payload.columns, rows = payload.rows;
+    if (!Array.isArray(columns) || columns.some(column => typeof column !== "string" || !column) || !Array.isArray(rows) || (rows.length && !columns.length)) throw new Error("Google Chat 표 구조가 올바르지 않습니다.");
+    if (rows.length) {
+      paragraph(columns.join(" | "));
+      for (const item of rows) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Google Chat 표 행이 올바르지 않습니다.");
+        const row = googleChatRecord(item), first = row[String(columns[0])], key = typeof payload.keyColumn === "string" && row[payload.keyColumn] !== undefined ? row[payload.keyColumn] : first;
+        const decoratedText: Record<string, unknown> = { text: escape(columns.map(column => scalar(row[String(column)])).join(" | ")) };
+        if (payload.selectable !== false) decoratedText.button = choice(scalar(first) || scalar(key) || "선택", key);
+        widgets.push({ decoratedText });
+      }
+    }
+  } else if (type === "card" || type === "carousel") {
+    const value = type === "card" ? payload.card : payload.carousel;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Google Chat 카드 구조가 올바르지 않습니다.");
+    const card = googleChatRecord(value); paragraph(card.title);
+    if (card.imageUrl) widgets.push({ image: { imageUrl: url(card.imageUrl), altText: typeof card.title === "string" && card.title ? card.title : "이미지" } });
+    if (type === "card") paragraph(card.description);
+    else {
+      paragraph(card.itemTitle); paragraph(card.itemContents);
+      const buttons = []; if (String(card.buttonType).toLowerCase() === "button") buttons.push(choice(card.itemButtonLabel, card.itemButtonValue));
+      if (card.bottomButtonLabel || card.bottomButtonValue) buttons.push(choice(card.bottomButtonLabel, card.bottomButtonValue));
+      if (buttons.length) widgets.push({ buttonList: { buttons } });
+    }
+  } else if (type !== "text") throw new Error(`Google Chat에서 지원하지 않는 Talk 표현입니다: ${type}`);
+  if (widgets.length > 100) throw new Error("Google Chat 카드 widget은 100개 이내여야 합니다.");
+  if (widgets.length) packet.body.cardsV2 = [{ cardId: message.id, card: { sections: [{ widgets }] } }];
+  if ((!packet.body.text.trim() && !widgets.length) || new TextEncoder().encode(JSON.stringify(packet.body)).length > 32000) throw new Error("Google Chat 답변이 비었거나 32000바이트 한도를 넘습니다.");
+  return { packet, choices };
+}
+export function buildAidotGoogleChatReplyPayload(message: AidotChannelStoredMessage, destination: { spaceName: string; threadName?: string | null }) { return googleChatReply(message, destination).packet; }
+export type AidotGoogleChatMembership = AidotClientMembership & Pick<AidotGoogleChatEvent, "nativeRoomKey" | "nativeParticipantKey" | "spaceName" | "threadName" | "roomMode">;
+function googleChatMembership(member: AidotClientMembership, event: AidotGoogleChatEvent): AidotGoogleChatMembership {
+  if (member.participantKind !== event.participantKind) throw new Error("Google Chat 질문자와 서버 발급 종류가 다릅니다."); return { ...member, nativeRoomKey: event.nativeRoomKey, nativeParticipantKey: event.nativeParticipantKey, spaceName: event.spaceName, threadName: event.threadName, roomMode: event.roomMode };
+}
+export async function createAidotGoogleChatRoom(serverUrl: string, botId: string, input: unknown, connection: AidotGoogleChatConnection, signal?: AbortSignal) {
+  const event = await normalizeAidotGoogleChatEvent(input, connection); if (!event) return null;
+  if (event.sourceMessageId) throw new Error("Google Chat 버튼은 기존 대화방에서만 이어갈 수 있습니다.");
+  return googleChatMembership(await createAidotClientRoom(serverUrl, "google-chat", botId, event.roomMode, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function joinAidotGoogleChatRoom(serverUrl: string, room: Pick<AidotGoogleChatMembership, "roomId" | "nativeRoomKey">, input: unknown, connection: AidotGoogleChatConnection, signal?: AbortSignal) {
+  const event = await normalizeAidotGoogleChatEvent(input, connection); if (!event) return null;
+  if (event.nativeRoomKey !== room.nativeRoomKey) throw new Error("다른 Google Chat 공간/스레드에는 이 방 정보로 입장할 수 없습니다.");
+  return googleChatMembership(await joinAidotClientRoom(serverUrl, "google-chat", room.roomId, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function sendAidotGoogleChatEvent(serverUrl: string, member: AidotGoogleChatMembership, input: unknown, connection: AidotGoogleChatConnection, signal?: AbortSignal): Promise<{ response: AidotSharedRoomMessageResponse | null; replies: AidotGoogleChatReplyPayload[] }> {
+  const event = await normalizeAidotGoogleChatEvent(input, connection); if (!event) return { response: null, replies: [] };
+  if (event.nativeRoomKey !== member.nativeRoomKey || event.nativeParticipantKey !== member.nativeParticipantKey || event.participantKind !== member.participantKind || event.spaceName !== member.spaceName || event.threadName !== member.threadName || event.roomMode !== member.roomMode) throw new Error("Google Chat 방/질문자의 서버 발급 증명이 필요합니다.");
+  let message = event.message;
+  if (event.sourceMessageId) {
+    const history = await fetchAidotClientRoom(serverUrl, "google-chat", member, signal), source = history.messages?.find(item => item.id === event.sourceMessageId && item.participantKind === "bot");
+    if (!source) throw new Error("Google Chat 버튼 원본 기록이 없어 재실행하지 않습니다.");
+    const value = googleChatReply(source, { spaceName: event.spaceName, threadName: event.threadName }).choices[event.choiceIndex ?? -1];
+    if (value === undefined || !source.payload?.sourceTalkNodeId) throw new Error("Google Chat 버튼 선택 출처가 올바르지 않습니다."); message = googleChatSelectionMessage(source, value);
+  }
+  const response = await sendAidotClientMessage(serverUrl, "google-chat", member, message, event.addressed, event.eventId, signal);
+  try { return { response, replies: (response.botMessages ?? (response.botMessage ? [response.botMessage] : [])).map(item => buildAidotGoogleChatReplyPayload(item, { spaceName: event.spaceName, threadName: event.threadName })) }; }
+  catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 Google Chat 표현을 변환하지 못했습니다."), { cause, cgaResponse: response }); }
 }

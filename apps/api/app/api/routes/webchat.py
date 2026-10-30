@@ -744,7 +744,7 @@ def _validate_native_card_response(db, room, version, actor, message, channel):
         return
     if not isinstance(wire, dict) or not any(key in wire for key in ("webchatRichFormVersion", "sourceTalkNodeId", "sourceMessageId")):
         return
-    label = {"discord": "Discord", "telegram": "Telegram"}.get(channel, "Slack")
+    label = {"discord": "Discord", "telegram": "Telegram", "google-chat": "Google Chat"}.get(channel, "Slack")
     source_id, node_id = wire.get("sourceMessageId"), wire.get("sourceTalkNodeId")
     turn, runtime = _shared_turn_view(db, room, actor), _room_client_state(db, room)["runtime"]
     if (wire.get("webchatRichFormVersion") != "1.0" or not isinstance(source_id, str) or not source_id
@@ -788,7 +788,7 @@ def _shared_runtime_message(bot, version, room_id, payload, request, api_key, cr
             _finish_client_event(room, event_key, result)
             db.commit()
             return success_response(request, result)
-        if channel in {"slack", "discord", "telegram"}:
+        if channel in {"slack", "discord", "telegram", "google-chat"}:
             _validate_native_card_response(db, room, version, actor, payload.message, channel)
         # claim의 populate_existing이 예약 metadata를 덮어쓰지 않도록 같은 잠금 transaction에서 먼저 저장한다.
         db.flush()

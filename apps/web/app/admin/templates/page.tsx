@@ -49,6 +49,7 @@ function isKakaoTemplateChannel(value: string) {
   return value.trim().toUpperCase() === "KAKAO";
 }
 
+const GOOGLE_CHAT_RENDERER_TYPES = ["text", "button", "card", "table", "link-button", "carousel"];
 const TELEGRAM_RENDERER_TYPES = ["text", "button", "card", "table", "link-button", "carousel"];
 const DISCORD_RENDERER_TYPES = ["text", "button", "card", "table", "link-button", "carousel"];
 const SLACK_RENDERER_TYPES = ["text", "button", "card", "table", "link-button", "carousel"];
@@ -79,8 +80,10 @@ function normalizeTemplateDraftByChannel(
       ? SLACK_RENDERER_TYPES
       : draft.channel_code.trim().toUpperCase() === "DISCORD"
         ? DISCORD_RENDERER_TYPES
-        : draft.channel_code.trim().toUpperCase() === "TELEGRAM"
-          ? TELEGRAM_RENDERER_TYPES
+        : draft.channel_code.trim().toUpperCase() === "GOOGLE_CHAT"
+          ? GOOGLE_CHAT_RENDERER_TYPES
+          : draft.channel_code.trim().toUpperCase() === "TELEGRAM"
+            ? TELEGRAM_RENDERER_TYPES
       : RENDERER_OPTIONS.map((option) => option.value).filter(
         (value) => !["simple-text", "quick-reply", "basic-card", "list-card"].includes(value),
       );
@@ -509,6 +512,9 @@ export default function AdminTemplatesPage() {
       return RENDERER_OPTIONS.filter((option) =>
         ["simple-text", "quick-reply", "basic-card", "list-card", "carousel"].includes(option.value),
       );
+    }
+    if (draft.channel_code.trim().toUpperCase() === "GOOGLE_CHAT") {
+      return RENDERER_OPTIONS.filter((option) => GOOGLE_CHAT_RENDERER_TYPES.includes(option.value) && !option.label.startsWith("Kakao"));
     }
     if (draft.channel_code.trim().toUpperCase() === "TELEGRAM") {
       return RENDERER_OPTIONS.filter((option) => TELEGRAM_RENDERER_TYPES.includes(option.value) && !option.label.startsWith("Kakao"));

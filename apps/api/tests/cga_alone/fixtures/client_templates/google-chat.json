@@ -47,15 +47,13 @@
     }
   },
   "talk": {
-    "templateId": null,
-    "rendererType": "button",
-    "itemTypes": "button",
-    "message": "Google Chat 한국어 답변\n둘째 줄",
-    "buttonItems": [
-      {
-        "label": "추가 설명",
-        "value": "추가 설명"
-      }
+    "messageType": "button",
+    "basicMessages": [
+      "Google Chat 한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "추가 설명",
+      "다음"
     ]
   },
   "general": {
@@ -86,5 +84,8 @@
       "argumentText": "일반 대화",
       "annotations": []
     }
-  }
+  },
+  "channel": "google-chat",
+  "code": "GOOGLE_CHAT",
+  "renderer": "button"
 }
