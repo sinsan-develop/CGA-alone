@@ -399,3 +399,82 @@ test("Discord received empty results preserve every completed response text",asy
  globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessages,botMessage:botMessages[0]}}),{status:200});};
  try{const result=await api.sendAidotDiscordEvent("http://localhost:8320",discordBinding,discordFixture.addressed,discordFixture.connection);assert.deepEqual(result.replies.map(item=>item.content),botMessages.map(item=>item.text));assert.ok(result.replies.every(item=>!item.components&&!item.embeds));assert.equal(count,1);}finally{globalThis.fetch=original;}
 });
+
+
+const telegramFixture=JSON.parse(readFileSync(new URL("../../../apps/api/tests/cga_alone/fixtures/client_templates/telegram.json",import.meta.url),"utf8"));
+const telegramBinding={roomId:"telegram-room",participantId:"server:A",participantKind:"user",conversationToken:"opaque-telegram-fixture",nativeRoomKey:'telegram:["10000999","supergroup","-10000001",null]',nativeParticipantKey:"telegram:user:10000010",chatId:"-10000001",threadId:null,roomMode:"shared",turn:idle};
+function telegramQuery(source,index=0,update=10005){return {update_id:update,callback_query:{id:"qa-callback-"+update,from:{id:10000010,is_bot:false},data:`cga:${source.id}:${index}`,message:{message_id:900,date:1793376000,from:{id:10000999,is_bot:true},chat:{id:-10000001,type:"supergroup"}}}};}
+
+test("Telegram caller reuses issued credentials and binds bot chat actor and topic",async()=>{
+ const original=globalThis.fetch,calls=[];globalThis.fetch=async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify({data:{...telegramBinding,botMessages:[],botMessage:null}}),{status:200});};
+ try{
+  const member=await api.createAidotTelegramRoom("http://localhost:8320","bot-id",telegramFixture.addressed,telegramFixture.connection);assert.equal(member.nativeRoomKey,telegramBinding.nativeRoomKey);
+  await api.joinAidotTelegramRoom("http://localhost:8320",member,telegramFixture.addressed,telegramFixture.connection);await api.sendAidotTelegramEvent("http://localhost:8320",member,telegramFixture.addressed,telegramFixture.connection);
+  assert.ok(calls[0].url.endsWith("/channels/telegram/rooms"));assert.equal(calls[2].init.headers.get("X-Aidot-Conversation-Token"),member.conversationToken);assert.equal(calls[2].init.headers.get("X-Aidot-Event-Id"),"telegram-update:10001");
+  const before=calls.length;
+  for(const patch of [{nativeParticipantKey:"other"},{threadId:41},{roomMode:"private"}])await assert.rejects(()=>api.sendAidotTelegramEvent("http://localhost:8320",{...member,...patch},telegramFixture.addressed,telegramFixture.connection));
+  await assert.rejects(()=>api.sendAidotTelegramEvent("http://localhost:8320",member,telegramFixture.addressed,{...telegramFixture.connection,botUserId:"10000998"}));assert.equal(calls.length,before);
+  const own=structuredClone(telegramFixture.addressed);own.message.from.id=10000999;assert.deepEqual(await api.sendAidotTelegramEvent("http://localhost:8320",member,own,telegramFixture.connection),{response:null,replies:[]});assert.equal(calls.length,before);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Telegram short callback restores long non-first table key and cached result",async()=>{
+ const original=globalThis.fetch,calls=[],key="키".repeat(1000);
+ const source={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"table",text:"표",payload:{sourceTalkNodeId:"followup",columns:["name","id"],rows:[{name:"표시",id:key}],keyColumn:"id",selectable:true}};
+ const packet=api.buildAidotTelegramReplyPayload(source,{chatId:telegramBinding.chatId});const data=packet.parameters.reply_markup.inline_keyboard[0][0].callback_data;assert.ok(new TextEncoder().encode(data).length<=64);assert.ok(!data.includes(key));
+ const history={messages:[source],turn:idle,runtime:{dialogEnded:true,sessionEnded:false}},result={roomId:"telegram-room",botMessage:null,botMessages:[],turn:idle};
+ globalThis.fetch=async(url,init)=>{calls.push(init);return new Response(JSON.stringify({data:init.method==="GET"?history:result}),{status:200});};
+ try{
+  for(let i=0;i<2;i++)await api.sendAidotTelegramEvent("http://localhost:8320",telegramBinding,telegramQuery(source),telegramFixture.connection);
+  assert.deepEqual(calls.map(call=>call.method),["GET","POST","GET","POST"]);const wire=JSON.parse(JSON.parse(calls[1].body).message);assert.equal(wire.response.buttonValue,key);assert.equal(wire.sourceMessageId,source.id);assert.equal(wire.sourceTalkNodeId,"followup");assert.equal(calls[1].body,calls[3].body);
+  calls.length=0;history.messages=[];await assert.rejects(()=>api.sendAidotTelegramEvent("http://localhost:8320",telegramBinding,telegramQuery(source),telegramFixture.connection));assert.equal(calls.length,1);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Telegram callback cannot create another room or accept inaccessible source",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:telegramBinding}),{status:200});};
+ const source={id:"00000000-0000-4000-8000-000000000001"};
+ try{
+  await assert.rejects(()=>api.createAidotTelegramRoom("http://localhost:8320","bot-id",telegramQuery(source),telegramFixture.connection));assert.equal(count,0);
+  const inaccessible=telegramQuery(source);inaccessible.callback_query.message.date=0;assert.throws(()=>api.normalizeAidotTelegramEvent(inaccessible,telegramFixture.connection));
+  const tooLong=telegramQuery(source);tooLong.callback_query.data="cga:"+"가".repeat(30);assert.throws(()=>api.normalizeAidotTelegramEvent(tooLong,telegramFixture.connection));
+ }finally{globalThis.fetch=original;}
+});
+
+test("Telegram empty original choice and empty result texts are preserved",async()=>{
+ const original=globalThis.fetch;let wire,count=0;
+ const source={id:"00000000-0000-4000-8000-000000000001",participantKind:"bot",messageType:"carousel",text:"본문",payload:{sourceTalkNodeId:"followup",carousel:{title:"제목",itemContents:"내용",buttonType:"Button",itemButtonLabel:"선택",itemButtonValue:""}}};
+ const botMessages=[{id:"1",messageType:"button",text:"빈 버튼",payload:{options:[]}},{id:"2",messageType:"link-button",text:"빈 링크",payload:{options:[]}},{id:"3",messageType:"table",text:"조회0건",payload:{columns:[],rows:[]}}];
+ globalThis.fetch=async(url,init)=>{count++;if(init.method==="POST")wire=JSON.parse(JSON.parse(init.body).message);return new Response(JSON.stringify({data:init.method==="GET"?{messages:[source]}:{botMessages,botMessage:botMessages[0]}}),{status:200});};
+ try{const result=await api.sendAidotTelegramEvent("http://localhost:8320",telegramBinding,telegramQuery(source),telegramFixture.connection);assert.equal(wire.response.buttonValue,"");assert.deepEqual(result.replies.map(item=>item.parameters.text),botMessages.map(item=>item.text));assert.equal(count,2);}finally{globalThis.fetch=original;}
+});
+
+test("Telegram conversion and unknown transport never trigger another request",async()=>{
+ const original=globalThis.fetch;let count=0;globalThis.fetch=async()=>{count++;return new Response(JSON.stringify({data:{botMessage:{id:"known",messageType:"html",text:"미지원"},botMessages:[{id:"known",messageType:"html",text:"미지원"}]}}),{status:200});};
+ try{
+  await assert.rejects(()=>api.sendAidotTelegramEvent("http://localhost:8320",telegramBinding,telegramFixture.addressed,telegramFixture.connection),error=>error.cgaResponse?.botMessage?.id==="known");assert.equal(count,1);
+  count=0;globalThis.fetch=async()=>{count++;throw new Error("synthetic unknown transport");};await assert.rejects(()=>api.sendAidotTelegramEvent("http://localhost:8320",telegramBinding,telegramFixture.addressed,telegramFixture.connection));assert.equal(count,1);
+ }finally{globalThis.fetch=original;}
+});
+
+
+test("telegram_target_command_without_arguments_preserves_command",()=>{
+ for(const command of ["start","help"]){
+  for(const suffix of ["", "  "]){
+   const event=structuredClone(telegramFixture.addressed);
+   const target=`/${command}@CgaAloneBot`;
+   event.message.text=target+suffix;
+   event.message.entities=[{type:"bot_command",offset:0,length:target.length}];
+   const normalized=api.normalizeAidotTelegramEvent(event,telegramFixture.connection);
+   assert.equal(normalized.addressed,true);
+   assert.equal(normalized.message,`/${command}`);
+  }
+ }
+ const event=structuredClone(telegramFixture.addressed);
+ event.message.text="/start@CgaAloneBot help";
+ event.message.entities=[{type:"bot_command",offset:0,length:18}];
+ assert.equal(api.normalizeAidotTelegramEvent(event,telegramFixture.connection).message,"help");
+ event.message.text="/help@AnotherBot";
+ event.message.entities=[{type:"bot_command",offset:0,length:event.message.text.length}];
+ assert.equal(api.normalizeAidotTelegramEvent(event,telegramFixture.connection).addressed,false);
+});
