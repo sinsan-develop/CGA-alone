@@ -166,3 +166,40 @@ test("shared room controls use all seven existing simulator languages",()=>{
  const labels=["대화 방식","1:1 미리보기","공유방","참여자 이름","방 ID","공유방 ID","새 공유방","참가자로 입장","현재 방:","답변 처리 중","내 후속 답변을 기다립니다.","다른 참여자가 봇과 대화 중입니다. 일반 대화는 가능합니다.","봇에게 질문할 수 있습니다.","방 상태 확인 중","일반 대화","봇에게 질문","운영 버전 확인 중"];
  for(const key of labels){assert.equal(holder.exports.getSimulatorLabel("ko",key),key);for(const lang of ["en","zh-CN","ja","vi","fr","de"]){const value=holder.exports.getSimulatorLabel(lang,key);assert.ok(value&&!/[가-힣]/.test(value),`${lang}: ${key}`);}}
 });
+
+test("shared card submission preserves source and value while typed text stays plain",()=>{
+ const text=readFileSync(new URL("./simulator-page.tsx",import.meta.url),"utf8");
+ const tree=ts.createSourceFile("simulator-page.tsx",text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ let found;function visit(node){if(ts.isFunctionDeclaration(node)&&node.name?.text==="submitUtterance")found=node;ts.forEachChild(node,visit);}visit(tree);assert.ok(found);
+ const output=ts.transpileModule(found.getText(tree),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const calls=[];
+ const submit=new Function("sharedMode","canRespondAidotRoomCard","sharedHistory","sharedCanAsk","sendSharedMessage",`${output};return submitUtterance;`)(true,api.canRespondAidotRoomCard,{runtime:{waitingNodeId:"wait",dialogEnded:false,sessionEnded:false}},true,(value,addressed)=>{calls.push({value,addressed});return Promise.resolve();});
+ for(const value of ["예약","row-1","123"]){submit(value,{},"wait");assert.deepEqual(JSON.parse(calls.at(-1).value),{webchatRichFormVersion:"1.0",sourceTalkNodeId:"wait",response:{buttonValue:value}});assert.equal(calls.at(-1).addressed,true);}
+ submit("직접 입력",{});assert.deepEqual(calls.at(-1),{value:"직접 입력",addressed:true});
+});
+
+test("shared form templates keep identity across identical polling and ordinary messages",()=>{
+ const source=readFileSync(new URL("./simulator-page.tsx",import.meta.url),"utf8");const tree=ts.createSourceFile("simulator-page.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const names=["sharedMessageToSimulatorMessage","sharedMessagesForSimulator"];
+ const functions=names.map(name=>{const node=tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name);assert.ok(node,name);return node.getText(tree);});
+ const output=ts.transpileModule(functions.join("\n"),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const render=new Function(`${output};return sharedMessagesForSimulator;`)();const cache=new Map();
+ const form=stored("form",{richForm:[{type:"INPUT",key:"details",required:true}]});const first=render([form],cache)[0].template;
+ assert.equal(render([form],cache)[0].template,first);
+ assert.equal(render(JSON.parse(JSON.stringify([form])),cache)[0].template,first);
+ assert.equal(render([JSON.parse(JSON.stringify(form)),{...stored("text"),id:"general",participantKind:"user"}],cache)[0].template,first);
+ const changed=structuredClone(form);changed.payload.richForm[0].title="새 내용";assert.notEqual(render([changed],cache)[0].template,first);
+ assert.equal(cache.size,1);render([{...form,id:"new-room-card"}],cache);assert.equal(cache.size,1);assert.equal(cache.has("saved-1"),false);
+ const adaptive={...stored("form-a-card",{adaptiveCard:{type:"AdaptiveCard",body:[]}}),id:"adaptive"};const card=render([adaptive],cache)[0].template;
+ assert.equal(render(JSON.parse(JSON.stringify([adaptive])),cache)[0].template,card);
+ render([],cache);assert.equal(cache.size,0);
+});
+
+test("shared Adaptive submit includes collected inputs while legacy serialization stays unchanged",()=>{
+ const source=readFileSync(new URL("./simulator-page.tsx",import.meta.url),"utf8");const tree=ts.createSourceFile("simulator-page.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const component=tree.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="AdaptiveCardRenderer");assert.ok(component);
+ let handler;function visit(node){if(ts.isBinaryExpression(node)&&node.left.getText(tree)==="card.onExecuteAction")handler=node.right;ts.forEachChild(node,visit);}visit(component);assert.ok(handler);
+ const output=ts.transpileModule(`const handler=${handler.getText(tree)};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ class SubmitAction{constructor(){this.data={submitted:true,details:"카드 입력 보존 답변"};}toJSON(){return {type:"Action.Submit",data:{submitted:true}};}}
+ for(const includeSubmittedInputs of [true,false]){const calls=[];const execute=new Function("disabled","onActionRef","AdaptiveCards","includeSubmittedInputs",`${output};return handler;`)(false,{current:v=>calls.push(v)},{SubmitAction},includeSubmittedInputs);execute(new SubmitAction());assert.deepEqual(JSON.parse(calls[0]),includeSubmittedInputs?{submitted:true,details:"카드 입력 보존 답변"}:{submitted:true});}
+});

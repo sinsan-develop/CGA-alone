@@ -186,6 +186,26 @@ function sharedMessageToSimulatorMessage(message: import("../../../packages/shar
   return result;
 }
 
+type SharedSimulatorTemplateCache = Map<string, { signature: string; template: NonNullable<SimulatorMessage["template"]> }>;
+
+function sharedMessagesForSimulator(messages: import("../../../packages/shared/src/channel").AidotChannelStoredMessage[], templates: SharedSimulatorTemplateCache): SimulatorMessage[] {
+  const next = new Map<string, { signature: string; template: NonNullable<SimulatorMessage["template"]> }>();
+  const displayed = messages.map(message => {
+    const rendered = sharedMessageToSimulatorMessage(message);
+    if (rendered.template) {
+      const signature = JSON.stringify(rendered.template);
+      const previous = templates.get(message.id);
+      if (previous?.signature === signature) rendered.template = previous.template;
+      next.set(message.id, { signature, template: rendered.template });
+    }
+    return rendered;
+  });
+  // 방을 바꾸거나 기록이 제거되면 이전 template을 보관하지 않는다.
+  templates.clear();
+  next.forEach((value, key) => templates.set(key, value));
+  return displayed;
+}
+
 type SimulatorAnalysis = {
   id: string;
   nluType: NluType;
@@ -3077,9 +3097,11 @@ function AdaptiveCardRenderer({
   disabled,
   onAction,
   onRenderError,
+  includeSubmittedInputs = false,
 }: {
   template: NonNullable<SimulatorMessage["template"]>;
   disabled: boolean;
+  includeSubmittedInputs?: boolean;
   onAction: (value: string) => void;
   onRenderError: (error: string) => void;
 }) {
@@ -3102,7 +3124,9 @@ function AdaptiveCardRenderer({
       card.onExecuteAction = (action) => {
         if (disabled) return;
         const source = action.toJSON();
-        const data = source && typeof source === "object" ? (source as Record<string, unknown>).data : undefined;
+        const data = includeSubmittedInputs && action instanceof AdaptiveCards.SubmitAction
+          ? action.data
+          : source && typeof source === "object" ? (source as Record<string, unknown>).data : undefined;
         if (typeof data === "string") return onActionRef.current(data);
         if (data && typeof data === "object") return onActionRef.current(JSON.stringify(data));
         const title = typeof action.title === "string" ? action.title.trim() : "";
@@ -3123,7 +3147,7 @@ function AdaptiveCardRenderer({
     } catch (error) {
       onRenderErrorRef.current(error instanceof Error ? error.message : "Adaptive Card render error");
     }
-  }, [disabled, template]);
+  }, [disabled, template, includeSubmittedInputs]);
 
   return <div ref={containerRef} className="simulator-adaptive-card" />;
 }
@@ -3780,7 +3804,8 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   const canUseMessageCard = (message: SimulatorMessage) => sharedMode
     ? canRespondAidotRoomCard(sharedHistory?.runtime, message.sourceTalkNodeId, sharedCanAsk, message.id, sharedHistory?.messages)
     : Boolean(message.sourceTalkNodeId && runtime?.waitingTalkNodeId === message.sourceTalkNodeId && !runtime.ended);
-  const displayedMessages = sharedMode ? (sharedHistory?.messages || []).map(sharedMessageToSimulatorMessage) : messages;
+  const sharedTemplateCache = useRef<SharedSimulatorTemplateCache>(new Map());
+  const displayedMessages = sharedMode ? sharedMessagesForSimulator(sharedHistory?.messages || [], sharedTemplateCache.current) : messages;
 
   useEffect(() => {
     if (!sharedStorageKey) return;
@@ -5924,7 +5949,10 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
     const utterance = rawUtterance.trim();
     if (sharedMode) {
       if (sourceTalkNodeId && !canRespondAidotRoomCard(sharedHistory?.runtime, sourceTalkNodeId, sharedCanAsk)) return;
-      void sendSharedMessage(utterance, true); return;
+      const wire = sourceTalkNodeId
+        ? JSON.stringify({ webchatRichFormVersion: "1.0", sourceTalkNodeId, response: { buttonValue: utterance } })
+        : utterance;
+      void sendSharedMessage(wire, true); return;
     }
     if (!utterance || loading) {
       return;
@@ -7063,6 +7091,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
                               >
                                 {(message.template.kind === "adaptive-card" && message.template.rawJson) ? (
                                   <AdaptiveCardRenderer
+                                    includeSubmittedInputs={sharedMode}
                                     template={message.template}
                                     disabled={loading || (sharedMode && !canUseMessageCard(message))}
                                     onAction={(value) => submitTemplateAction(message, value)}

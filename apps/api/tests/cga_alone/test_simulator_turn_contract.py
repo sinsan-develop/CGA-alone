@@ -100,3 +100,26 @@ def test_shared_history_reports_room_version_before_next_question_applies_latest
     assert len(c[3]) == 0
     assert set(current["runtime"]) == {"dialogEnded", "sessionEnded", "completionReason", "waitingNodeId"}
     assert set(current["activeVersion"]) == {"id", "name", "versionNo"}
+
+
+def test_card_envelope_keeps_waiting_flow_when_value_matches_another_intent(credential_context, monkeypatch):
+    import json
+    from app.api.routes import channels
+    from tests.cga_alone.test_shared_webchat import create, send_shared
+    c = credential_context
+    foreign = {"id": "local", "name": "로컬 Q/A", "dialogType": 1}
+    monkeypatch.setattr(channels, "_select_dialog_for_bot", lambda document, bot, version, message, **kwargs: (foreign, 1.0) if message == "예약" else (None, 0.0))
+    owner = create(c)
+    assert send_shared(c, owner, "처음 질문")["botMessage"]["text"] == "추가 설명"
+    wire = json.dumps({"webchatRichFormVersion": "1.0", "sourceTalkNodeId": "followup", "response": {"buttonValue": "예약"}}, ensure_ascii=False)
+    result = send_shared(c, owner, wire)
+    assert result["botMessage"]["text"] == "답변: 외부 생성 답변"
+    assert result["runtime"]["dialogEnded"] is True
+    assert not any(message["text"] == "정의한 로컬 답변" for message in result["botMessages"])
+    assert len(c[3]) == 1
+    # 직접 입력은 출처를 붙이지 않아 기존 의도 전환을 계속 허용한다.
+    typed = create(c)
+    send_shared(c, typed, "다른 첫 질문")
+    result = send_shared(c, typed, "예약")
+    assert any(message["text"] == "정의한 로컬 답변" for message in result["botMessages"])
+    assert len(c[3]) == 1
