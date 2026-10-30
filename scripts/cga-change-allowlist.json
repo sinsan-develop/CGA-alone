@@ -433,5 +433,15 @@
     "path": "apps/api/tests/cga_alone/fixtures/client_templates/telegram.json",
     "stage": "S10",
     "reason": "기승인 S10 공식 Telegram message/update 개인·그룹 합성 표본과 Talk 예시, 실제 Secret/플랫폼 게시 없음"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/clients/test_google_chat.py",
+    "stage": "S11",
+    "reason": "기승인 WORK_PLAN S11 여섯 기본 RED와 공식 Google Chat 합성 공간/thread 표본. 제품 계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/google-chat.json",
+    "stage": "S11",
+    "reason": "기승인 WORK_PLAN S11 여섯 기본 RED와 공식 Google Chat 합성 공간/thread 표본. 제품 계약 적용은 별도 승인 후"
   }
 ]
