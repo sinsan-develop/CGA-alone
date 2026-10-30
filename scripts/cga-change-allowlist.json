@@ -413,5 +413,15 @@
     "path": "apps/web/app/admin/templates/page.tsx",
     "stage": "S08",
     "reason": "승인된 Slack 지원renderer 선택 데이터만 제한, 기존 화면구조 보존"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/clients/test_discord.py",
+    "stage": "S09",
+    "reason": "기승인 WORK_PLAN S09 여섯 기본 RED시험: 기존 공통API/PG/template/Talk 경계의 Discord 기능 부재 확인. 제품 구현/공개계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/discord.json",
+    "stage": "S09",
+    "reason": "기승인 S09 공식 MESSAGE_CREATE 합성 native 표본·저장 Talk 예시. 실 Secret/실 플랫폼 게시 없음"
   }
 ]

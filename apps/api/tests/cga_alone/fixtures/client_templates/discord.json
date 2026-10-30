@@ -1,0 +1,56 @@
+{
+  "channel": "discord",
+  "code": "DISCORD",
+  "renderer": "button",
+  "connection": {
+    "applicationId": "100000000000000999",
+    "botUserId": "100000000000000998",
+    "guildId": "100000000000000001",
+    "channelId": "100000000000000002",
+    "channelType": 0
+  },
+  "talk": {
+    "messageType": "button",
+    "basicMessages": [
+      "디스코드 한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "확인",
+      "다음"
+    ]
+  },
+  "addressed": {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "d": {
+      "id": "100000000000000101",
+      "guild_id": "100000000000000001",
+      "channel_id": "100000000000000002",
+      "author": {
+        "id": "100000000000000010",
+        "bot": false
+      },
+      "content": "<@100000000000000998> 미등록 디스코드 질문",
+      "mentions": [
+        {
+          "id": "100000000000000998"
+        }
+      ]
+    }
+  },
+  "general": {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "d": {
+      "id": "100000000000000102",
+      "guild_id": "100000000000000001",
+      "channel_id": "100000000000000002",
+      "author": {
+        "id": "100000000000000011",
+        "bot": false
+      },
+      "content": "일반 대화입니다",
+      "mentions": []
+    }
+  }
+}
