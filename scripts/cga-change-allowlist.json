@@ -301,8 +301,8 @@
   },
   {
     "path": "apps/api/app/api/routes/webchat.py",
-    "stage": "S03·S04",
-    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음)"
+    "stage": "S04/S05",
+    "reason": "S03 독립 검토 보완: 실제 등록된 기존 Webchat 직접 API에도 같은 준비검사 적용, 기존NLU/인증/응답/허브동작 보존; S04 구성된 2단계 봇만 기존 ChannelRoom 실행기로 연결, 일반·허브와 기존 응답 계약 보존; 승인된 Webchat 서버토큰/hash/actor 바인딩과 공용 우회 차단(새schema/전역키 없음); 사용자승인 공유방 생성/입장·참가자별 hash증명·개인방격리·기록조회 최소계약"
   },
   {
     "path": "apps/api/app/services/secondary_llm.py",
@@ -343,5 +343,10 @@
     "path": "apps/api/tests/cga_alone/test_room_turn.py",
     "stage": "S05",
     "reason": "실제 PG 두 연결의 동일방경합/다른방병렬·세대·대기만료·종료해제 검증, exact소유QA정리"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_shared_webchat.py",
+    "stage": "S05",
+    "reason": "승인된 공유방 생성·입장·참가자별 서버증명·공유기록·인증/개인방격리의 실제PG API 검증"
   }
 ]
