@@ -1,0 +1,81 @@
+{
+  "channel": "telegram",
+  "code": "TELEGRAM",
+  "renderer": "button",
+  "connection": {
+    "botUserId": "10000999",
+    "botUsername": "CgaAloneBot",
+    "chatId": "-10000001",
+    "chatType": "supergroup"
+  },
+  "talk": {
+    "messageType": "button",
+    "basicMessages": [
+      "텔레그램 한국어 답변\n둘째 줄"
+    ],
+    "messages": [
+      "확인",
+      "다음"
+    ]
+  },
+  "addressed": {
+    "update_id": 10001,
+    "message": {
+      "message_id": 101,
+      "date": 1793376000,
+      "from": {
+        "id": 10000010,
+        "is_bot": false,
+        "first_name": "QA A"
+      },
+      "chat": {
+        "id": -10000001,
+        "type": "supergroup"
+      },
+      "text": "@CgaAloneBot 미등록 텔레그램 질문",
+      "entities": [
+        {
+          "type": "mention",
+          "offset": 0,
+          "length": 12
+        }
+      ]
+    }
+  },
+  "general": {
+    "update_id": 10002,
+    "message": {
+      "message_id": 102,
+      "date": 1793376000,
+      "from": {
+        "id": 10000011,
+        "is_bot": false,
+        "first_name": "QA B"
+      },
+      "chat": {
+        "id": -10000001,
+        "type": "supergroup"
+      },
+      "text": "일반 대화입니다",
+      "entities": []
+    }
+  },
+  "private": {
+    "update_id": 10003,
+    "message": {
+      "message_id": 103,
+      "date": 1793376000,
+      "from": {
+        "id": 10000010,
+        "is_bot": false,
+        "first_name": "QA A"
+      },
+      "chat": {
+        "id": 10000010,
+        "type": "private"
+      },
+      "text": "개인 질문",
+      "entities": []
+    }
+  }
+}

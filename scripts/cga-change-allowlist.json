@@ -423,5 +423,15 @@
     "path": "apps/api/tests/cga_alone/fixtures/client_templates/discord.json",
     "stage": "S09",
     "reason": "기승인 S09 공식 MESSAGE_CREATE 합성 native 표본·저장 Talk 예시. 실 Secret/실 플랫폼 게시 없음"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/clients/test_telegram.py",
+    "stage": "S10",
+    "reason": "기승인 WORK_PLAN S10 여섯 기본 RED와 개인/그룹·주제 분리 시험. 제품 구현/공개계약 적용은 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/fixtures/client_templates/telegram.json",
+    "stage": "S10",
+    "reason": "기승인 S10 공식 Telegram message/update 개인·그룹 합성 표본과 Talk 예시, 실제 Secret/플랫폼 게시 없음"
   }
 ]
