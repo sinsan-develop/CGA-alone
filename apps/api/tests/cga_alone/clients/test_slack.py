@@ -228,3 +228,20 @@ def test_invalid_native_expression_is_not_silently_dropped(kind,payload,text):
 def test_invalid_thread_never_falls_back_to_main_room(thread):
     with pytest.raises(ValueError):normalize(event(thread=thread))
     with pytest.raises(ValueError):sdk("render",{"message":stored_message("text"),"destination":{"channelId":"CQA001","threadTs":thread}})
+
+
+@pytest.mark.parametrize("kind,fields", [
+    ("card", ["카드 제목", "", "카드 설명"]),
+    ("carousel", ["목록 제목", "", "항목 제목", "항목 내용", "", "", "Hidden Button", "", ""]),
+], ids=["card-no-image", "carousel-no-image"])
+def test_slack_optional_image_keeps_talk_field_positions(kind, fields):
+    from app.api.routes import channels
+    node = {"id": "followup", "kind": "talk", "config": {"channelTemplates": {"SLACK": {
+        "messageType": kind, "basicMessages": ["본문"], "messages": fields, "responseType": "none"}}}}
+    output = channels._talk_output(node, {}, channel_code="SLACK")
+    packet = sdk("render", {"message": {"id": "known-card", "messageType": output["type"],
+        "text": output["text"], "payload": output["payload"]}, "destination": {"channelId": "CQA001", "threadTs": None}})
+    expected = "카드 설명" if kind == "card" else "항목 내용"
+    assert expected in json.dumps(packet, ensure_ascii=False)
+    assert not any(block["type"] == "image" for block in packet["blocks"])
+    assert output["payload"][kind]["imageUrl"] == ""

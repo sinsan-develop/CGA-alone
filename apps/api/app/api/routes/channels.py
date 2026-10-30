@@ -2602,7 +2602,8 @@ def _talk_output(
     response_type = str(config.get("responseType") or "none")
     text = _render_text(_first_text(config.get("basicMessages")), variables, state, graph, node)
     messages = [_render_text(str(item or ""), variables, state, graph, node).strip() for item in _as_list(config.get("messages"))]
-    options = [item for item in messages if item]
+    # Slack 카드의 선택사항은 빈 값도 고정 위치를 유지한다. 기존 채널은 원본 처리를 보존한다.
+    options = messages if channel_code.upper() == "SLACK" and message_type in {"card", "carousel"} else [item for item in messages if item]
 
     if message_type == "button":
         if not text and not options:
