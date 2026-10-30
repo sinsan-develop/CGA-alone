@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 import json
 import pytest
-from sqlalchemy import select, delete, event, func
+from sqlalchemy import select, delete, event, func, text
 from sqlalchemy.orm import Session
 from app.models import Organization, AdminChannel, AdminTemplate
 from app.api.routes import admin
@@ -34,10 +34,12 @@ def seed_context(test_engine, migrated_test_database):
         receipt.unlink()
 
 
-def seed(c, kind, writer, index=0):
+def seed(c, kind, writer, index=0, lock_timeout_ms=None):
     try:
         with Session(c.engine) as db:
             info=db.connection().info;info["s13_writer"]=writer
+            if lock_timeout_ms is not None:
+                db.execute(text("SELECT set_config('lock_timeout', :timeout, true)"),{"timeout":str(lock_timeout_ms)+"ms"})
             try:
                 organization=db.get(Organization,c.orgs[index])
                 getattr(admin,"_ensure_default_admin_"+kind)(db,organization);db.commit()
@@ -84,10 +86,26 @@ def test_repeat_seed_preserves_existing_names_and_configuration(seed_context):
         assert db.scalar(select(func.count()).select_from(AdminTemplate).where(AdminTemplate.organization_id==c.orgs[0]))==len(admin.DEFAULT_ADMIN_TEMPLATES)
 
 
-def test_seed_for_another_organization_is_not_blocked(seed_context):
-    c=seed_context
+def _seed_with_other_org_locked(c, target_index=1, wait_seconds=8, outcomes=None, lock_timeout_ms=None):
+    def run():
+        result=seed(c,"templates","other",target_index,lock_timeout_ms)
+        if outcomes is not None:outcomes.append(result)
+        return result
     with Session(c.engine) as held:
         held.scalar(select(Organization).where(Organization.id==c.orgs[0]).with_for_update())
-        try:
-            with ThreadPoolExecutor(max_workers=1) as pool:assert pool.submit(seed,c,"templates","other",1).result(timeout=8)=="ok"
-        finally:held.rollback()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                assert pool.submit(run).result(timeout=wait_seconds)=="ok"
+            finally:held.rollback()
+
+
+def test_seed_for_another_organization_is_not_blocked(seed_context):
+    _seed_with_other_org_locked(seed_context)
+
+
+def test_failed_isolation_probe_releases_own_lock_before_joining_worker(seed_context):
+    # 회귀를 의도적으로 같은 조직으로 유도한다. SQL timeout은 RED에서도 소유 worker가 스스로 종료하도록 제한한다.
+    outcomes=[]
+    with pytest.raises(TimeoutError):
+        _seed_with_other_org_locked(seed_context,target_index=0,wait_seconds=.05,outcomes=outcomes,lock_timeout_ms=1000)
+    assert outcomes==["ok"],"자기 잠금을 풀기 전에 worker 종료를 기다렸습니다."
