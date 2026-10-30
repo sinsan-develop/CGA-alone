@@ -407,7 +407,7 @@
   {
     "path": "apps/api/app/api/routes/admin.py",
     "stage": "S08·S09·S10",
-    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완; S09 사용자 직접 승인: 승인 Discord 6가지 renderer 검증만 추가; S10 직접 승인: 승인 Telegram 6renderer 검증만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만"
+    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완; S09 사용자 직접 승인: 승인 Discord 6가지 renderer 검증만 추가; S10 직접 승인: 승인 Telegram 6renderer 검증만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만 / S13 직접승인 기존 기본 채널·템플릿 초기화의 조직 row 잠금 한곳만 추가"
   },
   {
     "path": "apps/web/app/admin/templates/page.tsx",
@@ -453,5 +453,25 @@
     "path": "apps/api/tests/cga_alone/fixtures/client_templates/line.json",
     "stage": "S12",
     "reason": "기승인 WORK_PLAN S12 기본6 RED와 공식 LINE 합성 message/webhook 표본. 제품 계약 적용은 별도 승인 후"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_admin_seed_concurrency.py",
+    "stage": "S13",
+    "reason": "직접 승인한 Admin 기본자료 동시 초기화 최소 예외의 실제 PostgreSQL 동시·반복·조직격리 회귀"
+  },
+  {
+    "path": "apps/api/tests/cga_alone/test_shared_room_400.py",
+    "stage": "S13",
+    "reason": "기승인 WORK_PLAN S13 400 서버발급 참가자 합성 라우팅·차례·일반대화·다른방/개인방 독립 회귀, 실제 400인 플랫폼 성능 아님"
+  },
+  {
+    "path": "docs/manual/README.md",
+    "stage": "S13",
+    "reason": "S13 기승인 변경 기능 최소 사용 방법의 진입 링크만 추가"
+  },
+  {
+    "path": "docs/manual/CGA_ALONE_DEVELOPMENT_GUIDE.md",
+    "stage": "S13",
+    "reason": "S13 기승인 CGA-alone 변경 기능 최소 사용 방법·내부/외부 검증 구분·P04보류 보충, 원본PDF/타언어/기존기능 재작성 없음"
   }
 ]
