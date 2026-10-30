@@ -60,7 +60,7 @@ from app.services.vector_search import (
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 logger = get_logger("aidot.channels")
-SUPPORTED_CHANNELS = {"webchat", "kakao", "ms-teams", "slack", "discord", "telegram", "google-chat"}
+SUPPORTED_CHANNELS = {"webchat", "kakao", "ms-teams", "slack", "discord", "telegram", "google-chat", "line"}
 NON_CHANNEL_QUEUE_TYPES = {"training"}
 DEFAULT_LLM_ANSWER_SYSTEM_PROMPT = "사용자 질문에 답변한다."
 LLM_RAG_ANSWER_SAFETY_PROMPT = (
@@ -762,6 +762,8 @@ def _channel_health_summary() -> list[dict[str, Any]]:
             "channel": channel,
             "status": "ok",
         }
+        if channel == "line":
+            item.update({"provider": "line", "renderer": "shared-sdk", "supported_outputs": ["text", "flex"]})
         if channel == "google-chat":
             item.update({"provider": "google-chat", "renderer": "shared-sdk", "supported_outputs": ["text", "cardsV2"]})
         if channel == "telegram":
@@ -1563,6 +1565,7 @@ def _channel_admin_code(channel_type: str | None) -> str:
         "kakao": "KAKAO",
         "ms-teams": "TEAMS",
         "google-chat": "GOOGLE_CHAT",
+        "line": "LINE",
     }.get(normalized, normalized.upper())
 
 
@@ -2487,6 +2490,7 @@ def _channel_template_code(channel_type: str | None) -> str:
         "kakao": "KAKAO",
         "ms-teams": "TEAMS",
         "google-chat": "GOOGLE_CHAT",
+        "line": "LINE",
     }.get(normalized, normalized.upper())
 
 
@@ -2611,7 +2615,7 @@ def _talk_output(
     text = _render_text(_first_text(config.get("basicMessages")), variables, state, graph, node)
     messages = [_render_text(str(item or ""), variables, state, graph, node).strip() for item in _as_list(config.get("messages"))]
     # Slack/Discord/Telegram/Google Chat 카드의 선택사항은 빈 값도 고정 위치를 유지한다. 기존 채널은 원본 처리를 보존한다.
-    options = messages if channel_code.upper() in {"SLACK", "DISCORD", "TELEGRAM", "GOOGLE_CHAT"} and message_type in {"card", "carousel"} else [item for item in messages if item]
+    options = messages if channel_code.upper() in {"SLACK", "DISCORD", "TELEGRAM", "GOOGLE_CHAT", "LINE"} and message_type in {"card", "carousel"} else [item for item in messages if item]
 
     if message_type == "button":
         if not text and not options:

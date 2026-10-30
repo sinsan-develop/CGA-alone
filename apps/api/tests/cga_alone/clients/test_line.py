@@ -129,3 +129,97 @@ def test_template_round_trip_to_client_payload(line_context,template_context):
     button=contents["footer"]["contents"][0]
     assert button["type"]=="button" and button["action"]["type"]=="postback"
     assert button["action"]["data"].startswith("cga:") and len(button["action"]["data"])<=300
+
+
+@pytest.mark.parametrize("kind",["text","button","card","table","link-button","carousel"])
+def test_real_talk_six_native_packets(kind):
+    from app.api.routes import channels
+    config={"messageType":kind,"basicMessages":["한국어 본문\n둘째 줄"],"responseType":"single-select"};variables={}
+    if kind=="button":config["messages"]=["선택"]
+    elif kind=="card":config["messages"]=["제목","","설명"]
+    elif kind=="link-button":config["linkButtonItems"]=[{"label":"문서","url":"https://example.com/한국어"}]
+    elif kind=="table":config.update(tableVariableItemId="rows",tableColumnMappings=[{"column":"name"},{"column":"id"}],tableKeyColumn="id");variables={"__items":{"rows":[{"name":"표시","id":"원본 키"}]}}
+    elif kind=="carousel":config["messages"]=["목록","","항목","내용","선택","원본 키","Button","하단","하단 값"]
+    output=channels._talk_output({"id":"followup","config":{"channelTemplates":{"LINE":config}}},variables,channel_code="LINE")
+    packet=sdk("render",{"message":{"id":"00000000-0000-4000-8000-000000000001","messageType":output["type"],"text":output["text"],"payload":{**output["payload"],"options":output["options"]}},"destination":{"spaceName":"spaces/QA_SPACE","threadName":"spaces/QA_SPACE/threads/QA_THREAD"}})
+    assert packet["type"] in {"text","flex"}
+    assert "한국어 본문" in json.dumps(packet,ensure_ascii=False)
+    serialized=json.dumps(packet,ensure_ascii=False)
+    if kind=="table":assert "원본 키" in serialized
+    if kind in {"button","table","carousel"}:assert 'cga:00000000-0000-4000-8000-000000000001:' in serialized
+    if kind=="link-button":assert "https://example.com/%ED%95%9C%EA%B5%AD%EC%96%B4" in serialized
+    if kind=="card":assert "설명" in serialized
+
+
+@pytest.mark.parametrize("kind",["html","form","form-a-card","dtmf"])
+def test_unsupported_line_templates_are_explicit(kind):
+    assert admin._template_renderer_issues(channel_code="LINE",renderer_type=kind)
+    with pytest.raises(ValueError):sdk("render",{"message":{"id":"known","messageType":kind,"text":"본문","payload":{}},"destination":{"spaceName":"spaces/QA_SPACE"}})
+
+
+@pytest.mark.parametrize("kind,payload",[("button",{"options":[]}),("link-button",{"options":[]}),("table",{"columns":["name"],"rows":[]}),("card",{"card":{"title":"","description":"","imageUrl":""}}),("carousel",{"carousel":{}})],ids=["button","link","zero-rows","card","carousel"])
+def test_empty_optional_result_preserves_text(kind,payload):
+    packet=sdk("render",{"message":{"id":"known","messageType":kind,"text":"유효한 본문","payload":payload},"destination":{"spaceName":"spaces/QA_SPACE"}})
+    assert "유효한 본문" in json.dumps(packet,ensure_ascii=False)
+
+
+
+
+def test_native_scopes_mentions_self_and_ignored_events():
+    first=normalized(event());assert first["message"]=="질문" and first["addressed"]
+    assert not normalized(FIXTURE["general"])["addressed"]
+    direct=event("개인 질문");direct["events"][0]["source"]={"type":"user","userId":"U"+"a"*32}
+    one=normalized(direct,{**FIXTURE["connection"],"sourceType":"user","sourceId":"U"+"a"*32});assert one["roomMode"]=="private" and one["addressed"]
+    multi=event();multi["events"][0]["source"]={"type":"room","roomId":"R"+"1"*32,"userId":"U"+"a"*32}
+    two=normalized(multi,{**FIXTURE["connection"],"sourceType":"room","sourceId":"R"+"1"*32});assert two["roomMode"]=="shared"
+    assert len({first["nativeRoomKey"],one["nativeRoomKey"],two["nativeRoomKey"]})==3
+    assert normalized(event(user=FIXTURE["connection"]["botUserId"])) is None
+    for kind in ["unsend","join","follow"]:
+        item=event();item["events"][0]["type"]=kind;assert normalized(item) is None
+    item=event();item["events"][0]["message"]={"type":"image","id":"123"};assert normalized(item) is None
+
+
+@pytest.mark.parametrize("problem",["destination","group","actor","mention-range","mention-self","mention-list","event-id","batch"])
+def test_native_ambiguous_input_is_rejected(problem):
+    item=event();native=item["events"][0]
+    if problem=="destination":item["destination"]="U"+"8"*32
+    elif problem=="group":native["source"]["groupId"]="C"+"8"*32
+    elif problem=="actor":native["source"].pop("userId")
+    elif problem=="mention-range":native["message"]["mention"]["mentionees"][0]["length"]=999
+    elif problem=="mention-self":native["message"]["mention"]["mentionees"][0]["userId"]="U"+"8"*32
+    elif problem=="mention-list":native["message"]["mention"]["mentionees"]={}
+    elif problem=="event-id":native["webhookEventId"]=""
+    else:item["events"].append(deepcopy(native))
+    with pytest.raises(ValueError):normalized(item)
+
+
+def test_redelivery_keeps_same_dedup_id():
+    original=normalized(event());redelivered=event();redelivered["events"][0]["deliveryContext"]["isRedelivery"]=True;redelivered["events"][0]["replyToken"]="different-token"
+    assert normalized(redelivered)["eventId"]==original["eventId"]
+
+
+@pytest.mark.parametrize("case",["utf16","label","url","bubble","missing-options","bad-table"])
+def test_native_bounds_reject_without_truncation(case):
+    message={"id":"00000000-0000-4000-8000-000000000001","messageType":"text","text":"본문","payload":{}}
+    if case=="utf16":message["text"]="😀"*2501
+    elif case=="label":message.update(messageType="button",payload={"options":["가"*41]})
+    elif case=="url":message.update(messageType="card",payload={"card":{"imageUrl":"http://example.com/image.png"}})
+    elif case=="bubble":message.update(messageType="card",payload={"card":{"description":"가"*11000}})
+    elif case=="missing-options":message.update(messageType="button",payload={})
+    else:message.update(messageType="table",payload={"columns":["a"],"rows":["bad"]})
+    with pytest.raises(ValueError):sdk("render",{"message":message})
+
+
+def test_direct_bot_questioner_reuses_existing_api(line_context):
+    member=create(line_context,"line",kind="bot")
+    response=send(line_context,member,"API 봇 질문","line",addressed=True,event="line-direct-bot-1")
+    assert response.status_code==200 and response.json()["data"]["userMessage"]["participantKind"]=="bot"
+
+
+def test_completed_callback_restores_and_new_stale_is_rejected(line_context):
+    c,_=line_context;member=create(line_context,"line");message=post(line_context,member,FIXTURE["addressed"]).json()["data"]["botMessage"]
+    wire=json.dumps({"webchatRichFormVersion":"1.0","sourceMessageId":message["id"],"sourceTalkNodeId":"followup","response":{"buttonValue":"추가 설명"}},ensure_ascii=False)
+    answer=send(line_context,member,wire,"line",addressed=True,event="line-fixture:10005");assert answer.status_code==200
+    repeated=send(line_context,member,wire,"line",addressed=True,event="line-fixture:10005")
+    assert repeated.status_code==200 and repeated.json()["data"]["botMessage"]["id"]==answer.json()["data"]["botMessage"]["id"] and len(c[3])==1
+    assert send(line_context,member,wire,"line",addressed=True,event="line-fixture:10006").status_code==409 and len(c[3])==1

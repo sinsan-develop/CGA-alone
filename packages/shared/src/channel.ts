@@ -1,4 +1,4 @@
-export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord" | "telegram" | "google-chat";
+export type AidotChannelType = "webchat" | "kakao" | "ms-teams" | "slack" | "discord" | "telegram" | "google-chat" | "line";
 
 export type AidotInitialChannelMessage = {
   type?: string;
@@ -915,4 +915,155 @@ export async function sendAidotGoogleChatEvent(serverUrl: string, member: AidotG
   const response = await sendAidotClientMessage(serverUrl, "google-chat", member, message, event.addressed, event.eventId, signal);
   try { return { response, replies: (response.botMessages ?? (response.botMessage ? [response.botMessage] : [])).map(item => buildAidotGoogleChatReplyPayload(item, { spaceName: event.spaceName, threadName: event.threadName })) }; }
   catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 Google Chat 표현을 변환하지 못했습니다."), { cause, cgaResponse: response }); }
+}
+
+// LINE 서명 검증/실제 게시는 연결 client가 담당한다. native ID는 서버 증명을 대체하지 않는다.
+export type AidotLineConnection = { botUserId: string; sourceType: "user" | "group" | "room"; sourceId: string };
+export type AidotLineDeliveryContext = { receivedAtMs: number; replyStatus: "unused" | "used" | "unknown" };
+export type AidotLineEvent = { nativeRoomKey: string; nativeParticipantKey: string; participantKind: "user"; roomMode: "private" | "shared"; eventId: string; message: string; addressed: boolean; replyToken: string; timestamp: number; redelivery: boolean; sourceMessageId?: string; choiceIndex?: number };
+export type AidotLineReplyPayload = { replyToken: string; messages: Record<string, unknown>[] };
+function lineRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function lineText(value: unknown, label: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`LINE ${label}이 비었습니다.`); return value; }
+function lineId(value: unknown, prefix: string): string { if (typeof value !== "string" || !new RegExp(`^${prefix}[a-f0-9]{32}$`).test(value)) throw new Error("LINE 연결/질문자 ID가 올바르지 않습니다."); return value; }
+function lineUuid(value: string): string { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error("LINE 선택 원본 메시지가 올바르지 않습니다."); return value; }
+export function normalizeAidotLineEvent(input: unknown, connection: AidotLineConnection, eventIndex?: number): AidotLineEvent | null {
+  const envelope = lineRecord(input), self = lineId(connection.botUserId, "U");
+  if (envelope.destination !== self) throw new Error("다른 LINE 봇에는 이 연결을 사용할 수 없습니다.");
+  if (!Array.isArray(envelope.events)) throw new Error("LINE events 목록이 필요합니다.");
+  if (!envelope.events.length) return null;
+  if (eventIndex === undefined && envelope.events.length !== 1) throw new Error("LINE batch는 event를 명시하여 처리해야 합니다.");
+  const index = eventIndex ?? 0;
+  if (!Number.isSafeInteger(index) || index < 0 || index >= envelope.events.length) throw new Error("LINE event 선택이 올바르지 않습니다.");
+  const event = lineRecord(envelope.events[index]);
+  if (event.mode === "standby" || (event.type !== "message" && event.type !== "postback")) return null;
+  const source = lineRecord(event.source), kind = source.type;
+  if (kind !== connection.sourceType || !["user", "group", "room"].includes(String(kind))) throw new Error("다른 LINE 대화 종류입니다.");
+  const sourceId = lineId(source[kind === "user" ? "userId" : kind === "group" ? "groupId" : "roomId"], kind === "group" ? "C" : kind === "room" ? "R" : "U");
+  if (sourceId !== connection.sourceId) throw new Error("다른 LINE 방에는 이 연결을 사용할 수 없습니다.");
+  const actor = lineId(source.userId, "U"); if (actor === self) return null;
+  const message = lineRecord(event.message); if (event.type === "message" && message.type !== "text") return null;
+  const id = lineText(event.webhookEventId, "event ID"); if (id.length > 128 || !/^[A-Za-z0-9_-]+$/.test(id)) throw new Error("LINE event ID가 올바르지 않습니다.");
+  const replyToken = lineText(event.replyToken, "reply token"), timestamp = event.timestamp;
+  if (!Number.isSafeInteger(timestamp) || Number(timestamp) <= 0) throw new Error("LINE event 시각이 올바르지 않습니다.");
+  const delivery = lineRecord(event.deliveryContext);
+  if (delivery.isRedelivery !== undefined && typeof delivery.isRedelivery !== "boolean") throw new Error("LINE 재전송 상태가 올바르지 않습니다.");
+  const common = { nativeRoomKey: "line:" + JSON.stringify([self, kind, sourceId]), nativeParticipantKey: `line:user:${actor}`, participantKind: "user" as const, roomMode: kind === "user" ? "private" as const : "shared" as const, eventId: `line:${id}`, replyToken, timestamp: Number(timestamp), redelivery: delivery.isRedelivery === true };
+  if (event.type === "postback") {
+    const data = lineText(lineRecord(event.postback).data, "postback"), match = /^cga:([0-9a-f-]{36}):(0|[1-9]\d*)$/i.exec(data);
+    if (data.length > 300 || !match || !Number.isSafeInteger(Number(match[2]))) throw new Error("LINE 선택이 올바르지 않습니다.");
+    return { ...common, message: "", addressed: true, sourceMessageId: lineUuid(match[1]), choiceIndex: Number(match[2]) };
+  }
+  lineText(message.id, "message ID"); const raw = lineText(message.text, "질문"); let text = raw, addressed = kind === "user";
+  const mention = lineRecord(message.mention), ranges: { start: number; end: number }[] = [];
+  if (message.mention !== undefined && !Array.isArray(mention.mentionees)) throw new Error("LINE mention 목록이 올바르지 않습니다.");
+  for (const entry of (mention.mentionees ?? []) as unknown[]) {
+    const item = lineRecord(entry), start = item.index, length = item.length;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || Number(start) < 0 || Number(length) <= 0 || Number(start) + Number(length) > raw.length) throw new Error("LINE mention 범위가 올바르지 않습니다.");
+    const target = item.type === "user" && item.userId === self;
+    if ((item.isSelf === true && !target) || (target && item.isSelf === false)) throw new Error("LINE self mention이 모순됩니다.");
+    if (target) { addressed = true; ranges.push({ start: Number(start), end: Number(start) + Number(length) }); }
+  }
+  let previous = raw.length;
+  for (const range of ranges.sort((a, b) => b.start - a.start)) { if (range.end > previous) throw new Error("LINE mention이 겹칩니다."); text = text.slice(0, range.start) + text.slice(range.end); previous = range.start; }
+  text = text.trim(); if (!text || Array.from(text).length > 4000) throw new Error("LINE CGA 질문은 1~4000자여야 합니다.");
+  return { ...common, message: text, addressed };
+}
+function lineDeliveryGuard(event: AidotLineEvent, delivery: AidotLineDeliveryContext) {
+  const now = Date.now();
+  if (!delivery || delivery.replyStatus !== "unused" || !Number.isFinite(delivery.receivedAtMs) || delivery.receivedAtMs > now || now - delivery.receivedAtMs >= 60000) throw new Error("LINE reply token이 사용/결과불명/만료 상태입니다. 자동 재게시하지 않습니다.");
+  if (event.redelivery && (event.timestamp > now || now - event.timestamp >= 1200000)) throw new Error("LINE 재전송 event가 만료됐습니다.");
+}
+function lineSelectionMessage(source: AidotChannelStoredMessage, value: string) {
+  const wire = JSON.stringify({ webchatRichFormVersion: "1.0", sourceMessageId: source.id, sourceTalkNodeId: source.payload?.sourceTalkNodeId, response: { buttonValue: value } });
+  if (Array.from(wire).length > 4000) throw new Error("LINE 선택 응답이 기존 메시지 한도를 넘습니다."); return wire;
+}
+function lineReply(message: AidotChannelStoredMessage): { packet: Record<string, unknown>; choices: string[] } {
+  if (typeof message.text !== "string") throw new Error("LINE 답변 본문이 올바르지 않습니다.");
+  const type = message.messageType || "text", payload = lineRecord(message.payload), choices: string[] = [];
+  if (type === "text") { if (!message.text.trim() || message.text.length > 5000) throw new Error("LINE text 답변은 1~5000 UTF16 단위여야 합니다."); return { packet: { type: "text", text: message.text }, choices }; }
+  const body: Record<string, unknown>[] = [], buttons: Record<string, unknown>[] = [];
+  const scalar = (value: unknown) => value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const paragraph = (value: unknown) => { if (value !== undefined && value !== null && value !== "") body.push({ type: "text", text: lineText(value, "카드 본문"), wrap: true }); };
+  const url = (value: unknown, image = false): string => {
+    if (typeof value !== "string" || !/^https?:\/\/[^\s]+$/i.test(value) || (image && !/^https:\/\//i.test(value))) throw new Error("LINE 이미지 URL은 HTTPS, 링크는 HTTP/HTTPS여야 합니다.");
+    const encoded = new URL(value).href; if (encoded.length > 2000) throw new Error("LINE URL이 너무 깁니다."); return encoded;
+  };
+  const label = (value: unknown) => { const text = lineText(value, "버튼 이름"); if (text.length > 40) throw new Error("LINE 버튼 이름은 40자 이내여야 합니다."); return text; };
+  const choice = (name: unknown, value: unknown) => {
+    const selected = scalar(value); lineUuid(message.id); lineSelectionMessage(message, selected);
+    const action = { type: "postback", label: label(name), data: `cga:${message.id}:${choices.length}` }; choices.push(selected); return { type: "button", action };
+  };
+  paragraph(message.text);
+  if (type === "button" || type === "link-button") {
+    if (!Array.isArray(payload.options)) throw new Error("LINE 버튼 항목이 올바르지 않습니다.");
+    for (const entry of payload.options) {
+      if (typeof entry === "string" && type === "button") buttons.push(choice(entry, entry));
+      else { const item = lineRecord(entry), name = item.label ?? item.text ?? item.value;
+        if (type === "link-button" || item.url) buttons.push({ type: "button", action: { type: "uri", label: label(name), uri: url(item.url) } });
+        else buttons.push(choice(name, item.value ?? item.messageText ?? name));
+      }
+    }
+  } else if (type === "table") {
+    const columns = payload.columns, rows = payload.rows;
+    if (!Array.isArray(columns) || columns.some(item => typeof item !== "string" || !item) || !Array.isArray(rows) || (rows.length && !columns.length)) throw new Error("LINE 표 구조가 올바르지 않습니다.");
+    if (rows.length) paragraph(columns.join(" | "));
+    for (const item of rows) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("LINE 표 행이 올바르지 않습니다.");
+      const row = lineRecord(item), key = typeof payload.keyColumn === "string" && row[payload.keyColumn] !== undefined ? row[payload.keyColumn] : row[String(columns[0])];
+      paragraph(columns.map(column => scalar(row[String(column)])).join(" | "));
+      if (payload.selectable !== false) body.push(choice("선택", key));
+    }
+  } else if (type === "card" || type === "carousel") {
+    const value = type === "card" ? payload.card : payload.carousel;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("LINE 카드 구조가 올바르지 않습니다.");
+    const card = lineRecord(value); paragraph(card.title);
+    if (card.imageUrl) body.push({ type: "image", url: url(card.imageUrl, true), size: "full" });
+    if (type === "card") paragraph(card.description);
+    else { paragraph(card.itemTitle); paragraph(card.itemContents);
+      if (String(card.buttonType).toLowerCase() === "button") buttons.push(choice(card.itemButtonLabel, card.itemButtonValue));
+      if (card.bottomButtonLabel || card.bottomButtonValue) buttons.push(choice(card.bottomButtonLabel, card.bottomButtonValue));
+    }
+  } else throw new Error(`LINE에서 지원하지 않는 Talk 표현입니다: ${type}`);
+  if (!body.length) throw new Error("LINE 답변 본문이 비었습니다.");
+  const bubble: Record<string, unknown> = { type: "bubble", body: { type: "box", layout: "vertical", contents: body } };
+  if (buttons.length) bubble.footer = { type: "box", layout: "vertical", contents: buttons };
+  if (new TextEncoder().encode(JSON.stringify(bubble)).length > 30000) throw new Error("LINE bubble JSON은 30KB 이내여야 합니다.");
+  const contents = type === "carousel" ? { type: "carousel", contents: [bubble] } : bubble;
+  return { packet: { type: "flex", altText: `CGA ${type} 답변`, contents }, choices };
+}
+export function buildAidotLineMessage(message: AidotChannelStoredMessage) { return lineReply(message).packet; }
+export function buildAidotLineReplyPayload(messages: AidotChannelStoredMessage[], input: unknown, connection: AidotLineConnection, delivery: AidotLineDeliveryContext, eventIndex?: number): AidotLineReplyPayload | null {
+  const event = normalizeAidotLineEvent(input, connection, eventIndex); if (!event || !messages.length) return null;
+  lineDeliveryGuard(event, delivery); if (messages.length > 5) throw new Error("LINE reply 메시지는 5개 이내여야 합니다.");
+  return { replyToken: event.replyToken, messages: messages.map(buildAidotLineMessage) };
+}
+export type AidotLineMembership = AidotClientMembership & Pick<AidotLineEvent, "nativeRoomKey" | "nativeParticipantKey" | "roomMode">;
+function lineMembership(member: AidotClientMembership, event: AidotLineEvent): AidotLineMembership {
+  if (member.participantKind !== event.participantKind) throw new Error("LINE 질문자와 서버 발급 종류가 다릅니다.");
+  return { ...member, nativeRoomKey: event.nativeRoomKey, nativeParticipantKey: event.nativeParticipantKey, roomMode: event.roomMode };
+}
+export async function createAidotLineRoom(serverUrl: string, botId: string, input: unknown, connection: AidotLineConnection, delivery: AidotLineDeliveryContext, signal?: AbortSignal, eventIndex?: number) {
+  const event = normalizeAidotLineEvent(input, connection, eventIndex); if (!event) return null; lineDeliveryGuard(event, delivery);
+  if (event.sourceMessageId) throw new Error("LINE 버튼은 기존 대화방에서만 이어갈 수 있습니다.");
+  return lineMembership(await createAidotClientRoom(serverUrl, "line", botId, event.roomMode, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function joinAidotLineRoom(serverUrl: string, room: Pick<AidotLineMembership, "roomId" | "nativeRoomKey">, input: unknown, connection: AidotLineConnection, delivery: AidotLineDeliveryContext, signal?: AbortSignal, eventIndex?: number) {
+  const event = normalizeAidotLineEvent(input, connection, eventIndex); if (!event) return null; lineDeliveryGuard(event, delivery);
+  if (event.nativeRoomKey !== room.nativeRoomKey) throw new Error("다른 LINE 방에는 이 방 정보로 입장할 수 없습니다.");
+  return lineMembership(await joinAidotClientRoom(serverUrl, "line", room.roomId, event.participantKind, event.nativeParticipantKey, signal), event);
+}
+export async function sendAidotLineEvent(serverUrl: string, member: AidotLineMembership, input: unknown, connection: AidotLineConnection, delivery: AidotLineDeliveryContext, signal?: AbortSignal, eventIndex?: number): Promise<{ response: AidotSharedRoomMessageResponse | null; replies: AidotLineReplyPayload[] }> {
+  const event = normalizeAidotLineEvent(input, connection, eventIndex); if (!event) return { response: null, replies: [] }; lineDeliveryGuard(event, delivery);
+  if (event.nativeRoomKey !== member.nativeRoomKey || event.nativeParticipantKey !== member.nativeParticipantKey || event.participantKind !== member.participantKind || event.roomMode !== member.roomMode) throw new Error("LINE 방/질문자의 서버 발급 증명이 필요합니다.");
+  let message = event.message;
+  if (event.sourceMessageId) {
+    const history = await fetchAidotClientRoom(serverUrl, "line", member, signal), source = history.messages?.find(item => item.id === event.sourceMessageId && item.participantKind === "bot");
+    if (!source) throw new Error("LINE 버튼 원본 기록이 없어 재실행하지 않습니다.");
+    const value = lineReply(source).choices[event.choiceIndex ?? -1];
+    if (value === undefined || !source.payload?.sourceTalkNodeId) throw new Error("LINE 버튼 선택 출처가 올바르지 않습니다."); message = lineSelectionMessage(source, value);
+  }
+  lineDeliveryGuard(event, delivery);
+  const response = await sendAidotClientMessage(serverUrl, "line", member, message, event.addressed, event.eventId, signal);
+  try { const packet = buildAidotLineReplyPayload(response.botMessages ?? (response.botMessage ? [response.botMessage] : []), input, connection, delivery, eventIndex); return { response, replies: packet ? [packet] : [] }; }
+  catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 LINE reply를 준비하지 못했습니다. 자동 재실행하지 않습니다."), { cause, cgaResponse: response }); }
 }
