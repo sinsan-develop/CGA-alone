@@ -17,7 +17,7 @@ function subject({api=async()=>({message:"changed"}),confirm="new-fixture-passwo
 }
 test("successful password change retains the existing token and replaces the form with workspace",async()=>{
  const s=subject();await s.submit();assert.deepEqual(s.navigation,["/studio/workspace"]);assert.equal(s.calls.length,1);assert.equal(s.calls[0][0],"/api/v1/auth/change-password");assert.equal(s.calls[0][2],"fixture-session-token");
- for(const key of ["current","new","confirm"])assert.ok(s.events.findIndex(e=>e[0]===key&&e[1]==="")<s.events.findIndex(e=>e[0]==="navigate"));
+ for(const key of ["current","new","confirm"]){const reset=s.events.findIndex(e=>e[0]===key&&e[1]==="");assert.ok(reset>=0,`${key} password field was not cleared`);assert.ok(reset<s.events.findIndex(e=>e[0]==="navigate"));}
 });
 test("failed password change keeps the form and the entered values",async()=>{
  const s=subject({api:async()=>{throw new Error("current password rejected");}});await s.submit();assert.deepEqual(s.navigation,[]);assert.ok(s.events.some(e=>e[0]==="error"&&e[1]==="current password rejected"));assert.ok(!s.events.some(e=>["current","new","confirm"].includes(e[0])));assert.deepEqual(s.events.at(-1),["submitting",false]);
