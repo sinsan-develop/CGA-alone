@@ -478,5 +478,15 @@
     "path": "apps/web/components/simulator-analysis-isolation.test.mjs",
     "stage": "S14",
     "reason": "공유/개인 분석 표시 및 Adaptive 오류 귀속 회귀시험"
+  },
+  {
+    "path": "apps/web/app/me/password/page.tsx",
+    "stage": "S15",
+    "reason": "사용자 직접 지적: 비밀번호 변경 성공 후 기존 인증 유지·제작 화면 replace 이동만 추가. API/정책/권한 불변"
+  },
+  {
+    "path": "apps/web/components/password-change-navigation.test.mjs",
+    "stage": "S15",
+    "reason": "비밀번호 변경 제출 handler 성공/대기/오류/확인 불일치와 이동 회귀"
   }
 ]
