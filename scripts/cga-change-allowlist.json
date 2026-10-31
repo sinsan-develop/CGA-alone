@@ -247,7 +247,7 @@
   {
     "path": "apps/web/components/simulator-page.tsx",
     "stage": "P03·S04·S06",
-    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화; S04 LegacySimulator local miss·Function/Talk·End에 결과판정 연결, 보류 지속LLM 경로 불변; S06 기존 저장 메시지의 카드·폼 표시 연결, 개인 미리보기와 보류 지속 경로 보존"
+    "reason": "승인된 P03 단일 샘플 전용 지속 경로·기존 simulator runtime 보존·서버 Talk DOM 확인과 재접속/종료/초기화; S04 LegacySimulator local miss·Function/Talk·End에 결과판정 연결, 보류 지속LLM 경로 불변; S06 기존 저장 메시지의 카드·폼 표시 연결, 개인 미리보기와 보류 지속 경로 보존; S14 공유 모드에서 개인 분석/토글 비표시 및 공유 Adaptive 오류의 개인 분석 귀속 차단(사용자 승인)"
   },
   {
     "path": "apps/web/components/persistent-llm-runtime.test.mjs",
@@ -457,7 +457,7 @@
   {
     "path": "apps/api/tests/cga_alone/test_admin_seed_concurrency.py",
     "stage": "S13",
-    "reason": "직접 승인한 Admin 기본자료 동시 초기화 최소 예외의 실제 PostgreSQL 동시·반복·조직격리 회귀"
+    "reason": "직접 승인한 Admin 기본자료 동시 초기화 최소 예외의 실제 PostgreSQL 동시·반복·조직격리 회귀; S14 실제 PG 잠금/조회 동기화와 지연 worker·잠금 제거 대역 회귀(사용자 승인)"
   },
   {
     "path": "apps/api/tests/cga_alone/test_shared_room_400.py",
@@ -473,5 +473,10 @@
     "path": "docs/manual/CGA_ALONE_DEVELOPMENT_GUIDE.md",
     "stage": "S13",
     "reason": "S13 기승인 CGA-alone 변경 기능 최소 사용 방법·내부/외부 검증 구분·P04보류 보충, 원본PDF/타언어/기존기능 재작성 없음"
+  },
+  {
+    "path": "apps/web/components/simulator-analysis-isolation.test.mjs",
+    "stage": "S14",
+    "reason": "공유/개인 분석 표시 및 Adaptive 오류 귀속 회귀시험"
   }
 ]

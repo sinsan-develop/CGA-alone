@@ -5,6 +5,8 @@ from threading import Event
 from types import SimpleNamespace
 from uuid import uuid4
 import json
+from time import sleep, monotonic
+from sqlalchemy.sql.selectable import Select
 import pytest
 from sqlalchemy import select, delete, event, func, text
 from sqlalchemy.orm import Session
@@ -48,32 +50,67 @@ def seed(c, kind, writer, index=0, lock_timeout_ms=None):
     except Exception as error:return type(error).__name__
 
 
-@pytest.mark.parametrize("first_kind,second_kind",[("channels","templates"),("templates","templates")])
-def test_cold_parallel_seed_keeps_one_default_row(seed_context,first_kind,second_kind):
-    c=seed_context;first_read=Event();second_read=Event();release=Event()
-    def observe(conn,cursor,statement,parameters,context,executemany):
-        sql=statement.lower()
-        if not sql.lstrip().startswith("select") or "from admin_channels" not in sql:return
-        writer=conn.info.get("s13_writer")
-        if writer=="first" and not first_read.is_set():
-            first_read.set();assert release.wait(8),"소유 시험의 첫 조회 해제 실패"
-        elif writer=="second":second_read.set()
-    event.listen(c.engine,"after_cursor_execute",observe)
+def _cold_parallel_seed(c, first_kind, second_kind, second_start_delay=0):
+    first_read, second_read, second_entered, release = Event(), Event(), Event(), Event()
+    backend_pids = {}
+
+    def before_execute(conn, cursor, statement, parameters, context, executemany):
+        writer = conn.info.get("s13_writer")
+        if writer in {"first", "second"}:
+            backend_pids[writer] = conn.connection.driver_connection.info.backend_pid
+            if writer == "second":
+                second_entered.set()
+
+    def after_execute(conn, cursor, statement, parameters, context, executemany):
+        sql = statement.lower()
+        if not sql.lstrip().startswith("select") or "from admin_channels" not in sql:
+            return
+        writer = conn.info.get("s13_writer")
+        if writer == "first" and not first_read.is_set():
+            first_read.set()
+            assert release.wait(12), "소유 시험의 첫 조회 해제 실패"
+        elif writer == "second":
+            second_read.set()
+
+    event.listen(c.engine, "before_cursor_execute", before_execute)
+    event.listen(c.engine, "after_cursor_execute", after_execute)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            one=pool.submit(seed,c,first_kind,"first");assert first_read.wait(8)
-            two=pool.submit(seed,c,second_kind,"second")
-            # 원본에서는 두 조회가 모두 빈 결과를 보도록 재현한다. 잠금 보완 후에는 둘째가 조직 row에서 기다린다.
-            second_read.wait(.5);release.set()
-            results=[one.result(timeout=20),two.result(timeout=20)]
-        assert results==["ok","ok"],results
+            try:
+                one = pool.submit(seed, c, first_kind, "first", lock_timeout_ms=10000)
+                assert first_read.wait(8), "첫 transaction의 빈 채널 조회 미도달"
+
+                def second():
+                    sleep(second_start_delay)
+                    return seed(c, second_kind, "second", lock_timeout_ms=10000)
+
+                two = pool.submit(second)
+                assert second_entered.wait(8), "둘째 transaction의 SQL 진입 미도달"
+                # 시간이 지났다는 이유로 첫 조회를 풀지 않는다. 실제 둘째 조회(잠금 누락) 또는
+                # 첫 backend가 둘째 backend를 막는 PG 잠금(정상)을 확인한 경우에만 푼다.
+                deadline = monotonic() + 8
+                with c.engine.connect() as observer:
+                    while not second_read.is_set():
+                        blockers = observer.scalar(text("SELECT pg_blocking_pids(:pid)"), {"pid": backend_pids["second"]})
+                        if backend_pids["first"] in blockers:
+                            break
+                        assert monotonic() < deadline, "둘째 조회/실제 조직 잠금 대기 모두 미확인"
+                        second_read.wait(.01)
+            finally:
+                # 실패해도 executor가 worker를 join하기 전에 소유 잠금을 해제한다.
+                release.set()
+            results = [one.result(timeout=20), two.result(timeout=20)]
+        assert results == ["ok", "ok"], results
         with Session(c.engine) as db:
-            channels=list(db.scalars(select(AdminChannel).where(AdminChannel.organization_id==c.orgs[0])))
-            templates=list(db.scalars(select(AdminTemplate).where(AdminTemplate.organization_id==c.orgs[0])))
-            assert {item.code for item in channels}=={item["code"] for item in admin.DEFAULT_ADMIN_CHANNELS}
-            assert len(channels)==len({item.code for item in channels})
-            assert len(templates)==len({(item["channel_code"],item["name"]) for item in admin.DEFAULT_ADMIN_TEMPLATES})
-    finally:release.set();event.remove(c.engine,"after_cursor_execute",observe)
+            channels = list(db.scalars(select(AdminChannel).where(AdminChannel.organization_id == c.orgs[0])))
+            templates = list(db.scalars(select(AdminTemplate).where(AdminTemplate.organization_id == c.orgs[0])))
+            assert {item.code for item in channels} == {item["code"] for item in admin.DEFAULT_ADMIN_CHANNELS}
+            assert len(channels) == len({item.code for item in channels})
+            assert len(templates) == len({(item["channel_code"], item["name"]) for item in admin.DEFAULT_ADMIN_TEMPLATES})
+    finally:
+        release.set()
+        event.remove(c.engine, "before_cursor_execute", before_execute)
+        event.remove(c.engine, "after_cursor_execute", after_execute)
 
 
 def test_repeat_seed_preserves_existing_names_and_configuration(seed_context):
@@ -109,3 +146,17 @@ def test_failed_isolation_probe_releases_own_lock_before_joining_worker(seed_con
     with pytest.raises(TimeoutError):
         _seed_with_other_org_locked(seed_context,target_index=0,wait_seconds=.05,outcomes=outcomes,lock_timeout_ms=1000)
     assert outcomes==["ok"],"자기 잠금을 풀기 전에 worker 종료를 기다렸습니다."
+
+
+@pytest.mark.parametrize("first_kind,second_kind",[("channels","templates"),("templates","templates")])
+def test_cold_parallel_seed_keeps_one_default_row(seed_context,first_kind,second_kind):
+    _cold_parallel_seed(seed_context,first_kind,second_kind)
+
+
+@pytest.mark.parametrize("first_kind,second_kind",[("channels","templates"),("templates","templates")])
+def test_cold_probe_detects_removed_lock_even_when_second_worker_starts_late(seed_context,monkeypatch,first_kind,second_kind):
+    # 시험 process의 두 소유 transaction만 잠금 제거 대역으로 실행한다. 제품 함수/DB schema는 변경하지 않는다.
+    with monkeypatch.context() as patch:
+        patch.setattr(Select,"with_for_update",lambda self,*args,**kwargs:self)
+        with pytest.raises(AssertionError,match="IntegrityError"):
+            _cold_parallel_seed(seed_context,first_kind,second_kind,second_start_delay=.7)

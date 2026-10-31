@@ -3776,7 +3776,6 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   const [analyses, setAnalyses] = useState<SimulatorAnalysis[]>([]);
   const [selectedAnalysisId, setSelectedAnalysisId] = useState<string | null>(null);
   const [analysisOpen, setAnalysisOpen] = useState(false);
-  const analysisVisible = !embedded || analysisOpen;
   const [loadedScript, setLoadedScript] = useState<LoadedScript | null>(null);
   const [scriptViewerOpen, setScriptViewerOpen] = useState(false);
   const [floatingButtonsVisible, setFloatingButtonsVisible] = useState(true);
@@ -3784,6 +3783,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   const [nluSupplementSaving, setNluSupplementSaving] = useState(false);
   const [nluSupplementMessage, setNluSupplementMessage] = useState("");
   const [sharedMode, setSharedMode] = useState(false);
+  const analysisVisible = !embedded || analysisOpen;
   const [sharedMember, setSharedMember] = useState<AidotSharedRoomIdentity | null>(null);
   const [sharedHistory, setSharedHistory] = useState<AidotSharedRoomHistoryResponse | null>(null);
   const [sharedRoomInput, setSharedRoomInput] = useState("");
@@ -6349,6 +6349,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
       schemaVersion: message.template?.schemaVersion,
       error,
     });
+    if (sharedMode) return;
     const analysisId = selectedAnalysisId || analyses.at(-1)?.id;
     if (analysisId) {
       appendAnalysisLog(analysisId, {
@@ -6930,7 +6931,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
 
       <div
         className={`simulator-workbench${embedded ? " simulator-workbench--popup" : ""}${
-          analysisVisible ? " simulator-workbench--debug-open" : ""
+          !sharedMode ? (analysisVisible ? " simulator-workbench--debug-open" : "") : ""
         }`}
       >
         <div className="simulator-stage simulator-stage--flat simulator-stage--messenger">
@@ -7305,7 +7306,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
               </button>
             </form>
 
-            {embedded ? (
+            {embedded && !sharedMode ? (
               <button
                 type="button"
                 className={`simulator-footer simulator-footer--button${analysisOpen ? " is-active" : ""}`}
@@ -7320,7 +7321,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
           </div>
         </div>
 
-        {analysisVisible ? (
+        {!sharedMode && analysisVisible ? (
         <aside className="simulator-analysis" aria-label={copy.analysisData}>
           <div className="simulator-analysis__header">
             <strong>{copy.analysisData}</strong>
