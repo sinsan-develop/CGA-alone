@@ -3783,7 +3783,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
   const [nluSupplementSaving, setNluSupplementSaving] = useState(false);
   const [nluSupplementMessage, setNluSupplementMessage] = useState("");
   const [sharedMode, setSharedMode] = useState(false);
-  const analysisVisible = !sharedMode && (!embedded || analysisOpen);
+  const analysisVisible = !embedded || analysisOpen;
   const [sharedMember, setSharedMember] = useState<AidotSharedRoomIdentity | null>(null);
   const [sharedHistory, setSharedHistory] = useState<AidotSharedRoomHistoryResponse | null>(null);
   const [sharedRoomInput, setSharedRoomInput] = useState("");
@@ -6931,7 +6931,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
 
       <div
         className={`simulator-workbench${embedded ? " simulator-workbench--popup" : ""}${
-          analysisVisible ? " simulator-workbench--debug-open" : ""
+          !sharedMode ? (analysisVisible ? " simulator-workbench--debug-open" : "") : ""
         }`}
       >
         <div className="simulator-stage simulator-stage--flat simulator-stage--messenger">
@@ -7321,7 +7321,7 @@ function LegacySimulatorPage({ embedded = false, startDialogId: startDialogIdPro
           </div>
         </div>
 
-        {analysisVisible ? (
+        {!sharedMode && analysisVisible ? (
         <aside className="simulator-analysis" aria-label={copy.analysisData}>
           <div className="simulator-analysis__header">
             <strong>{copy.analysisData}</strong>

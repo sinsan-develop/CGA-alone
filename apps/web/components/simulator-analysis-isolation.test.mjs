@@ -8,7 +8,8 @@ function find(predicate){let result;function visit(node){if(predicate(node))resu
 const compile=text=>ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 test("shared room never displays personal analysis, including late preview completion",()=>{
  const expression=find(n=>ts.isVariableDeclaration(n)&&n.name.getText(tree)==="analysisVisible").initializer.getText(tree);
- const visible=new Function("sharedMode","embedded","analysisOpen",`return (${expression});`);
+ const guard=find(n=>ts.isConditionalExpression(n)&&n.whenTrue.getText(tree).includes('<aside className="simulator-analysis"')).condition.getText(tree);
+ const visible=new Function("sharedMode","embedded","analysisOpen",`const analysisVisible=(${expression});return (${guard});`);
  for(const embedded of [true,false])for(const analysisOpen of [true,false]){
   assert.equal(visible(true,embedded,analysisOpen),false);
   assert.equal(visible(false,embedded,analysisOpen),!embedded||analysisOpen);
