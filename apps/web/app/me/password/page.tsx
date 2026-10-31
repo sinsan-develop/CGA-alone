@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
 import { apiRequest } from "@/lib/api";
@@ -9,6 +10,7 @@ import { useI18n } from "@/components/language-provider";
 import { ACCOUNT_PAGE_CATALOGS } from "@/lib/i18n/account-pages";
 
 export default function PasswordPage() {
+  const router = useRouter();
   const { language } = useI18n();
   const copy = ACCOUNT_PAGE_CATALOGS[language].password;
   const [token, setToken] = useState("");
@@ -56,6 +58,7 @@ export default function PasswordPage() {
       setCurrentPassword("");
       setNewPassword("");
       setNewPasswordConfirm("");
+      router.replace("/studio/workspace");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : copy.changeFailed);
     } finally {
