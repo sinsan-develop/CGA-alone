@@ -1655,6 +1655,8 @@ def _serialize_default_message(message: AdminDefaultMessage, updater_name: str) 
     )
 
 def _ensure_default_admin_channels(db: Session, organization: Organization) -> None:
+    # 채널/템플릿의 첫 동시 조회는 해당 조직의 기존 transaction 안에서만 직렬화한다.
+    db.execute(select(Organization.id).where(Organization.id == organization.id).with_for_update()).scalar_one()
     for item in DEFAULT_ADMIN_CHANNELS:
         existing = db.scalar(
             select(AdminChannel).where(
