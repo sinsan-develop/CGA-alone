@@ -156,8 +156,8 @@
   },
   {
     "path": "apps/api/app/models/__init__.py",
-    "stage": "P01 / C01",
-    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+    "stage": "P01 / C01 / C02",
+    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호; C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
   },
   {
     "path": "apps/api/app/schemas/persistent_llm.py",
@@ -236,8 +236,8 @@
   },
   {
     "path": "apps/api/app/core/config.py",
-    "stage": "P03 / C01",
-    "reason": "승인된 단일 지속 샘플 기본OFF 및 실제 실행 전 모델/예산/횟수/요금표 미설정 gate; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+    "stage": "P03 / C01 / C02",
+    "reason": "승인된 단일 지속 샘플 기본OFF 및 실제 실행 전 모델/예산/횟수/요금표 미설정 gate; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호; C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
   },
   {
     "path": "apps/api/app/main.py",
@@ -506,8 +506,8 @@
   },
   {
     "path": "apps/api/app/models/channel_connection.py",
-    "stage": "C01",
-    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+    "stage": "C01 / C02",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호; C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
   },
   {
     "path": "apps/api/app/schemas/channel_connection.py",
@@ -553,5 +553,40 @@
     "path": "docs/manual/channel-connections.md",
     "stage": "C01",
     "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/alembic/versions/20261102_0031_connection_runtime.py",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
+  },
+  {
+    "path": "apps/api/app/models/channel_connection_runtime.py",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_bridge.py",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_state.py",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_bridge.py",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_state.py",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
+  },
+  {
+    "path": "packages/shared/src/channel-bridge.mjs",
+    "stage": "C02",
+    "reason": "C02 승인된 공통실행 기반: 기존SDK 순수변환 재사용·설치lease·전달원장·기존방map·단계별회귀"
   }
 ]

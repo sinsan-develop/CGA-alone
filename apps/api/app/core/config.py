@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     webchat_api_key: str = ""
     channel_connection_encryption_key: str = Field(default="", repr=False)
     channel_connection_key_version: str = "v1"
+    channel_connection_node_binary: str = "node"
     # 지속 LLM 첫 샘플은 모델/횟수/예산 확인 전 실제 실행을 허용하지 않는다.
     persistent_llm_enabled: bool = False
     persistent_llm_execution_enabled: bool = False

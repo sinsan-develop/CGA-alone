@@ -30,6 +30,7 @@ class ChannelConnection(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Ba
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     credential_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     credential_key_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    accept_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
