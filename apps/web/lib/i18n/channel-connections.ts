@@ -33,7 +33,13 @@ export const CONNECTION_COPY = {
     "connecting": "연결 중",
     "connected": "연결됨",
     "disconnecting": "해제 중",
-    "stateError": "오류"
+    "stateError": "오류",
+    "keyUnavailable": "서버의 연결 암호화 키 설정이 필요합니다. 관리자에게 설정을 요청하세요.",
+    "duplicate": "같은 외부 계정·대상이 이미 등록되어 있습니다.",
+    "disconnectFirst": "연결 해제 후 수정·삭제하세요.",
+    "invalidCredentials": "인증정보 이름과 실제 값을 확인하세요.",
+    "lastChecked": "마지막 설정 검사",
+    "notChecked": "검사 전"
   },
   "en": {
     "title": "Connections",
@@ -68,7 +74,13 @@ export const CONNECTION_COPY = {
     "connecting": "Connecting",
     "connected": "Connected",
     "disconnecting": "Disconnecting",
-    "stateError": "Error"
+    "stateError": "Error",
+    "keyUnavailable": "Configure the server connection encryption key. Contact the administrator.",
+    "duplicate": "This external account and target are already registered.",
+    "disconnectFirst": "Disconnect before editing or deleting.",
+    "invalidCredentials": "Check credential field names and actual values.",
+    "lastChecked": "Last settings check",
+    "notChecked": "Not checked"
   },
   "zh-CN": {
     "title": "连接目标",
@@ -103,7 +115,13 @@ export const CONNECTION_COPY = {
     "connecting": "连接中",
     "connected": "已连接",
     "disconnecting": "断开中",
-    "stateError": "错误"
+    "stateError": "错误",
+    "keyUnavailable": "需要配置服务器连接加密密钥，请联系管理员。",
+    "duplicate": "此外部账户和目标已登记。",
+    "disconnectFirst": "请先断开连接再编辑或删除。",
+    "invalidCredentials": "请检查凭据名称和实际值。",
+    "lastChecked": "上次设置检查",
+    "notChecked": "未检查"
   },
   "ja": {
     "title": "接続先",
@@ -138,7 +156,13 @@ export const CONNECTION_COPY = {
     "connecting": "接続中",
     "connected": "接続済み",
     "disconnecting": "解除中",
-    "stateError": "エラー"
+    "stateError": "エラー",
+    "keyUnavailable": "サーバーの接続暗号化キー設定が必要です。管理者に確認してください。",
+    "duplicate": "この外部アカウントと接続先は登録済みです。",
+    "disconnectFirst": "接続を解除してから編集・削除してください。",
+    "invalidCredentials": "認証項目名と実際の値を確認してください。",
+    "lastChecked": "最終設定確認",
+    "notChecked": "未確認"
   },
   "vi": {
     "title": "Kết nối",
@@ -173,7 +197,13 @@ export const CONNECTION_COPY = {
     "connecting": "Đang kết nối",
     "connected": "Đã kết nối",
     "disconnecting": "Đang ngắt",
-    "stateError": "Lỗi"
+    "stateError": "Lỗi",
+    "keyUnavailable": "Cần cấu hình khóa mã hóa kết nối máy chủ. Liên hệ quản trị viên.",
+    "duplicate": "Tài khoản ngoài và đích này đã được đăng ký.",
+    "disconnectFirst": "Ngắt kết nối trước khi sửa hoặc xóa.",
+    "invalidCredentials": "Kiểm tra tên trường và giá trị xác thực thực tế.",
+    "lastChecked": "Lần kiểm tra cấu hình cuối",
+    "notChecked": "Chưa kiểm tra"
   },
   "fr": {
     "title": "Connexions",
@@ -208,7 +238,13 @@ export const CONNECTION_COPY = {
     "connecting": "Connexion en cours",
     "connected": "Connecté",
     "disconnecting": "Déconnexion en cours",
-    "stateError": "Erreur"
+    "stateError": "Erreur",
+    "keyUnavailable": "Configurez la clé de chiffrement des connexions sur le serveur. Contactez l’administrateur.",
+    "duplicate": "Ce compte externe et cette destination sont déjà enregistrés.",
+    "disconnectFirst": "Déconnectez avant de modifier ou supprimer.",
+    "invalidCredentials": "Vérifiez les champs et les valeurs des identifiants.",
+    "lastChecked": "Dernière vérification",
+    "notChecked": "Non vérifié"
   },
   "de": {
     "title": "Verbindungen",
@@ -243,6 +279,12 @@ export const CONNECTION_COPY = {
     "connecting": "Verbindung wird hergestellt",
     "connected": "Verbunden",
     "disconnecting": "Verbindung wird getrennt",
-    "stateError": "Fehler"
+    "stateError": "Fehler",
+    "keyUnavailable": "Verbindungsschlüssel auf dem Server einrichten. Wenden Sie sich an die Administration.",
+    "duplicate": "Dieses externe Konto und Ziel sind bereits registriert.",
+    "disconnectFirst": "Vor dem Bearbeiten oder Löschen trennen.",
+    "invalidCredentials": "Feldnamen und tatsächliche Zugangsdaten prüfen.",
+    "lastChecked": "Letzte Einstellungsprüfung",
+    "notChecked": "Nicht geprüft"
   }
 } satisfies Record<SupportedLanguage, Record<string, string>>;

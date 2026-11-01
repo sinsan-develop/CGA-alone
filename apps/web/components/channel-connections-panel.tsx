@@ -16,6 +16,24 @@ export function buildConnectionPayload(draft: ConnectionDraft, credentials: Reco
   return {...draft, name: draft.name.trim(), credentials: Object.keys(values).length ? values : undefined};
 }
 
+export function connectionErrorMessage(error: unknown, copy: Record<string, string>): string {
+  const code = error instanceof Error ? error.message.split(":", 1)[0] : "";
+  const messages: Record<string, string> = {
+    CONNECTION_KEY_UNAVAILABLE: copy.keyUnavailable,
+    CONNECTION_CREDENTIALS_UNAVAILABLE: copy.keyUnavailable,
+    DUPLICATE_CONNECTION: copy.duplicate,
+    DISCONNECT_FIRST: copy.disconnectFirst,
+    INVALID_CREDENTIALS: copy.invalidCredentials,
+  };
+  return Object.hasOwn(messages, code) ? messages[code] : copy.error;
+}
+
+export function ConnectionDetails({ item, bots, copy, language }: { item: ChannelConnection; bots: {id: string; name: string}[]; copy: Record<string, string>; language: string }) {
+  const botName = bots.find(bot => bot.id === item.bot_id)?.name ?? item.bot_id;
+  const checked = item.last_checked_at ? new Intl.DateTimeFormat(language, {dateStyle: "medium", timeStyle: "short"}).format(new Date(item.last_checked_at)) : copy.notChecked;
+  return <p>{copy.bot}: {botName} · {copy.lastChecked}: {checked}</p>;
+}
+
 export function ChannelConnectionsPanel({ token, channel, onClose }: { token: string; channel: {id: string; name: string; data_json: Record<string, unknown>}; onClose: () => void }) {
   const {language} = useI18n(); const copy = CONNECTION_COPY[language];
   const [items, setItems] = useState<ChannelConnection[]>([]);
@@ -45,7 +63,7 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
     try {
       await saveChannelConnection(token, channel.id, buildConnectionPayload(draft, credentials), editing);
       resetForm();setNotice(copy.saved);await reload();
-    } catch {setError(copy.error);} finally {setBusy(false);}
+    } catch (error) {setError(connectionErrorMessage(error, copy));} finally {setBusy(false);}
   }
   async function action(item: ChannelConnection, name: "check" | "disconnect" | "delete") {
     if (busy || (name === "delete" && !window.confirm(copy.confirmDelete))) return;
@@ -55,7 +73,7 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
       setNotice(name === "check" ? (result.configuration_valid ? copy.configOk : copy.configBad) : name === "delete" ? copy.deleted : copy.disconnected);
       if (name === "delete" && editing === item.id) resetForm();
       await reload();
-    } catch {setError(copy.error);} finally {setBusy(false);}
+    } catch (error) {setError(connectionErrorMessage(error, copy));} finally {setBusy(false);}
   }
   function edit(item: ChannelConnection) {
     setDraft({name:item.name,bot_id:item.bot_id,installation_id:item.installation_id,account_id:item.account_id,target_id:item.target_id});
@@ -69,6 +87,7 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
     {!loading && !items.length ? <p>{copy.empty}</p> : null}
     <ul>{items.map(item => <li key={item.id}>
       <strong>{item.name}</strong> · {item.installation_id} / {item.account_id} / {item.target_id}
+      <ConnectionDetails item={item} bots={bots} copy={copy} language={language} />
       <p>{copy[item.observed_state === "error" ? "stateError" : item.observed_state]} · {copy.credentials}: {item.credentials_registered ? copy.registered : copy.missing}</p>
       {item.last_error_code ? <p>{item.last_error_code}</p> : null}
       <div className="admin-page__table-actions">
