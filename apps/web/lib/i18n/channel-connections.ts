@@ -39,7 +39,11 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "연결 해제 후 수정·삭제하세요.",
     "invalidCredentials": "인증정보 이름과 실제 값을 확인하세요.",
     "lastChecked": "마지막 설정 검사",
-    "notChecked": "검사 전"
+    "notChecked": "검사 전",
+    "waitingFirstActivity": "Teams에서 봇을 호출하는 첫 메시지를 기다리고 있습니다.",
+    "verificationFailed": "앱·테넌트·인증정보와 대상 설정을 확인하세요.",
+    "receiverUnavailable": "수신 주소와 Microsoft 연결 상태를 확인하세요.",
+    "appScopeInUse": "이 앱은 다른 CGA 조직에서 연결 중입니다. 해당 연결을 먼저 해제하세요."
   },
   "en": {
     "title": "Connections",
@@ -80,7 +84,11 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "Disconnect before editing or deleting.",
     "invalidCredentials": "Check credential field names and actual values.",
     "lastChecked": "Last settings check",
-    "notChecked": "Not checked"
+    "notChecked": "Not checked",
+    "waitingFirstActivity": "Waiting for the first Teams message addressed to the bot.",
+    "verificationFailed": "Check the app, tenant, credentials and target settings.",
+    "receiverUnavailable": "Check the receiving endpoint and Microsoft connectivity.",
+    "appScopeInUse": "This app is in use by another CGA organization. Disconnect it there first."
   },
   "zh-CN": {
     "title": "连接目标",
@@ -121,7 +129,11 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "请先断开连接再编辑或删除。",
     "invalidCredentials": "请检查凭据名称和实际值。",
     "lastChecked": "上次设置检查",
-    "notChecked": "未检查"
+    "notChecked": "未检查",
+    "waitingFirstActivity": "正在等待 Teams 中首次呼叫机器人的消息。",
+    "verificationFailed": "请检查应用、租户、凭据和目标设置。",
+    "receiverUnavailable": "请检查接收地址和 Microsoft 连接状态。",
+    "appScopeInUse": "其他 CGA 组织正在使用此应用。请先断开该连接。"
   },
   "ja": {
     "title": "接続先",
@@ -162,7 +174,11 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "接続を解除してから編集・削除してください。",
     "invalidCredentials": "認証項目名と実際の値を確認してください。",
     "lastChecked": "最終設定確認",
-    "notChecked": "未確認"
+    "notChecked": "未確認",
+    "waitingFirstActivity": "Teams でボットを呼び出す最初のメッセージを待っています。",
+    "verificationFailed": "アプリ、テナント、認証情報と接続先を確認してください。",
+    "receiverUnavailable": "受信 URL と Microsoft への接続を確認してください。",
+    "appScopeInUse": "別の CGA 組織がこのアプリを使用中です。先にその接続を解除してください。"
   },
   "vi": {
     "title": "Kết nối",
@@ -203,7 +219,11 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "Ngắt kết nối trước khi sửa hoặc xóa.",
     "invalidCredentials": "Kiểm tra tên trường và giá trị xác thực thực tế.",
     "lastChecked": "Lần kiểm tra cấu hình cuối",
-    "notChecked": "Chưa kiểm tra"
+    "notChecked": "Chưa kiểm tra",
+    "waitingFirstActivity": "Đang chờ tin nhắn Teams đầu tiên gọi bot.",
+    "verificationFailed": "Kiểm tra ứng dụng, tenant, thông tin xác thực và đích.",
+    "receiverUnavailable": "Kiểm tra địa chỉ nhận và kết nối Microsoft.",
+    "appScopeInUse": "Tổ chức CGA khác đang dùng ứng dụng này. Hãy ngắt kết nối đó trước."
   },
   "fr": {
     "title": "Connexions",
@@ -244,7 +264,11 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "Déconnectez avant de modifier ou supprimer.",
     "invalidCredentials": "Vérifiez les champs et les valeurs des identifiants.",
     "lastChecked": "Dernière vérification",
-    "notChecked": "Non vérifié"
+    "notChecked": "Non vérifié",
+    "waitingFirstActivity": "En attente du premier message Teams adressé au bot.",
+    "verificationFailed": "Vérifiez l’application, le tenant, les identifiants et la destination.",
+    "receiverUnavailable": "Vérifiez l’adresse de réception et la connexion Microsoft.",
+    "appScopeInUse": "Une autre organisation CGA utilise cette application. Déconnectez-la d’abord."
   },
   "de": {
     "title": "Verbindungen",
@@ -285,6 +309,10 @@ export const CONNECTION_COPY = {
     "disconnectFirst": "Vor dem Bearbeiten oder Löschen trennen.",
     "invalidCredentials": "Feldnamen und tatsächliche Zugangsdaten prüfen.",
     "lastChecked": "Letzte Einstellungsprüfung",
-    "notChecked": "Nicht geprüft"
+    "notChecked": "Nicht geprüft",
+    "waitingFirstActivity": "Warten auf die erste Teams-Nachricht an den Bot.",
+    "verificationFailed": "App, Mandant, Zugangsdaten und Ziel prüfen.",
+    "receiverUnavailable": "Empfangsadresse und Microsoft-Verbindung prüfen.",
+    "appScopeInUse": "Eine andere CGA-Organisation nutzt diese App. Dort zuerst trennen."
   }
 } satisfies Record<SupportedLanguage, Record<string, string>>;

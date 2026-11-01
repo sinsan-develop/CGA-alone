@@ -10,10 +10,10 @@ import jwt
 from fastapi import HTTPException
 from sqlalchemy import select
 from app.core.config import settings
-from app.models import ChannelConnection,ChannelInstallationLease
+from app.models import ChannelConnection,ChannelInstallationLease,ChannelConnectionDelivery
 from app.services import channel_connection_state as state
 from app.services.channel_connections import encrypt_connection_state,decrypt_connection_state
-from app.services.channel_connection_supervisor import ConnectionSpec,VerifiedTarget,NativeHandshakePending
+from app.services.channel_connection_supervisor import ConnectionSpec,VerifiedTarget,NativeHandshakePending,NativeNotSubmitted
 from app.services.channel_connection_teams_auth import TeamsAuthenticator,validate_teams_service_url,_NoRedirect
 
 
@@ -168,7 +168,14 @@ class TeamsAdapter:
         if isinstance(activity.get('value'),dict):
             wire=activity['value']
             if wire.get('webchatRichFormVersion')!='1.0' or not wire.get('sourceMessageId') or not wire.get('sourceTalkNodeId'):raise HTTPException(422,'TEAMS_CARD_RESPONSE_INVALID')
-            text=json.dumps(wire,ensure_ascii=False,sort_keys=True);addressed=True
+            response=wire.get('response')
+            if not isinstance(response,dict):raise HTTPException(422,'TEAMS_CARD_RESPONSE_INVALID')
+            response=dict(response)
+            for key,value in wire.items():
+                if key not in {'webchatRichFormVersion','sourceMessageId','sourceTalkNodeId','response','__cga_buttonValue'}:response[key]=value
+            if '__cga_buttonValue' in wire:response['buttonValue']=wire['__cga_buttonValue']
+            standard={key:wire[key] for key in ('webchatRichFormVersion','sourceMessageId','sourceTalkNodeId')};standard['response']=response
+            text=json.dumps(standard,ensure_ascii=False,sort_keys=True);addressed=True
         text=text.strip();tenant=proof['tenant']
         event={'eventId':'teams:'+state.scoped_hash(json.dumps([conversation_id,event_id])),'nativeRoomKey':'teams:'+state.scoped_hash(json.dumps([tenant,conversation_id])),
             'nativeParticipantKey':'teams:'+kind+':'+state.scoped_hash(json.dumps([tenant,sender_id])),'participantKind':kind,'participantName':str(activity['from'].get('name') or sender_id)[:120],
@@ -183,7 +190,15 @@ class TeamsAdapter:
             row=state._connection(db,cid)
             if row.generation!=generation or row.desired_state!='connected':raise HTTPException(409,'CONNECTION_CHANGED')
             if row.observed_state!='connected':return None
+            existing=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==cid,ChannelConnectionDelivery.event_key==state.scoped_hash(event['eventId'])))
             item=state.accept_delivery(db,cid,lease_id,lease.owner,lease.fence,event)
+            if existing is None and item.status=='received' and event['addressed']:
+                busy=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==cid,
+                    ChannelConnectionDelivery.id!=item.id,ChannelConnectionDelivery.generation==generation,
+                    ChannelConnectionDelivery.native_room_hash==item.native_room_hash,
+                    ChannelConnectionDelivery.status.in_(['received','executing','ready','sending','unknown']),
+                    ChannelConnectionDelivery.event_json['addressed'].astext=='true').limit(1))
+                if busy is not None:item.status='failed';item.last_error_code='ROOM_BUSY'
             if item.context_ciphertext is None:
                 item.context_ciphertext=encrypt_connection_state(context,row.organization_id,row.id,settings.channel_connection_encryption_key,settings.channel_connection_key_version,'delivery:'+str(item.id));item.context_key_version=settings.channel_connection_key_version
             result={'delivery_id':str(item.id)};db.commit();return result
@@ -196,6 +211,14 @@ class TeamsAdapter:
         except (jwt.PyJWTError,ValueError,TypeError,KeyError,HTTPException):raise HTTPException(401,'TEAMS_AUTHENTICATION_FAILED') from None
         if not await asyncio.to_thread(self._client_candidate,client):raise HTTPException(401,'TEAMS_AUTHENTICATION_FAILED')
         verified=await asyncio.to_thread(self.authenticator.authenticate,authorization,activity,client)
+        if activity.get('type')=='invoke' and activity.get('name')=='adaptiveCard/action':
+            value=activity.get('value')
+            if not isinstance(value,dict):raise HTTPException(422,'TEAMS_CARD_RESPONSE_INVALID')
+            if value.get('trigger')=='automatic':return {'ignored':True}
+            if value.get('trigger') not in {None,'manual'}:raise HTTPException(422,'TEAMS_CARD_RESPONSE_INVALID')
+            action=value.get('action')
+            if not isinstance(action,dict) or action.get('type')!='Action.Execute' or not isinstance(action.get('data'),dict):raise HTTPException(422,'TEAMS_CARD_RESPONSE_INVALID')
+            activity={**activity,'type':'message','value':action['data']}
         if activity.get('type')!='message':return {'ignored':True}
         source=activity.get('from');recipient=activity.get('recipient')
         if isinstance(source,dict) and isinstance(recipient,dict) and source.get('id')==recipient.get('id')=='28:'+client:return {'ignored':True}
@@ -218,13 +241,20 @@ class TeamsListener:
     async def listen(self,accept):await self.stopped.wait()
     async def close(self):self.stopped.set()
     async def send(self,target,delivery_id,packets,context):
-        if self.stopped.is_set() or self.targets.get(target.spec.id)!=target:raise HTTPException(409,'TEAMS_RECEIVER_CLOSED')
-        if (context.get('tenant'),context.get('client'),context.get('target'),context.get('generation'))!=(target.spec.installation_id,target.spec.account_id,target.spec.target_id,target.spec.generation):raise HTTPException(403,'TEAMS_REPLY_SCOPE_MISMATCH')
-        service=validate_teams_service_url(context.get('service_url'));token=await self.adapter._token(target.transport.credentials);receipts=[]
-        for message in packets:
-            packet={'type':'message','text':message.get('text') or '', 'from':{'id':context['recipient_id']},'recipient':{'id':context['sender_id']},'conversation':{'id':context['conversation_id']},'replyToId':context['activity_id']}
-            card=(message.get('payload') or {}).get('adaptiveCard')
-            if isinstance(card,dict):packet['attachments']=[{'contentType':'application/vnd.microsoft.card.adaptive','content':card}]
+        try:
+            if self.stopped.is_set() or self.targets.get(target.spec.id)!=target:raise ValueError()
+            if (context.get('tenant'),context.get('client'),context.get('target'),context.get('generation'))!=(target.spec.installation_id,target.spec.account_id,target.spec.target_id,target.spec.generation):raise ValueError()
+            service=validate_teams_service_url(context.get('service_url'))
+            if not isinstance(packets,list) or len(packets)>20:raise ValueError()
+            prepared=[]
+            for message in packets:
+                packet={**message,'from':{'id':context['recipient_id']},'recipient':{'id':context['sender_id']},'conversation':{'id':context['conversation_id']},'replyToId':context['activity_id']}
+                if len(json.dumps(packet,ensure_ascii=False).encode())>28000:raise ValueError()
+                prepared.append(packet)
+            token=await self.adapter._token(target.transport.credentials)
+        except (HTTPException,ValueError,TypeError,KeyError):raise NativeNotSubmitted() from None
+        receipts=[]
+        for packet in prepared:
             result=await asyncio.to_thread(self.adapter.http.send,service,context['conversation_id'],context['activity_id'],token,packet)
             receipts.append(_text(result.get('id')))
         return receipts

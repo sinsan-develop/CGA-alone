@@ -8,7 +8,7 @@ import subprocess
 from fastapi import HTTPException
 from app.core.config import ROOT_DIR, settings
 
-_PROVIDERS = {"slack", "discord", "telegram", "google-chat", "line"}
+_PROVIDERS = {"ms-teams", "slack", "discord", "telegram", "google-chat", "line"}
 _SECRET_KEYS = {"authorization", "token", "bottoken", "apptoken", "accesstoken", "clientsecret", "signingsecret", "channelsecret", "privatekey", "serviceaccountjson", "conversationtoken"}
 
 

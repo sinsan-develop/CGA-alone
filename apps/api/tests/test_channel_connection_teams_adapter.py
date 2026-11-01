@@ -172,3 +172,178 @@ def test_malformed_signed_activity_cannot_leave_a_handshake_proof(native_context
             assert error.value.status_code in {403,422}
         finally:await a.stop()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_second_question_while_first_answer_is_not_sent_is_not_queued_to_execute(native_context,signed):
+    async def run():
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed)
+        try:
+            await a.step();header='Bearer '+signed[-1]();first=await handshake(a,adapter,header,activity(tenant,client))
+            second_body=activity(tenant,client,event='second-while-busy');second_body['from']={'id':'29:another-user','name':'Teams QA other'}
+            second=await adapter.receive(header,second_body)
+            from app.models import ChannelConnectionDelivery
+            with c.sessions() as db:
+                item=db.get(ChannelConnectionDelivery,UUID(second['delivery_id']));assert item.status=='failed' and item.last_error_code=='ROOM_BUSY'
+            await a.step();await drain(a);await a.step();await drain(a)
+            assert len(http.posts)==1
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_native_card_checks_latest_source_and_owner_before_resuming_scenario(native_context,signed):
+    async def run():
+        from copy import deepcopy
+        from app.models import BotVersion,ChannelConnectionDelivery
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed)
+        with c.sessions() as db:
+            version=db.get(BotVersion,c.ids['version_id']);doc=deepcopy(version.version_json);graph=doc['dialog_flow_graphs'][1]
+            talk=next(n for n in graph['nodes'] if n['kind']=='talk');talk['config']={'messageType':'button','basicMessages':['선택하세요'],'messages':['확인','다음'],'responseType':'relay','responseVariableName':'choice'}
+            graph['nodes'].append({'id':'teams-result','kind':'talk','config':{'messageType':'text','basicMessages':['선택: {{$choice}}'],'responseType':'none'}})
+            for link in graph['links']:
+                if link['sourceNodeId']==talk['id']:link['targetNodeId']='teams-result'
+            graph['links'].append({'sourceNodeId':'teams-result','sourcePort':'next','targetNodeId':'local-end'});version.version_json=doc;db.commit()
+        try:
+            await a.step();header='Bearer '+signed[-1]();await handshake(a,adapter,header,activity(tenant,client))
+            await a.step();await drain(a);await a.step();await drain(a)
+            data=http.posts[0][3]['attachments'][0]['content']['actions'][1]['data']
+            stale=activity(tenant,client,event='stale-card');stale.update(text='',entities=[],value={**data,'sourceMessageId':str(uuid4())})
+            bad=await adapter.receive(header,stale);await a.step();await drain(a)
+            with c.sessions() as db:
+                item=db.get(ChannelConnectionDelivery,UUID(bad['delivery_id']));assert item.status=='failed' and item.last_error_code=='EXECUTION_NOT_STARTED'
+            wrong=activity(tenant,client,event='wrong-card-owner');wrong.update(text='',entities=[],value=data);wrong['from']={'id':'29:wrong-owner','name':'Other QA'}
+            rejected=await adapter.receive(header,wrong);await a.step();await drain(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(rejected['delivery_id'])).status=='failed'
+            own=activity(tenant,client,event='correct-card-owner');own.update(text='',entities=[],value=data)
+            await adapter.receive(header,own);await a.step();await drain(a);await a.step();await drain(a)
+            assert len(http.posts)==2 and '선택: 다음' in str(http.posts[-1])
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_complete_native_packet_is_preflighted_before_any_post(native_context,signed):
+    async def run():
+        from copy import deepcopy
+        from app.models import ChannelConnectionDelivery
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed)
+        try:
+            await a.step();body=activity(tenant,client);body['channelData']['channel']={'id':'teams-target-0'};body['conversation']={'id':'🚀'*1700,'conversationType':'channel'}
+            first=await handshake(a,adapter,'Bearer '+signed[-1](),body);await a.step();await drain(a)
+            with c.sessions() as db:
+                row=db.get(ChannelConnectionDelivery,UUID(first['delivery_id']));assert row.status=='ready';result=deepcopy(row.result_json);result['botMessages'][0]['text']='x'*23000;row.result_json=result;db.commit()
+            await a.step();await drain(a)
+            with c.sessions() as db:
+                row=db.get(ChannelConnectionDelivery,UUID(first['delivery_id']));assert row.status=='failed' and row.last_error_code=='DELIVERY_NOT_SUBMITTED'
+                assert row.result_json['botMessages']
+            assert not http.posts
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_adaptive_execute_invoke_is_durable_and_automatic_refresh_is_not_a_question(native_context,signed,monkeypatch):
+    async def run():
+        import httpx
+        from app.core.config import settings
+        from app.services.channel_connection_supervisor import ADAPTERS
+        from app.models import ChannelConnectionDelivery,ChannelConnection
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed);monkeypatch.setitem(ADAPTERS,'ms_teams',adapter);monkeypatch.setattr(settings,'channel_connection_worker_enabled',True)
+        app=FastAPI();app.include_router(import_module('app.api.routes.channel_connection_events').router,prefix='/api/v1')
+        headers={'Authorization':'Bearer '+signed[-1]()};path='/api/v1/channel-connections/ms-teams/events'
+        wire={'webchatRichFormVersion':'1.0','sourceMessageId':str(uuid4()),'sourceTalkNodeId':'old-card','response':{'buttonValue':'확인'}}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://synthetic.invalid') as browser:
+            try:
+                await a.step();automatic=activity(tenant,client,event='automatic-card-refresh');automatic.update(type='invoke',name='adaptiveCard/action',value={'trigger':'automatic','action':{'type':'Action.Execute','data':wire}})
+                response=await browser.post(path,json=automatic,headers=headers)
+                assert response.status_code==200 and response.json()['type']=='application/vnd.microsoft.activity.message'
+                with c.sessions() as db:
+                    assert not list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][0])))
+                    assert db.get(ChannelConnection,c.ids['connections'][0]).observed_state=='connecting'
+                await handshake(a,adapter,headers['Authorization'],activity(tenant,client))
+                manual=activity(tenant,client,event='manual-card-action');manual.update(type='invoke',name='adaptiveCard/action',value={'trigger':'manual','action':{'type':'Action.Execute','data':wire}})
+                response=await browser.post(path,json=manual,headers=headers)
+                assert response.status_code==200 and response.json()['statusCode']==200
+                with c.sessions() as db:
+                    assert len(list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][0]))))==2
+            finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_other_api_replica_can_commit_signed_activity_to_the_lease_owner(native_context,signed):
+    async def run():
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed)
+        other=subject().TeamsAdapter(c.sessions,owner='c03-other-api-replica',http=Http(),authenticator=adapter.authenticator)
+        try:
+            await a.step();result=await handshake(a,other,'Bearer '+signed[-1](),activity(tenant,client))
+            from app.models import ChannelConnectionDelivery
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(result['delivery_id'])).status in {'received','executing','ready'}
+            assert not other.http.oauth_calls
+            await a.step();await drain(a);await a.step();await drain(a)
+            assert len(http.posts)==1
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_same_app_two_targets_disconnect_independently(native_context,signed):
+    async def run():
+        from app.models import ChannelConnection
+        from app.services.channel_connections import disconnect_connection
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed)
+        try:
+            await a.step();header='Bearer '+signed[-1]()
+            await handshake(a,adapter,header,activity(tenant,client));await a.step();await drain(a);await a.step();await drain(a)
+            await handshake(a,adapter,header,activity(tenant,client,event='target-b-first',index=1));await a.step();await drain(a);await a.step();await drain(a)
+            assert len(a.runs)==1 and len(next(iter(a.runs.values())).targets)==2 and len(http.oauth_calls)==1
+            with c.sessions() as db:disconnect_connection(db.get(ChannelConnection,c.ids['connections'][0]));db.commit()
+            await a.step();assert len(next(iter(a.runs.values())).targets)==1
+            with pytest.raises(HTTPException):await adapter.receive(header,activity(tenant,client,event='off-a'))
+            await adapter.receive(header,activity(tenant,client,event='still-on-b',index=1));await a.step();await drain(a);await a.step();await drain(a)
+            assert len(http.posts)==3 and http.posts[-1][1]=='teams-target-1'
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_provider_timeout_remains_unknown_without_native_resend(native_context,signed):
+    async def run():
+        from app.models import ChannelConnectionDelivery
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed);http.fail=True
+        try:
+            await a.step();first=await handshake(a,adapter,'Bearer '+signed[-1](),activity(tenant,client))
+            await a.step();await drain(a);await a.step();await drain(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(first['delivery_id'])).status=='unknown'
+            for _ in range(3):await a.step();await drain(a)
+            assert len(http.posts)==1
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+def test_restart_recovers_verified_scope_and_does_not_resend_uncertain_post(native_context,signed):
+    async def run():
+        from app.models import ChannelConnectionDelivery,ChannelConnection
+        from app.services.channel_connection_supervisor import ConnectionSupervisor
+        from app.services import channel_connection_state as state
+        from app.services.channel_connections import disconnect_connection
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed);b=None
+        try:
+            await a.step();first=await handshake(a,adapter,'Bearer '+signed[-1](),activity(tenant,client));await a.step();await drain(a)
+            with c.sessions() as db:
+                row=db.get(ChannelConnectionDelivery,UUID(first['delivery_id']));assert row.status=='ready';row.status='sending';row.send_claim_id=str(uuid4());row.deadline_at=state.clock(db)-timedelta(seconds=1)
+                disconnect_connection(db.get(ChannelConnection,c.ids['connections'][1]));db.commit()
+            await a.stop()
+            new=subject().TeamsAdapter(c.sessions,owner='c03-restarted-api',http=http,authenticator=adapter.authenticator);b=ConnectionSupervisor(c.sessions,{'ms_teams':new},owner='c03-restarted-api')
+            for _ in range(3):await b.step();await drain(b)
+            with c.sessions() as db:
+                assert db.get(ChannelConnectionDelivery,UUID(first['delivery_id'])).status=='unknown'
+                assert db.get(ChannelConnection,c.ids['connections'][0]).observed_state=='connected'
+                assert db.get(ChannelConnection,c.ids['connections'][1]).desired_state=='disconnected'
+            assert not http.posts
+        finally:
+            if not a.stopping:await a.stop()
+            if b:await b.stop()
+    asyncio.run(run())

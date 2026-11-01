@@ -62,3 +62,12 @@ test("connect remains disabled without runtime and prevents duplicate connecting
  assert.equal(disabled(item,true,true),true);
  assert.equal(disabled({desired_state:"connected"},true,false),true);
 });
+
+test("Teams handshake and authentication states are understandable without exposing raw errors",()=>{
+ const show=extract("connectionStatusMessage");const copy={waitingFirstActivity:"Waiting for a Teams message",verificationFailed:"Check registration",receiverUnavailable:"Check connectivity",appScopeInUse:"App already belongs to another organization"};
+ assert.equal(show("WAITING_FIRST_ACTIVITY",copy),copy.waitingFirstActivity);
+ assert.equal(show("TEAMS_APP_SCOPE_IN_USE",copy),copy.appScopeInUse);
+ assert.equal(show("CONNECTION_VERIFICATION_FAILED",copy),copy.verificationFailed);
+ assert.equal(show("CONNECTION_RECEIVER_UNAVAILABLE",copy),copy.receiverUnavailable);
+ assert.equal(show("FUTURE_FIXED_CODE",copy),"FUTURE_FIXED_CODE");
+});

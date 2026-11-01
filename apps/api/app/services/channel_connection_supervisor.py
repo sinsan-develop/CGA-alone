@@ -53,6 +53,10 @@ class NativeHandshakePending(Exception):
     """외부 인증은 준비됐지만 실제 대상의 첫 검증 Activity를 기다린다."""
 
 
+class NativeNotSubmitted(Exception):
+    """실제 메시지 POST를 한 건도 시작하지 않았음을 전송 코드가 보장한다."""
+
+
 class NativeListener(Protocol):
     async def update(self,targets:list[VerifiedTarget])->None: ...
     async def listen(self,accept:Callable[[list[InboundEnvelope]],Awaitable[list[UUID]]])->None: ...
@@ -210,8 +214,11 @@ class ConnectionSupervisor:
                 grouped.setdefault((spec.organization_id,spec.provider,target.listener_scope),[]).append(target)
             except NativeHandshakePending:
                 await asyncio.to_thread(self._pending,spec)
-            except Exception:
-                await asyncio.to_thread(self._error,spec,'CONNECTION_VERIFICATION_FAILED')
+            except Exception as error:
+                # 공개 상태에는 허용된 고정 코드만 남기고 예외 원문은 버린다.
+                code=str(getattr(error,'detail','')).split(':',1)[0]
+                allowed={'TEAMS_APP_SCOPE_IN_USE','TEAMS_CONFIGURATION_INVALID','TEAMS_ACCESS_TOKEN_INVALID','TEAMS_TRANSPORT_FAILED','TEAMS_PROOF_SCOPE_MISMATCH'}
+                await asyncio.to_thread(self._error,spec,code if code in allowed else 'CONNECTION_VERIFICATION_FAILED')
         self.verified={cid:target for cid,target in self.verified.items() if active_specs.get(cid)==target.spec}
         for key,run in list(self.runs.items()):
             if key not in grouped or run.task and run.task.done() or run.heartbeat and run.heartbeat.done():
@@ -295,7 +302,7 @@ class ConnectionSupervisor:
         messages=result.get('botMessages',[])
         provider=target.spec.provider.replace('_','-')
         destination={k:event[k] for k in ('channelId','threadTs','chatId','threadId','spaceName','threadName') if k in event}
-        packets=convert_channel_packet(provider,'replies',{'messages':messages,'destination':destination}) if provider in {'slack','discord','telegram','google-chat','line'} else messages
+        packets=convert_channel_packet(provider,'replies',{'messages':messages,'destination':destination}) if provider in {'ms-teams','slack','discord','telegram','google-chat','line'} else messages
         with self.sessions() as db:
             claim=state.claim_send(db,delivery_id,run.lease_id,self.owner,run.fence);db.commit()
         return (claim,packets,context) if claim else None
@@ -309,9 +316,13 @@ class ConnectionSupervisor:
             # botMessages가 비면 일반 대화/무응답이다. 외부 게시 없이 결과를 확정한다.
             receipts=await asyncio.wait_for(run.listener.send(target,delivery_id,packets,context),25) if packets else []
             with self.sessions() as db:state.record_sent(db,delivery_id,claim,receipts);db.commit()
-        except BaseException:
+        except BaseException as error:
             with self.sessions() as db:
-                if claim:state.mark_unknown(db,delivery_id,claim,'DELIVERY_UNKNOWN')
+                if claim and isinstance(error,NativeNotSubmitted):
+                    item=state._delivery(db,delivery_id)
+                    if item.send_claim_id==claim and item.status in {'sending','unknown'}:
+                        item.status='failed';item.last_error_code='DELIVERY_NOT_SUBMITTED';item.deadline_at=None
+                elif claim:state.mark_unknown(db,delivery_id,claim,'DELIVERY_UNKNOWN')
                 else:
                     item=state._delivery(db,delivery_id)
                     if item.status=='ready':item.status='failed';item.last_error_code='PACKET_NOT_SUBMITTED'

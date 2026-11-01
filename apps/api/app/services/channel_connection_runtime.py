@@ -115,7 +115,7 @@ def execute_connection_delivery(sessions,delivery_id,installation_id,owner,fence
             channel=connection.provider.replace("_","-")
             bot,version,_=channels._get_active_bot_version(db,str(connection.bot_id),channel)
             message=_restore_selection(db,channel,membership.room_id,event)
-            if channel in {"slack","discord","telegram","google-chat","line"}:
+            if channel in {"ms-teams","slack","discord","telegram","google-chat","line"}:
                 # 실제 CGA 진입 전 확실히 거절한 카드를 유료 결과불명으로 오인하지 않는다.
                 webchat._validate_native_card_response(db,db.get(ChannelRoom,membership.room_id),version,membership.participant_id,message,channel)
             delivery.room_id=membership.room_id

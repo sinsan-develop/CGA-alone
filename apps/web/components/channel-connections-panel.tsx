@@ -28,6 +28,20 @@ export function connectionErrorMessage(error: unknown, copy: Record<string, stri
   return Object.hasOwn(messages, code) ? messages[code] : copy.error;
 }
 
+export function connectionStatusMessage(code: string, copy: Record<string, string>): string {
+  const messages: Record<string, string> = {
+    WAITING_FIRST_ACTIVITY: copy.waitingFirstActivity,
+    CONNECTION_VERIFICATION_FAILED: copy.verificationFailed,
+    TEAMS_CONFIGURATION_INVALID: copy.verificationFailed,
+    TEAMS_ACCESS_TOKEN_INVALID: copy.verificationFailed,
+    TEAMS_PROOF_SCOPE_MISMATCH: copy.verificationFailed,
+    CONNECTION_RECEIVER_UNAVAILABLE: copy.receiverUnavailable,
+    TEAMS_TRANSPORT_FAILED: copy.receiverUnavailable,
+    TEAMS_APP_SCOPE_IN_USE: copy.appScopeInUse,
+  };
+  return Object.hasOwn(messages, code) ? messages[code] : code;
+}
+
 export function connectDisabled(item: Pick<ChannelConnection,"desired_state">, available: boolean, busy: boolean): boolean {
   return busy || !available || item.desired_state === "connected";
 }
@@ -102,7 +116,7 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
       <strong>{item.name}</strong> · {item.installation_id} / {item.account_id} / {item.target_id}
       <ConnectionDetails item={item} bots={bots} copy={copy} language={language} />
       <p>{copy[item.observed_state === "error" ? "stateError" : item.observed_state]} · {copy.credentials}: {item.credentials_registered ? copy.registered : copy.missing}</p>
-      {item.last_error_code ? <p>{item.last_error_code}</p> : null}
+      {item.last_error_code ? <p>{connectionStatusMessage(item.last_error_code, copy)}</p> : null}
       <div className="admin-page__table-actions">
         <button type="button" className="admin-page__ghost" disabled={busy} onClick={() => action(item,"check")}>{copy.check}</button>
         <button type="button" className="admin-page__ghost" disabled={connectDisabled(item,available,busy)} title={!available ? copy.pending : undefined} onClick={() => action(item,"connect")}>{copy.connect}</button>

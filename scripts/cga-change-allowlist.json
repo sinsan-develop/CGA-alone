@@ -648,5 +648,15 @@
     "path": "apps/api/tests/test_channel_connection_teams_adapter.py",
     "stage": "C03",
     "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀"
+  },
+  {
+    "path": "packages/shared/src/teams.mjs",
+    "stage": "C03",
+    "reason": "승인된 Teams 기본6표현/기존AdaptiveCard 정규화재사용·원본/양식응답·전송크기 경계검증"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_teams_packets.py",
+    "stage": "C03",
+    "reason": "승인된 Teams 기본6표현/기존AdaptiveCard 정규화재사용·원본/양식응답·전송크기 경계검증"
   }
 ]

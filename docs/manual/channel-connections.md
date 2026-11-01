@@ -4,7 +4,7 @@
 
 시스템 연계 → 채널 관리에서 기존 채널 종류 아래 여러 연결 대상을 등록한다. 같은 Slack의 서로 다른 워크스페이스·방 등을 따로 저장할 수 있다. 연결 대상은 답변봇을 새로 생성하지 않는다.
 
-현재 C01은 설정 등록·조회·편집·삭제·설정 검사 기능이다. 실제 메신저 접속/수신/답변 게시는 후속 실행 adapter 구현과 환경 승인 뒤 사용할 수 있다. 화면의 연결 버튼은 현재 비활성이다. 저장이나 설정 검사 성공을 실제 메신저 연결 성공으로 판단하지 않는다.
+설정 등록·조회·편집·삭제·설정 검사는 외부 접속 없이 사용할 수 있다. 연결 버튼은 서버 실행 설정과 해당 Provider 실행부가 준비된 경우에만 활성화된다. 저장이나 설정 검사 성공을 실제 메신저 연결 성공으로 판단하지 않는다.
 
 ## 등록
 
@@ -35,3 +35,44 @@ Teams 준비 근거: https://learn.microsoft.com/en-us/microsoftteams/platform/t
 실행은 서버의 CHANNEL_CONNECTION_WORKER_ENABLED 기본 false이다. 승인된 실제 Provider 실행부와 암호화 키가 준비된 경우에만 연결 버튼이 활성화된다. 연결 명령은 연결 중으로 표시하며, 실제 인증과 수신 준비 확인 뒤에만 연결됨으로 바뀐다. 화면은 연결 희망 대상의 상태를 자동 갱신한다.
 
 동일 앱의 수신 연결을 공유해도 대상별 해제는 독립적이다. 해제 후 과거 질문을 자동으로 가져오지 않으며, 게시 결과가 불명확하면 자동으로 재전송하지 않는다. 서비스 재시작은 연결 희망 상태를 복원하되 명시적으로 해제한 대상은 유지한다. C02만으로 실제 메신저 접속이 제공되는 것은 아니며 각 Provider 구현·실제 인증 검증은 후속 단계다.
+
+## Teams 연결(C03)
+
+### 준비 조건
+
+현재 구현은 Microsoft Bot Connector의 단일 테넌트 앱을 대상으로 한다. 개인 Microsoft 계정 로그인만으로 테넌트·봇 앱·사용자 지정 앱 설치 권한이 준비된 것은 아니다. 관리자가 Teams 앱 설치를 허용한 조직 환경과 Azure Bot 앱 등록, 공개 HTTPS 수신 주소가 필요하다. 실제 앱·키 등록과 공개 주소 설정은 별도 승인 후 진행한다.
+
+### 등록 순서
+
+1. 조직의 Microsoft Entra/Azure Bot 설정에서 테넌트 UUID와 앱(client) UUID를 확인한다. 봇의 Teams 채널을 준비하고 앱의 bot ID를 해당 앱 UUID로 맞춘다. 필요한 권한·구독·비용은 실제 등록 전에 확인한다.
+2. 승인된 공개 HTTPS 호스트의 `/api/v1/channel-connections/ms-teams/events`를 봇의 Messaging endpoint로 등록한다. WSL의 내부 HTTP 주소를 외부 수신 주소로 사용하지 않는다.
+3. CGA-alone의 시스템 연계 → 채널 관리에서 기존 MS Teams 채널을 선택하고 [연결 대상] → [연결 대상 추가]를 연다. 답변할 봇은 기존 운영 버전과 해당 채널의 봇스테이션 설정이 준비되어 있어야 한다.
+4. 설치·워크스페이스 ID에는 테넌트 UUID, 외부 봇 계정 ID에는 앱 UUID, 대상 방·채널 ID에는 Teams 채널 ID 또는 개인/그룹 채팅의 conversation ID를 넣는다. 채널은 channelData.channel.id와, 개인/그룹은 conversation.id와 대조한다. 표시 이름이나 사용자 이메일을 ID 대신 넣지 않는다.
+5. 보호 입력란 `tenant_id`, `client_id`, `client_secret`에 해당 앱의 값을 등록한다. 앞의 두 값은 연결 ID 설정과 일치해야 한다. Secret은 문서·채팅·CSV·기존 인증 JSON에 기록하지 않는다. 서버의 연결 암호화 키가 없으면 등록할 수 없다.
+6. [설정 검사]는 저장된 설정 검사이다. [연결]을 누르면 서버가 Microsoft 인증을 확인하고 **첫 인증된 대상 메시지를 기다리는 동안 ‘연결 중’**을 유지한다. 해당 Teams 대상에서 봇을 호출한다. 서버가 서명·앱·테넌트·대상을 모두 확인한 뒤에만 ‘연결됨’으로 바뀐다.
+7. 고정 Q/A 질문으로 답변을 확인하고, 같은 앱의 다른 대상은 별도 연결로 등록한다. A 해제 후 B가 유지되는지 확인한다. 다른 CGA 조직에서 같은 앱을 동시에 수신하도록 등록하면 거부한다.
+
+서버 관리자는 승인 후 API의 `CHANNEL_CONNECTION_WORKER_ENABLED`와 `CHANNEL_CONNECTION_ENCRYPTION_KEY`, `CHANNEL_CONNECTION_KEY_VERSION`을 설정한다. Compose는 기본 false/빈 키로 실행한다. 이 매뉴얼 작성이나 설정 저장만으로 키 등록·실행 활성화를 하지 않는다.
+
+### 대화와 카드
+
+개인 채팅은 봇에 보낸 메시지를 질문으로 처리한다. 그룹·채널에서는 봇을 명시적으로 호출한 메시지와 해당 봇 카드의 선택만 실행한다. 채널의 스레드는 Teams conversation ID에 따라 분리하고, 같은 방의 답변 처리 중 새 질문을 나중에 실행하도록 대기열에 쌓지 않는다. 일반 대화는 봇 답변을 만들지 않는다.
+
+기존 text/button/link-button/card/table/carousel과 Teams용 Adaptive Card 템플릿을 재사용한다. 카드의 원본 메시지·노드와 질문자를 서버에서 대조한다. Action.Submit의 입력·data와 수동 Action.Execute를 기존 응답 변수로 전달하며, 자동 카드 refresh는 질문·모델 실행을 일으키지 않는다. Webchat 전용 양식을 Teams 카드로 자동 변환하는 기능은 제공하지 않으므로 해당 채널의 템플릿을 작성한다.
+
+질문은 기존 API의 4,000자 제한을 따른다. 수신 HTTP 본문은 256 KiB, 생성 표현은 24 KB, 실제 회신 문맥을 포함한 패킷은 28 KB 이내로 제한한다. 형식·크기를 전송 전에 검사한다. 여러 패킷 전송 중 시간초과·프로세스 종료가 발생해 결과가 불명확하면 자동 재전송하지 않는다. 재접속 때 과거 질문을 자동으로 재실행하지 않는다.
+
+### 해제·재연결과 오류
+
+- [연결 해제]는 해당 대상만 중단한다. 기존 대화 기록과 외부 앱은 유지된다. 설정 변경·삭제는 해제 후 수행한다.
+- [연결]로 다시 시작하며, 기존 해제 대상은 서버 재시작만으로 자동 연결되지 않는다. 연결 희망 상태였던 대상은 저장된 검증 정보와 현재 인증을 다시 확인한다.
+- ‘첫 메시지 대기’: 대상 ID와 앱 설치를 확인하고 그 대상에서 봇을 호출한다. 단순 저장·OAuth 성공은 수신 검증이 아니다.
+- ‘앱·테넌트·인증정보 확인’: UUID 일치, Secret 만료, 운영 봇·채널 설정을 관리자와 확인한다. 비밀값을 오류 보고에 붙이지 않는다.
+- ‘다른 CGA 조직에서 사용 중’: 기존 조직의 해당 앱 연결을 먼저 해제하거나 별도 앱을 사용한다.
+- ‘수신·Microsoft 연결 확인’: 승인된 공개 endpoint, 네트워크와 서비스 상태를 확인한다. 결과 불명 전송을 임의 재실행하지 않는다.
+
+### 검증 범위
+
+C03 개발 검증은 합성 JWT, PostgreSQL 원장, 기존 고정 Q/A·카드 실행과 대역 Microsoft 전송을 사용한다. 실제 Teams 테넌트·앱 설치·Microsoft 왕복은 **NOT_RUN / 인수 필수**다. 외부 HTTPS·키·실제 호출 승인 후 이 절차를 실제 환경에서 확인해야 한다.
+
+근거: [Bot Connector 인증](https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication?view=azure-bot-service-4.0), [Teams 카드](https://learn.microsoft.com/en-us/microsoftteams/platform/task-modules-and-cards/cards/cards-reference), [Universal Actions](https://learn.microsoft.com/en-us/adaptive-cards/authoring-cards/universal-action-model).

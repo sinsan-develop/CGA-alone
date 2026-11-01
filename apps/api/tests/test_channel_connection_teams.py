@@ -60,3 +60,19 @@ def test_connect_records_server_cutoff_before_first_activity(connection_api,monk
     c=connection_api;monkeypatch.setattr(settings,'channel_connection_worker_enabled',True);monkeypatch.setitem(ADAPTERS,'slack',Adapter())
     item=c.client.post(c.base,json=c.payload).json()['data']['item'];assert c.client.post(c.base+'/'+item['id']+'/connect').status_code==200
     assert c.db.get(ChannelConnection,UUID(item['id'])).accept_after is not None
+
+
+def test_known_provider_scope_error_keeps_only_fixed_code(native_context):
+    async def run():
+        from app.services import channel_connection_supervisor as common
+        from fastapi import HTTPException
+        class Conflict(Adapter):
+            async def verify(self,spec,credentials):raise HTTPException(409,'TEAMS_APP_SCOPE_IN_USE: synthetic-secret-must-not-appear')
+        c=native_context;prepare(c);a=worker(c,Conflict())
+        try:
+            await a.step()
+            from app.models import ChannelConnection
+            with c.sessions() as db:
+                row=db.get(ChannelConnection,c.ids['connections'][0]);assert row.last_error_code=='TEAMS_APP_SCOPE_IN_USE'
+        finally:await a.stop()
+    asyncio.run(run())

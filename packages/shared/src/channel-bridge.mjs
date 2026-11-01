@@ -1,11 +1,13 @@
 // 기존 SDK의 순수 변환만 실행한다. 네트워크/대화 실행/인증정보를 취급하지 않는다.
 import { readFileSync } from "node:fs";
 import * as sdk from "./channel.ts";
+import { buildAidotTeamsReplyPayload } from "./teams.mjs";
 const normalizers = new Map([
   ["slack", sdk.normalizeAidotSlackEvent], ["discord", sdk.normalizeAidotDiscordEvent],
   ["telegram", sdk.normalizeAidotTelegramEvent], ["google-chat", sdk.normalizeAidotGoogleChatEvent], ["line", sdk.normalizeAidotLineEvent],
 ]);
 const builders = new Map([
+  ["ms-teams", buildAidotTeamsReplyPayload],
   ["slack", sdk.buildAidotSlackReplyPayload], ["discord", sdk.buildAidotDiscordReplyPayload],
   ["telegram", sdk.buildAidotTelegramReplyPayload], ["google-chat", sdk.buildAidotGoogleChatReplyPayload], ["line", sdk.buildAidotLineMessage],
 ]);
@@ -13,7 +15,7 @@ try {
   const source = readFileSync(0, "utf8");
   if (Buffer.byteLength(source) > 1048576) throw Error("size");
   const { provider, operation, payload } = JSON.parse(source);
-  if (!normalizers.has(provider) || !payload || typeof payload !== "object") throw Error("input");
+  if (!(operation === "replies" ? builders.has(provider) : normalizers.has(provider)) || !payload || typeof payload !== "object") throw Error("input");
   let value;
   if (operation === "normalize") value = await normalizers.get(provider)(payload.input, payload.connection, payload.eventIndex);
   else if (operation === "selection") value = sdk.restoreAidotNativeSelection(provider, payload.source, payload.event);

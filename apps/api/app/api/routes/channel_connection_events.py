@@ -27,4 +27,7 @@ async def teams_activity(request:Request):
     except (ValueError,TypeError,UnicodeError):raise HTTPException(422,'TEAMS_BODY_INVALID') from None
     await adapter.receive(request.headers.get('authorization',''),value)
     # Activity를 원장에 commit했거나 질문이 아닌 유효한 event임을 확인한 뒤에만 ACK한다.
+    if value.get('type')=='invoke':
+        result={'statusCode':200,'type':'application/vnd.microsoft.activity.message','value':''} if value.get('name')=='adaptiveCard/action' else {'statusCode':400,'type':'application/vnd.microsoft.error','value':{'code':'TeamsInvokeUnsupported'}}
+        return Response(content=json.dumps(result),status_code=200,media_type='application/json')
     return Response(content='{}',status_code=200,media_type='application/json')
