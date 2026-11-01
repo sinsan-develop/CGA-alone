@@ -177,6 +177,9 @@ async def start_connection_supervisor(app: FastAPI) -> None:
         return
     from app.services.channel_connection_supervisor import ConnectionSupervisor
     supervisor=ConnectionSupervisor(SessionLocal)
+    from app.services.channel_connection_supervisor import ADAPTERS
+    from app.services.channel_connection_teams import TeamsAdapter
+    ADAPTERS["ms_teams"]=TeamsAdapter(SessionLocal,owner=supervisor.owner)
     app.state.connection_supervisor=supervisor
     app.state.connection_supervisor_task=asyncio.create_task(supervisor.serve())
 

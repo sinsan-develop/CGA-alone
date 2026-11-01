@@ -633,5 +633,20 @@
     "path": "apps/api/tests/test_channel_connection_teams.py",
     "stage": "C03",
     "reason": "승인된 Teams 첫 Activity 대기·앱 교차조직단독수신·기준시각 및 기존공통경계회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_teams.py",
+    "stage": "C03",
+    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀"
+  },
+  {
+    "path": "apps/api/app/api/routes/channel_connection_events.py",
+    "stage": "C03",
+    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_teams_adapter.py",
+    "stage": "C03",
+    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀"
   }
 ]

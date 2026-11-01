@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import channel_connections
+from app.api.routes import channel_connections, channel_connection_events
 from app.api.routes import admin, am, auth, bots, channels, edit_locks, hubs, richform, webchat
 
 
@@ -16,3 +16,5 @@ api_router.include_router(richform.router)
 api_router.include_router(webchat.router)
 
 api_router.include_router(channel_connections.router)
+
+api_router.include_router(channel_connection_events.router)
