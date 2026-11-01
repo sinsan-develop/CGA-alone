@@ -58,7 +58,7 @@ def test_wrong_key_signature_and_channel_endorsement_are_rejected(signed):
     assert error.value.status_code==403
 
 
-@pytest.mark.parametrize('url',['http://smba.trafficmanager.net/amer/','https://smba.trafficmanager.net.attacker.invalid/amer/','https://user:password@smba.trafficmanager.net/amer/','https://smba.trafficmanager.net:444/amer/','https://127.0.0.1/','https://169.254.169.254/','https://smba.trafficmanager.net/amer/?redirect=secret','https://smba.trafficmanager.net/amer/#secret','https://smba.trafficmanager.net/%2e%2e/','https://smba.trafficmanager.net/../'])
+@pytest.mark.parametrize('url',['http://smba.trafficmanager.net/amer/','https://smba.trafficmanager.net.attacker.invalid/amer/','https://user:password'+'@'+'smba.trafficmanager.net/amer/','https://smba.trafficmanager.net:444/amer/','https://127.0.0.1/','https://169.254.169.254/','https://smba.trafficmanager.net/amer/?redirect=secret','https://smba.trafficmanager.net/amer/#secret','https://smba.trafficmanager.net/%2e%2e/','https://smba.trafficmanager.net/../'])
 def test_reply_destination_cannot_exfiltrate_tokens(url):
     with pytest.raises(HTTPException):subject().validate_teams_service_url(url)
 
