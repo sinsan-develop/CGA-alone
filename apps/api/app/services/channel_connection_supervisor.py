@@ -245,6 +245,13 @@ class ConnectionSupervisor:
                     # DB 검증이 선행해도 실제 수신은 현재 target+generation을 다시 검증한다.
                     run.targets={t.spec.id:t for t in targets}
                     await asyncio.wait_for(run.listener.update(targets),10)
+                accepts=getattr(run.listener,'accepts_target',None)
+                if callable(accepts):
+                    eligible=[]
+                    for target in targets:
+                        if accepts(target):eligible.append(target)
+                        else:await asyncio.to_thread(self._error,target.spec,'CONNECTION_CREDENTIALS_MISMATCH')
+                    targets=eligible
                 live=await asyncio.to_thread(self._activate,lease_id,fence,targets)
                 if not live:
                     await self._close(key,run);continue

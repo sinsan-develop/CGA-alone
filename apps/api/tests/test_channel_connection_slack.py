@@ -184,3 +184,35 @@ def test_default_socket_transport_disables_redirects_proxy_and_sensitive_logs(mo
         assert options['open_timeout']==5 and options['close_timeout']==2 and options['compression'] is None
         assert isinstance(transport.process_redirect(ValueError('synthetic')),SecurityError)
     asyncio.run(run())
+
+
+def test_cold_start_skips_wrong_app_token_before_opening_valid_shared_socket():
+    async def run():
+        from dataclasses import replace
+        h=Http();valid=Ws();bad_ws=Ws('AOTHER')
+        class Multiple:
+            async def open(self,url):return bad_ws if 'other-app' in url else valid
+        original=h.call
+        def call(method,token,payload):
+            if method=='apps.connections.open':return {'ok':True,'url':'wss://wss.slack.com/link/?ticket='+('other-app' if token=='synthetic-other-app-token' else 'valid')}
+            return original(method,token,payload)
+        h.call=call;a=subject().SlackAdapter(None,owner='c04',http=h,socket=Multiple())
+        good=await a.verify(spec(),{'bot_token':'synthetic-bot-token','app_token':'synthetic-app-token'})
+        bad=replace(good,spec=spec(target_id='CQA002'),transport=replace(good.transport,credentials={'bot_token':'synthetic-bot-token','app_token':'synthetic-other-app-token'}))
+        live=await a.open([bad,good])
+        try:assert bad_ws.closed and not valid.closed and list(live.targets)==[good.spec.id] and not live.accepts_target(bad)
+        finally:await live.close()
+    asyncio.run(run())
+
+
+def test_child_runtime_failure_is_not_acknowledged_as_invalid_input(monkeypatch):
+    async def run():
+        live,h,sock,target=await listener()
+        def unavailable(*args):raise HTTPException(422,'CHANNEL_PACKET_INVALID')
+        monkeypatch.setattr(subject(),'convert_channel_packet',unavailable)
+        async def accept(items):raise AssertionError('must not execute')
+        try:
+            with pytest.raises(HTTPException):await live.handle(socket_frame(),accept)
+            assert not sock.ws.sent
+        finally:await live.close()
+    asyncio.run(run())

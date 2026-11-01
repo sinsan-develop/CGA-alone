@@ -65,3 +65,13 @@ def test_compact_button_restores_original_value_using_same_sdk(fixture):
     assert wire["response"]["buttonValue"]=="다음"
     with pytest.raises(HTTPException):bridge().convert_channel_packet(fixture["channel"],"selection",{"source":source,"event":{**ev,"choiceIndex":999}})
     with pytest.raises(HTTPException):bridge().convert_channel_packet(fixture["channel"],"selection",{"source":{**source,"participantKind":"user"},"event":ev})
+
+
+def test_sdk_validation_rejection_is_distinct_from_child_runtime_failure(monkeypatch):
+    from types import SimpleNamespace
+    b=bridge()
+    invalid={'input':{'type':'event_callback','team_id':'TQA001','event':{'type':'message','user':'UQA002','channel':'CQA001','text':'<@UQA001>','ts':'1700000000.000001'}},'connection':{'teamId':'TQA001','botUserId':'UQA001','botId':'BQA001'}}
+    with pytest.raises(b.NativePacketRejected):b.convert_channel_packet('slack','normalize',invalid)
+    monkeypatch.setattr(b.subprocess,'run',lambda *args,**kw:SimpleNamespace(returncode=-9,stdout='',stderr='synthetic runtime failure'))
+    with pytest.raises(HTTPException) as error:b.convert_channel_packet('slack','normalize',invalid)
+    assert not isinstance(error.value,b.NativePacketRejected) and error.value.detail=='CHANNEL_PACKET_INVALID'

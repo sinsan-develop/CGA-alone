@@ -31,6 +31,7 @@ export function connectionErrorMessage(error: unknown, copy: Record<string, stri
 export function connectionStatusMessage(code: string, copy: Record<string, string>): string {
   const messages: Record<string, string> = {
     WAITING_FIRST_ACTIVITY: copy.waitingFirstActivity,
+    CONNECTION_CREDENTIALS_MISMATCH: copy.invalidCredentials,
     CONNECTION_VERIFICATION_FAILED: copy.verificationFailed,
     TEAMS_CONFIGURATION_INVALID: copy.verificationFailed,
     TEAMS_ACCESS_TOKEN_INVALID: copy.verificationFailed,

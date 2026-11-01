@@ -65,6 +65,11 @@ def _prepare_payload(provider: str, operation: str, payload: dict) -> dict:
     return payload
 
 
+class NativePacketRejected(HTTPException):
+    """정상 SDK 실행이 입력 형식 거부를 명시했다. 공개 오류 계약은 그대로다."""
+    def __init__(self):super().__init__(422,"CHANNEL_PACKET_INVALID")
+
+
 def convert_channel_packet(provider: str, operation: str, payload: dict):
     provider = provider.replace("_", "-")
     if provider not in _PROVIDERS or operation not in {"normalize", "replies", "selection"}:
@@ -80,6 +85,8 @@ def convert_channel_packet(provider: str, operation: str, payload: dict):
         result = subprocess.run([executable, str(script)], input=data, text=True, encoding="utf-8", capture_output=True,
             timeout=5, cwd=ROOT_DIR, env=bridge_environment(), creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         response = json.loads(result.stdout) if len(result.stdout) <= 2097152 else {}
+        if result.returncode == 1 and response == {"ok": False, "code": "CHANNEL_PACKET_INVALID"}:
+            raise NativePacketRejected()
         if result.returncode != 0 or response.get("ok") is not True:
             raise ValueError()
         value = response["value"]

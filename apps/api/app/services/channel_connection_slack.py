@@ -1,6 +1,6 @@
 """Slack Socket Mode의 고정 API·검증 경계. 실제 실행은 승인된 서버 설정에서만 켠다."""
 from __future__ import annotations
-import asyncio,json,re,logging
+import asyncio,json,re,logging,hashlib,time
 from datetime import datetime,timezone
 from dataclasses import dataclass,field
 from urllib.parse import urlsplit,parse_qs,urlencode
@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.models import ChannelInstallationLease
 from app.services import channel_connection_state as state
 from app.services.channel_connection_supervisor import VerifiedTarget,InboundEnvelope,NativeNotSubmitted
-from app.services.channel_connection_bridge import convert_channel_packet
+from app.services.channel_connection_bridge import convert_channel_packet,NativePacketRejected
 
 METHODS=frozenset({'auth.test','bots.info','conversations.info','apps.connections.open','chat.postMessage'})
 SOCKET_HOSTS=frozenset({'wss.slack.com','wss-primary.slack.com'})
@@ -76,7 +76,7 @@ class SlackBinding:
 
 
 class SlackAdapter:
-    def __init__(self,sessions,*,owner,http=None,socket=None):self.sessions=sessions;self.owner=owner;self.http=http or SlackHttpTransport();self.socket=socket or SlackSocketTransport()
+    def __init__(self,sessions,*,owner,http=None,socket=None):self.sessions=sessions;self.owner=owner;self.http=http or SlackHttpTransport();self.socket=socket or SlackSocketTransport();self.open_not_before={}
     async def verify(self,spec,credentials):
         try:
             bot_token=credentials.get('bot_token');app_token=credentials.get('app_token')
@@ -95,17 +95,27 @@ class SlackAdapter:
 
     async def open(self,targets):
         if not targets or any(t.transport.app_id!=targets[0].transport.app_id for t in targets):raise HTTPException(403,'SLACK_SOCKET_SCOPE_MISMATCH')
-        ws=None
-        try:
-            data=await asyncio.to_thread(self.http.call,'apps.connections.open',targets[0].transport.credentials['app_token'],{})
-            ws=await self.socket.open(validate_socket_url(data.get('url')))
-            hello=_frame(await asyncio.wait_for(ws.recv(),5))
-            if hello.get('type')!='hello' or not isinstance(hello.get('connection_info'),dict) or hello['connection_info'].get('app_id')!=targets[0].transport.app_id:raise ValueError()
-            return SlackListener(self,targets,ws)
-        except BaseException as error:
-            if ws is not None:await ws.close()
-            if isinstance(error,asyncio.CancelledError):raise
-            raise HTTPException(503,'SLACK_SOCKET_VERIFICATION_FAILED') from None
+        app=targets[0].transport.app_id
+        if self.open_not_before.get(app,0)>time.monotonic():raise HTTPException(503,'SLACK_SOCKET_RECONNECT_DELAY')
+        attempted=set()
+        for target in targets:
+            token=target.transport.credentials['app_token'];digest=hashlib.sha256(token.encode()).hexdigest()
+            if digest in attempted:continue
+            attempted.add(digest);ws=None
+            try:
+                data=await asyncio.to_thread(self.http.call,'apps.connections.open',token,{})
+                ws=await self.socket.open(validate_socket_url(data.get('url')))
+                hello=_frame(await asyncio.wait_for(ws.recv(),5))
+                if hello.get('type')!='hello' or not isinstance(hello.get('connection_info'),dict) or hello['connection_info'].get('app_id')!=app:raise ValueError()
+                self.open_not_before.pop(app,None)
+                return SlackListener(self,targets,ws,digest)
+            except BaseException as error:
+                if ws is not None:
+                    try:await ws.close()
+                    except Exception:pass
+                if isinstance(error,asyncio.CancelledError):raise
+        self.open_not_before[app]=time.monotonic()+5
+        raise HTTPException(503,'SLACK_SOCKET_VERIFICATION_FAILED') from None
 
 
 def _frame(raw):
@@ -130,10 +140,12 @@ class SlackSocketTransport:
 
 
 class SlackListener:
-    def __init__(self,adapter,targets,ws):self.adapter=adapter;self.targets={t.spec.id:t for t in targets};self.ws=ws;self.app_id=targets[0].transport.app_id;self.stopped=False
-    async def update(self,targets):
-        if any(t.transport.app_id!=self.app_id for t in targets):raise HTTPException(403,'SLACK_SOCKET_SCOPE_MISMATCH')
-        self.targets={t.spec.id:t for t in targets}
+    def __init__(self,adapter,targets,ws,app_token_digest):
+        self.adapter=adapter;self.ws=ws;self.app_id=targets[0].transport.app_id;self.app_token_digest=app_token_digest;self.stopped=False
+        self.targets={t.spec.id:t for t in targets if self.accepts_target(t)}
+    def accepts_target(self,target):
+        return target.transport.app_id==self.app_id and hashlib.sha256(target.transport.credentials['app_token'].encode()).hexdigest()==self.app_token_digest
+    async def update(self,targets):self.targets={t.spec.id:t for t in targets if self.accepts_target(t)}
     async def close(self):self.stopped=True;await self.ws.close()
     async def listen(self,accept):
         while not self.stopped:
@@ -143,6 +155,13 @@ class SlackListener:
     async def handle(self,value,accept):
         if self.stopped:raise HTTPException(409,'SLACK_LISTENER_STOPPED')
         if not isinstance(value,dict) or not isinstance(value.get('envelope_id'),str) or not 0<len(value['envelope_id'])<=512:raise HTTPException(422,'SLACK_ENVELOPE_INVALID')
+        try:await self._handle_payload(value,accept)
+        except NativePacketRejected:pass
+        except HTTPException as error:
+            if error.status_code not in {404,409} or error.detail not in {'CONNECTION_CHANGED','CONNECTION_TARGET_INACTIVE','CONNECTION_NOT_FOUND'}:raise
+        await self.ws.send(json.dumps({'envelope_id':value['envelope_id']}))
+
+    async def _handle_payload(self,value,accept):
         payload=value.get('payload')
         if value.get('type') in {'events_api','interactive'}:
             if not isinstance(payload,dict) or payload.get('api_app_id')!=self.app_id:raise HTTPException(403,'SLACK_APP_SCOPE_MISMATCH')
@@ -168,8 +187,7 @@ class SlackListener:
                     context={'team_id':team,'app_id':self.app_id,'bot_user_id':binding.bot_user_id,'channel_id':channel,'thread_ts':normalized.get('threadTs'),'generation':target.spec.generation}
                     committed=await accept([InboundEnvelope(target.spec.id,normalized,context)])
                     if not isinstance(committed,list) or len(committed)!=1:raise RuntimeError('SLACK_COMMIT_UNCONFIRMED')
-        # 지원하지 않는 앱 이벤트는 실행하지 않는다. 질문은 DB commit을 확인한 뒤 ACK한다.
-        await self.ws.send(json.dumps({'envelope_id':value['envelope_id']}))
+        # 지원하지 않는 앱 이벤트는 실행하지 않는다. 질문은 handle에서 commit 확인 후 ACK한다.
 
 
     def _assert_live(self,target,delivery_id):

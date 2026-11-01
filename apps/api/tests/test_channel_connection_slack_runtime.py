@@ -99,6 +99,9 @@ def test_two_targets_share_one_socket_and_disconnect_independently(native_contex
             off=socket_frame();off['envelope_id']='off-a';await deliver(ws,off)
             b=socket_frame();b['envelope_id']='still-b';b['payload']['event']['channel']='CQA002';await deliver(ws,b);await finish(a)
             assert len(h.posts)==3 and h.posts[-1]['channel']=='CQA002'
+            refreshed=Ws();adapter.socket=Socket(refreshed);await ws.queue.put(json.dumps({'type':'disconnect','reason':'refresh_requested'}));await asyncio.sleep(.05);await a.step()
+            b=socket_frame();b['envelope_id']='b-after-refresh';b['payload']['event']['channel']='CQA002';await deliver(refreshed,b);await finish(a)
+            assert len(h.posts)==4 and len([v for v in h.calls if v[0]=='apps.connections.open'])==2 and ws.closed
         finally:await a.stop()
     asyncio.run(run())
 
@@ -174,5 +177,67 @@ def test_slack_buttons_keep_source_owner_and_restore_existing_variable(native_co
             correct=action(data);await deliver(ws,correct);await finish(a)
             assert len(h.posts)==2 and '선택: 다음' in h.posts[-1]['text']
             correct['envelope_id']='duplicate-button';await deliver(ws,correct);await finish(a);assert len(h.posts)==2
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure',['mention_only','too_long','disconnect_race'])
+def test_target_input_rejection_does_not_close_shared_socket(native_context,failure):
+    async def run():
+        from app.models import ChannelConnection
+        from app.services.channel_connections import disconnect_connection
+        c=native_context;a,adapter,h,ws=setup(c)
+        try:
+            await a.step();before=next(iter(a.runs.values())).listener
+            invalid=socket_frame()
+            if failure=='mention_only':invalid['payload']['event']['text']='<@UQA001>'
+            elif failure=='too_long':invalid['payload']['event']['text']='x'*4001
+            else:
+                with c.sessions() as db:disconnect_connection(db.get(ChannelConnection,c.ids['connections'][0]));db.commit()
+            await deliver(ws,invalid)
+            assert not ws.closed and next(iter(a.runs.values())).listener is before
+            b=socket_frame();b['envelope_id']='b-after-rejection';b['payload']['event']['channel']='CQA002';await deliver(ws,b);await finish(a)
+            assert len(h.posts)==1 and h.posts[0]['channel']=='CQA002'
+            assert len([x for x in h.calls if x[0]=='apps.connections.open'])==1
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('cold_start',[True,False])
+def test_unverified_added_app_token_is_rejected_while_valid_target_stays_connected(native_context,cold_start):
+    async def run():
+        from app.models import ChannelConnection
+        from app.services.channel_connections import encrypt_credentials,disconnect_connection
+        from app.core.config import settings
+        from app.services import channel_connection_state as state
+        c=native_context;a,adapter,h,ws=setup(c);original=h.call
+        class AppSocket:
+            def __init__(self):self.urls=[];self.other=[]
+            async def open(self,url):
+                self.urls.append(url)
+                if 'other-app' in url:
+                    bad=Ws('AOTHER');self.other.append(bad);return bad
+                return ws
+        sock=AppSocket();adapter.socket=sock
+        def call(method,token,payload):
+            if method=='apps.connections.open' and token=='synthetic-other-app-token':return {'ok':True,'url':'wss://wss.slack.com/link/?ticket=other-app'}
+            return original(method,token,payload)
+        h.call=call
+        def change(active):
+            with c.sessions() as db:
+                row=db.get(ChannelConnection,c.ids['connections'][1]);row.desired_state='connected' if active else 'disconnected';row.observed_state='connecting' if active else 'disconnected'
+                if active:
+                    row.accept_after=state.clock(db);row.credential_ciphertext=encrypt_credentials({'bot_token':'synthetic-bot-token','app_token':'synthetic-other-app-token'},row.organization_id,row.id,settings.channel_connection_encryption_key,'v1')
+                db.commit()
+        try:
+            change(cold_start)
+            await a.step()
+            if not cold_start:change(True);await a.step()
+            with c.sessions() as db:
+                assert db.get(ChannelConnection,c.ids['connections'][0]).observed_state=='connected'
+                bad=db.get(ChannelConnection,c.ids['connections'][1]);assert bad.observed_state=='error' and bad.last_error_code=='CONNECTION_CREDENTIALS_MISMATCH'
+            assert not ws.closed and len(next(iter(a.runs.values())).targets)==1
+            assert all(x.closed for x in sock.other)
+            await deliver(ws,socket_frame());await finish(a);assert len(h.posts)==1
         finally:await a.stop()
     asyncio.run(run())
