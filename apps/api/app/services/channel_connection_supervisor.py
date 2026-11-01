@@ -11,7 +11,7 @@ from dataclasses import dataclass,field
 from types import SimpleNamespace
 from typing import Protocol,Callable,Awaitable
 from uuid import UUID,uuid4
-from fastapi import HTTPException
+from fastapi import HTTPException,Request
 from sqlalchemy import select
 from app.core.config import settings
 from app.models import ChannelConnection,ChannelConnectionDelivery,ChannelInstallationLease
@@ -82,14 +82,22 @@ class ConnectionSupervisor:
     def __init__(self,sessions,adapters=None,*,owner=None,max_jobs=4,request=None):
         self.sessions=sessions;self.adapters=ADAPTERS if adapters is None else adapters
         self.owner=owner or 'channel-'+uuid4().hex;self.max_jobs=max(1,min(32,max_jobs))
-        self.request=request or SimpleNamespace(client=None)
+        self.request=request or Request({'type':'http','method':'POST','path':'/internal/channel-connections','headers':[],'query_string':b'','scheme':'http','server':('internal',80),'client':None,'root_path':'','http_version':'1.1'})
         self.runs:dict[tuple,ListenerRun]={};self.verified={};self.jobs={};self.stopping=False
         self.lease_seconds=45
 
     def _snapshots(self):
         with self.sessions() as db:
             rows=db.scalars(select(ChannelConnection).where(ChannelConnection.deleted_at.is_(None),ChannelConnection.desired_state=='connected')).all()
-            return [(ConnectionSpec(r.id,r.organization_id,r.provider,r.generation,r.installation_id,r.account_id,r.target_id),r.credential_ciphertext,r.credential_key_version) for r in rows]
+            result=[]
+            for r in rows:
+                try:state._target_active(db,r)
+                except HTTPException:
+                    if r.lease_owner in {None,self.owner}:
+                        r.observed_state='error';r.last_error_code='CONNECTION_TARGET_INACTIVE';r.lease_expires_at=None
+                    continue
+                result.append((ConnectionSpec(r.id,r.organization_id,r.provider,r.generation,r.installation_id,r.account_id,r.target_id),r.credential_ciphertext,r.credential_key_version))
+            db.commit();return result
 
     def _credentials(self,spec,cipher,version):
         return decrypt_credentials(cipher,spec.organization_id,spec.id,settings.channel_connection_encryption_key,version)
@@ -111,10 +119,16 @@ class ConnectionSupervisor:
 
     def _activate(self,lease_id,fence,targets):
         with self.sessions() as db:
+            state._installation(db,lease_id,self.owner,fence)
+            live=[]
             for target in targets:
-                row=state.activate_connection(db,target.spec.id,lease_id,self.owner,fence,{'installation_id':target.installation_id,'account_id':target.account_id,'listener_scope':target.listener_scope})
-                if row.generation!=target.spec.generation:raise HTTPException(409,'CONNECTION_CHANGED')
-            db.commit()
+                row=state._connection(db,target.spec.id)
+                if row.generation!=target.spec.generation:continue
+                try:state._target_active(db,row)
+                except HTTPException:continue
+                state.activate_connection(db,row.id,lease_id,self.owner,fence,{'installation_id':target.installation_id,'account_id':target.account_id,'listener_scope':target.listener_scope})
+                live.append(target)
+            db.commit();return live
 
     async def _close(self,key,run):
         self.runs.pop(key,None)
@@ -211,7 +225,11 @@ class ConnectionSupervisor:
                     # DB 검증이 선행해도 실제 수신은 현재 target+generation을 다시 검증한다.
                     run.targets={t.spec.id:t for t in targets}
                     await asyncio.wait_for(run.listener.update(targets),10)
-                await asyncio.to_thread(self._activate,lease_id,fence,targets)
+                live=await asyncio.to_thread(self._activate,lease_id,fence,targets)
+                if not live:
+                    await self._close(key,run);continue
+                run.targets={t.spec.id:t for t in live}
+                if len(live)!=len(targets):await asyncio.wait_for(run.listener.update(live),10)
                 if run.task is None:
                     run.task=asyncio.create_task(self._listen(key,run))
                     run.heartbeat=asyncio.create_task(self._heartbeat(run))
@@ -244,7 +262,9 @@ class ConnectionSupervisor:
             row=state._live(db,target.spec.id,run.lease_id,self.owner,run.fence)
             state.recover_expired(db,target.spec.id)
             if row.generation!=target.spec.generation:return None
-            ready=db.scalar(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.status=='ready').order_by(ChannelConnectionDelivery.created_at).limit(1))
+            old=db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.status=='ready',ChannelConnectionDelivery.generation!=row.generation).with_for_update()).all()
+            for item in old:item.status='cancelled';item.last_error_code='CONNECTION_CHANGED'
+            ready=db.scalar(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.status=='ready',ChannelConnectionDelivery.generation==row.generation).order_by(ChannelConnectionDelivery.created_at).limit(1))
             if ready:
                 value=('send',ready.id,None)
             else:

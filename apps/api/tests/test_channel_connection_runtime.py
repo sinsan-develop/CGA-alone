@@ -176,16 +176,78 @@ def test_compact_card_rejects_other_actor_without_blocking_owner_and_restores_va
             assert claim is not None
             did,token=claim.id,claim.execution_claim_id;db.commit()
         return did,subject().execute_connection_delivery(c.sessions,did,lease,c.owner,fence,token,c.request)
-    first_event={**event(),"channelId":"100000000000000002"}
+    from app.services.channel_connection_bridge import convert_channel_packet
+    fixture=json.loads((Path(__file__).parent/'cga_alone/fixtures/client_templates/discord.json').read_text(encoding='utf-8'))
+    native=deepcopy(fixture['addressed']);native['d']['content']='<@'+fixture['connection']['botUserId']+'> 검증 질문'
+    first_event=convert_channel_packet('discord','normalize',{'input':native,'connection':fixture['connection']})
     did,first=execute(first_event);source=first["botMessages"][0]
     assert source["messageType"]=="button" and source["payload"]["sourceTalkNodeId"]
     with c.sessions() as db:
         send=state.claim_send(db,did,lease,c.owner,fence);db.commit()
         state.record_sent(db,did,send,["synthetic-card-ack"]);db.commit()
-    selected={**first_event,"eventId":"selected","message":"compact-selection","sourceMessageId":source["id"],"choiceIndex":1}
+    interaction={'type':3,'id':'100000000000000303','application_id':fixture['connection']['applicationId'],'guild_id':fixture['connection']['guildId'],'channel_id':fixture['connection']['channelId'],'member':{'user':native['d']['author']},'message':{'author':{'id':fixture['connection']['botUserId']}},'data':{'component_type':2,'custom_id':'cga:'+source['id']+':1'}}
+    selected=convert_channel_packet('discord','normalize',{'input':interaction,'connection':fixture['connection']})
+    assert selected['message']=='' and selected['choiceIndex']==1
+    state._event(selected)
     with pytest.raises(HTTPException):execute({**selected,"eventId":"wrong-actor","nativeParticipantKey":"discord:user:another"})
     with c.sessions() as db:
         wrong=db.scalar(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.event_key==state.scoped_hash("wrong-actor"),ChannelConnectionDelivery.connection_id==connection))
         assert wrong.status=="failed"
     _,result=execute(selected)
     assert "다음" in str(result["botMessages"]) and "compact-selection" not in str(result["botMessages"])
+
+
+def test_changed_native_account_gets_new_room_and_preserves_previous(native_context):
+    from app.models import ChannelConnection,ChannelConnectionRoom,ChannelRoom
+    from app.services import channel_connection_state as state
+    c=native_context;old=member(c);cid=c.ids['connections'][0]
+    with c.sessions() as db:
+        row=db.get(ChannelConnection,cid);row.account_id='BQA-CHANGED';row.generation+=1;row.observed_state='connecting'
+        lease=state.claim_installation(db,row,c.owner,ttl_seconds=60);db.commit()
+        state.activate_connection(db,cid,lease.id,c.owner,lease.fence,{'installation_id':row.installation_id,'account_id':row.account_id});db.commit();c.leases[0]=(lease.id,lease.fence)
+    fresh=member(c)
+    assert fresh.room_id!=old.room_id and fresh.conversation_token!=old.conversation_token
+    with c.sessions() as db:
+        assert db.get(ChannelRoom,old.room_id).status=='open'
+        assert len(list(db.scalars(select(ChannelConnectionRoom).where(ChannelConnectionRoom.connection_id==cid))))==2
+
+
+def test_room_reservation_separates_bot_identity_and_keeps_same_identity_stable():
+    from types import SimpleNamespace
+    c=SimpleNamespace(organization_id=uuid4(),id=uuid4(),provider='slack',installation_id='T1',account_id='B1',bot_id=uuid4())
+    from app.core.config import settings
+    original=settings.channel_connection_encryption_key
+    settings.channel_connection_encryption_key=base64.urlsafe_b64encode(bytes(range(32))).decode()
+    try:
+        a=subject()._room_reservation(c,event());assert subject()._room_reservation(c,event())==a
+        c.bot_id=uuid4();assert subject()._room_reservation(c,event())!=a
+    finally:settings.channel_connection_encryption_key=original
+
+
+def test_changed_cga_bot_creates_new_room_without_losing_previous_history(native_context):
+    from copy import deepcopy
+    from sqlalchemy import delete,update
+    from app.models import Bot,BotVersion,ChannelConnection,ChannelConnectionRoom,ChannelRoom,ChannelMessage,ChannelQueueEvent,AuditLog,VersionDialogAsset,VersionDialogFlowGraph
+    from app.services import channel_connection_state as state
+    c=native_context;old=member(c);cid=c.ids['connections'][0];bid=vid=None
+    try:
+        with c.sessions() as db:
+            bot=Bot(organization_id=c.ids['org_id'],group_id=c.ids['group_id'],name='C02 changed bot',data_json={});db.add(bot);db.flush();bid=bot.id
+            oldversion=db.get(BotVersion,c.ids['version_id']);version=BotVersion(bot_id=bid,version_no=1,name='C02 changed QA',status='active',version_json=deepcopy(oldversion.version_json));db.add(version);db.flush();vid=version.id;bot.active_version_id=vid
+            row=db.get(ChannelConnection,cid);row.bot_id=bid;row.generation+=1;db.commit()
+        fresh=member(c)
+        assert fresh.room_id!=old.room_id and fresh.conversation_token!=old.conversation_token
+        with c.sessions() as db:
+            assert db.get(ChannelRoom,fresh.room_id).bot_id==bid
+            assert db.get(ChannelRoom,old.room_id).bot_id==c.ids['bot_id']
+    finally:
+        if bid:
+            with c.sessions() as db:
+                db.get(ChannelConnection,cid).bot_id=c.ids['bot_id'];db.flush()
+                rooms=list(db.scalars(select(ChannelRoom.id).where(ChannelRoom.bot_id==bid)))
+                db.execute(delete(ChannelConnectionRoom).where(ChannelConnectionRoom.room_id.in_(rooms)))
+                db.execute(delete(ChannelQueueEvent).where(ChannelQueueEvent.bot_id==bid));db.execute(delete(ChannelMessage).where(ChannelMessage.room_id.in_(rooms)));db.execute(delete(ChannelRoom).where(ChannelRoom.id.in_(rooms)))
+                db.execute(delete(AuditLog).where(AuditLog.target_id.in_([bid,*rooms])))
+                if vid:
+                    db.execute(delete(VersionDialogAsset).where(VersionDialogAsset.version_id==vid));db.execute(delete(VersionDialogFlowGraph).where(VersionDialogFlowGraph.version_id==vid))
+                db.execute(update(Bot).where(Bot.id==bid).values(active_version_id=None));db.execute(delete(BotVersion).where(BotVersion.bot_id==bid));db.execute(delete(Bot).where(Bot.id==bid));db.commit()

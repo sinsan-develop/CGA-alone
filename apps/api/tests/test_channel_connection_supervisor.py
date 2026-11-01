@@ -208,3 +208,62 @@ def test_disabled_startup_does_not_create_worker_or_access_database(monkeypatch)
         assert not hasattr(app.state,'connection_supervisor')
         await main.stop_connection_supervisor(app)
     asyncio.run(run())
+
+
+def test_default_startup_request_executes_first_native_question(native_context):
+    async def run():
+        c=native_context;prepare(c);adapter=Adapter();a=module().ConnectionSupervisor(c.sessions,{'slack':adapter},owner='default-startup-qa')
+        try:
+            await a.step();ids=await a.ingest(next(iter(a.runs)),[module().InboundEnvelope(c.ids['connections'][0],event())])
+            await a.step();await drain(a);await a.step();await drain(a)
+            from app.models import ChannelConnectionDelivery
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,ids[0]).status=='sent'
+            assert len(adapter.listeners[0].sent)==1
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+def test_old_ready_after_disconnect_cannot_starve_new_generation(native_context):
+    async def run():
+        c=native_context;prepare(c);adapter=Adapter();a=worker(c,adapter);m=module()
+        from app.models import ChannelConnection,ChannelConnectionDelivery
+        from app.services.channel_connections import disconnect_connection
+        try:
+            await a.step();ids=await a.ingest(next(iter(a.runs)),[m.InboundEnvelope(c.ids['connections'][0],event())])
+            await a.step();await drain(a)
+            with c.sessions() as db:
+                assert db.get(ChannelConnectionDelivery,ids[0]).status=='ready'
+                row=db.get(ChannelConnection,c.ids['connections'][0]);disconnect_connection(row);row.desired_state='connected';row.observed_state='connecting';row.generation+=1;db.commit()
+            await a.step();new=await a.ingest(next(iter(a.runs)),[m.InboundEnvelope(c.ids['connections'][0],{**event(),'eventId':'new-generation-event'})])
+            for _ in range(3):await a.step();await drain(a)
+            with c.sessions() as db:
+                old=db.get(ChannelConnectionDelivery,ids[0]);assert old.status=='cancelled' and old.result_json.get('botMessages')
+                assert db.get(ChannelConnectionDelivery,new[0]).status=='sent'
+            assert len(adapter.listeners[0].sent)==1
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+def test_inactive_target_does_not_close_valid_shared_listener(native_context):
+    async def run():
+        c=native_context;prepare(c);adapter=Adapter();a=worker(c,adapter)
+        from app.models import AdminChannel,ChannelConnection
+        extra=None
+        try:
+            with c.sessions() as db:
+                original=db.get(AdminChannel,c.ids['parent_id']);extra=AdminChannel(organization_id=original.organization_id,code='C02_EXTRA',name='C02 inactive',data_json=dict(original.data_json));db.add(extra);db.flush();eid=extra.id
+                db.get(ChannelConnection,c.ids['connections'][0]).channel_id=eid;db.commit()
+            await a.step();listener=adapter.listeners[0]
+            with c.sessions() as db:db.get(AdminChannel,eid).status='inactive';db.commit()
+            await a.step();assert len(a.runs)==1 and not listener.closed
+            ids=await a.ingest(next(iter(a.runs)),[module().InboundEnvelope(c.ids['connections'][1],{**event(),'message':'일반 대화','addressed':False})])
+            await a.step();await drain(a);await a.step();await drain(a)
+            from app.models import ChannelConnectionDelivery
+            with c.sessions() as db:
+                assert db.get(ChannelConnectionDelivery,ids[0]).status=='sent'
+                assert db.get(ChannelConnection,c.ids['connections'][1]).observed_state=='connected'
+        finally:
+            await a.stop()
+            if extra:
+                with c.sessions() as db:db.get(ChannelConnection,c.ids['connections'][0]).channel_id=c.ids['parent_id'];db.flush();db.delete(db.get(AdminChannel,eid));db.commit()
+    asyncio.run(run())

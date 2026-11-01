@@ -1,7 +1,7 @@
 """검증된 연결 실행부만 기존 방/참가자 증명/CGA 실행에 연결한다."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-import hashlib,hmac
+import hashlib,hmac,json
 from uuid import UUID,uuid4
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -18,9 +18,13 @@ class ConnectionMembership:
     conversation_token: str=field(repr=False)
 
 
+def _native_room_scope(connection,event):
+    return json.dumps([connection.provider,connection.installation_id,connection.account_id,str(connection.bot_id),event['nativeRoomKey']],ensure_ascii=False,separators=(',',':'))
+
+
 def _room_reservation(connection,event):
     _cipher(settings.channel_connection_encryption_key)
-    raw=f"cga-connected-room-v1:{connection.organization_id}:{connection.id}:{event['nativeRoomKey']}".encode()
+    raw=f"cga-connected-room-v2:{connection.organization_id}:{connection.id}:{_native_room_scope(connection,event)}".encode()
     digest=hmac.new(settings.channel_connection_encryption_key.encode(),raw,hashlib.sha256).hexdigest()
     return "wc-auth:cx:"+digest
 
@@ -33,7 +37,7 @@ def ensure_connection_membership(sessions,connection_id,installation_id,owner,fe
         if expected_generation is not None and connection.generation!=expected_generation:raise HTTPException(409,"CONNECTION_CHANGED")
         channel=connection.provider.replace("_","-")
         bot,version,_=channels._get_active_bot_version(db,str(connection.bot_id),channel)
-        room_hash=state.scoped_hash(event["nativeRoomKey"])
+        room_hash=state.scoped_hash(_native_room_scope(connection,event))
         mapping=db.scalar(select(ChannelConnectionRoom).where(ChannelConnectionRoom.connection_id==connection.id,ChannelConnectionRoom.native_room_hash==room_hash).with_for_update())
         room=db.get(ChannelRoom,mapping.room_id) if mapping else None
         fresh=room is None or room.status!="open" or room.deleted_at is not None

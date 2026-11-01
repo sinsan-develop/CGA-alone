@@ -102,8 +102,16 @@ def scoped_hash(value: str) -> str:
 def _event(value):
     fields={"eventId","nativeRoomKey","nativeParticipantKey","participantKind","participantName","roomMode","addressed","message","sourceMessageId","sourceTalkNodeId","choiceIndex","channelId","threadTs","chatId","threadId","spaceName","threadName","timestamp","redelivery","occurredAt"}
     if not isinstance(value,dict) or set(value)-fields:raise HTTPException(422,"INVALID_NATIVE_EVENT")
-    if any(not isinstance(value.get(k),str) or not value[k] or len(value[k])>limit for k,limit in [("eventId",512),("nativeRoomKey",2048),("nativeParticipantKey",512),("message",4000)]):
+    if any(not isinstance(value.get(k),str) or not value[k] or len(value[k])>limit for k,limit in [("eventId",512),("nativeRoomKey",2048),("nativeParticipantKey",512)]):
         raise HTTPException(422,"INVALID_NATIVE_EVENT")
+    selection="sourceMessageId" in value or "choiceIndex" in value
+    if selection:
+        source=value.get("sourceMessageId");index=value.get("choiceIndex")
+        try:valid=isinstance(source,str) and str(UUID(source))==source.lower()
+        except ValueError:valid=False
+        if not valid or type(index) is not int or not 0<=index<=99:raise HTTPException(422,"INVALID_NATIVE_SELECTION")
+    message=value.get("message")
+    if not isinstance(message,str) or len(message)>4000 or (not message and not selection):raise HTTPException(422,"INVALID_NATIVE_EVENT")
     if value.get("participantKind") not in {"user","bot"} or value.get("roomMode") not in {"private","shared"} or not isinstance(value.get("addressed"),bool):
         raise HTTPException(422,"INVALID_NATIVE_EVENT")
     if "participantName" in value and (not isinstance(value["participantName"],str) or not value["participantName"] or len(value["participantName"])>120):
