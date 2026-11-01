@@ -58,7 +58,7 @@ Teams 준비 근거: https://learn.microsoft.com/en-us/microsoftteams/platform/t
 
 개인 채팅은 봇에 보낸 메시지를 질문으로 처리한다. 그룹·채널에서는 봇을 명시적으로 호출한 메시지와 해당 봇 카드의 선택만 실행한다. 채널의 스레드는 Teams conversation ID에 따라 분리하고, 같은 방의 답변 처리 중 새 질문을 나중에 실행하도록 대기열에 쌓지 않는다. 일반 대화는 봇 답변을 만들지 않는다.
 
-기존 text/button/link-button/card/table/carousel과 Teams용 Adaptive Card 템플릿을 재사용한다. 카드의 원본 메시지·노드와 질문자를 서버에서 대조한다. Action.Submit의 입력·data와 수동 Action.Execute를 기존 응답 변수로 전달하며, 자동 카드 refresh는 질문·모델 실행을 일으키지 않는다. Webchat 전용 양식을 Teams 카드로 자동 변환하는 기능은 제공하지 않으므로 해당 채널의 템플릿을 작성한다.
+기존 text/button/link-button/card/table/carousel과 Teams용 Adaptive Card 템플릿을 재사용한다. 카드의 원본 메시지·노드와 질문자를 서버에서 대조한다. Action.Submit의 입력·data와 수동 Action.Execute를 기존 응답 변수로 전달하며 원래 입력 이름을 보존한다. 내부 필드와 같은 입력명도 사용할 수 있으며, 자동 카드 refresh는 질문·모델 실행을 일으키지 않는다. Webchat 전용 양식을 Teams 카드로 자동 변환하는 기능은 제공하지 않으므로 해당 채널의 템플릿을 작성한다.
 
 질문은 기존 API의 4,000자 제한을 따른다. 수신 HTTP 본문은 256 KiB, 생성 표현은 24 KB, 실제 회신 문맥을 포함한 패킷은 28 KB 이내로 제한한다. 형식·크기를 전송 전에 검사한다. 여러 패킷 전송 중 시간초과·프로세스 종료가 발생해 결과가 불명확하면 자동 재전송하지 않는다. 재접속 때 과거 질문을 자동으로 재실행하지 않는다.
 

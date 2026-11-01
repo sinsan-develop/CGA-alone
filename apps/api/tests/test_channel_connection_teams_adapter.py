@@ -347,3 +347,40 @@ def test_restart_recovers_verified_scope_and_does_not_resend_uncertain_post(nati
             if not a.stopping:await a.stop()
             if b:await b.stop()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['ms_teams'],indirect=True)
+@pytest.mark.parametrize('change',['disconnect','listener_close','lease_expired'])
+def test_additional_posts_stop_after_target_or_lease_is_revoked(native_context,signed,change):
+    async def run():
+        import threading
+        from copy import deepcopy
+        from app.models import ChannelConnection,ChannelConnectionDelivery,ChannelInstallationLease
+        from app.services.channel_connections import disconnect_connection
+        from app.services import channel_connection_state as state
+        c=native_context;a,adapter,http,tenant,client=setup(c,signed)
+        entered=threading.Event();release=threading.Event();original=http.send
+        def blocked(*args):
+            value=original(*args)
+            if len(http.posts)==1:
+                entered.set();assert release.wait(5)
+            return value
+        try:
+            await a.step();first=await handshake(a,adapter,'Bearer '+signed[-1](),activity(tenant,client));await a.step();await drain(a)
+            with c.sessions() as db:
+                row=db.get(ChannelConnectionDelivery,UUID(first['delivery_id']));assert row.status=='ready'
+                result=deepcopy(row.result_json);result['botMessages']*=2;row.result_json=result;db.commit()
+            http.send=blocked;await a.step();assert await asyncio.to_thread(entered.wait,3)
+            run=next(iter(a.runs.values()))
+            if change=='listener_close':await run.listener.close()
+            else:
+                with c.sessions() as db:
+                    if change=='disconnect':disconnect_connection(db.get(ChannelConnection,c.ids['connections'][0]))
+                    else:db.get(ChannelInstallationLease,run.lease_id).lease_expires_at=state.clock(db)-timedelta(seconds=1)
+                    db.commit()
+            release.set();await drain(a)
+            assert len(http.posts)==1
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(first['delivery_id'])).status=='unknown'
+            await a.step();await drain(a);assert len(http.posts)==1
+        finally:release.set();await a.stop()
+    asyncio.run(run())

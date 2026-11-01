@@ -1,6 +1,6 @@
 """Teams native HTTP 수신/회신. 모델·대화는 기존 방/전달 작업자가 처리한다."""
 from __future__ import annotations
-import asyncio,hashlib,json,time
+import asyncio,base64,binascii,hashlib,json,time
 from dataclasses import dataclass,field
 from datetime import datetime,timezone
 from urllib.parse import urlencode,quote
@@ -173,6 +173,13 @@ class TeamsAdapter:
             response=dict(response)
             for key,value in wire.items():
                 if key not in {'webchatRichFormVersion','sourceMessageId','sourceTalkNodeId','response','__cga_buttonValue'}:response[key]=value
+            for key,value in wire.items():
+                if key.startswith('__cga_input_'):
+                    try:
+                        encoded=key[len('__cga_input_'):];original=base64.b64decode(encoded+'='*(-len(encoded)%4),altchars=b'-_',validate=True).decode('utf-8')
+                        if not original or base64.urlsafe_b64encode(original.encode()).decode().rstrip('=')!=encoded:raise ValueError()
+                    except (ValueError,UnicodeError,binascii.Error):raise HTTPException(422,'TEAMS_CARD_RESPONSE_INVALID') from None
+                    response.pop(key,None);response[original]=value
             if '__cga_buttonValue' in wire:response['buttonValue']=wire['__cga_buttonValue']
             standard={key:wire[key] for key in ('webchatRichFormVersion','sourceMessageId','sourceTalkNodeId')};standard['response']=response
             text=json.dumps(standard,ensure_ascii=False,sort_keys=True);addressed=True
@@ -240,6 +247,17 @@ class TeamsListener:
     async def update(self,targets):self.targets={t.spec.id:t for t in targets}
     async def listen(self,accept):await self.stopped.wait()
     async def close(self):self.stopped.set()
+    def _assert_live(self,target,delivery_id):
+        with self.adapter.sessions() as db:
+            lease=db.scalar(select(ChannelInstallationLease).where(ChannelInstallationLease.organization_id==target.spec.organization_id,
+                ChannelInstallationLease.provider=='ms_teams',ChannelInstallationLease.listener_scope_hash==state.scoped_hash('verified-listener:ms_teams:'+target.listener_scope)).with_for_update())
+            if lease is None:raise HTTPException(409,'CONNECTION_LEASE_LOST')
+            row=state._live(db,target.spec.id,lease.id,self.adapter.owner,lease.fence)
+            item=state._delivery(db,delivery_id)
+            if row.generation!=target.spec.generation or item.connection_id!=row.id or item.generation!=row.generation or item.status!='sending' or item.installation_fence!=lease.fence:
+                raise HTTPException(409,'CONNECTION_CHANGED')
+            db.commit()
+
     async def send(self,target,delivery_id,packets,context):
         try:
             if self.stopped.is_set() or self.targets.get(target.spec.id)!=target:raise ValueError()
@@ -255,6 +273,14 @@ class TeamsListener:
         except (HTTPException,ValueError,TypeError,KeyError):raise NativeNotSubmitted() from None
         receipts=[]
         for packet in prepared:
+            try:
+                if self.stopped.is_set() or self.targets.get(target.spec.id)!=target:raise ValueError()
+                await asyncio.to_thread(self._assert_live,target,delivery_id)
+                if self.stopped.is_set() or self.targets.get(target.spec.id)!=target:raise ValueError()
+            except (HTTPException,ValueError):
+                if not receipts:raise NativeNotSubmitted() from None
+                # 앞선 POST는 이미 제출했으므로 부분 결과를 UNKNOWN으로 보존한다.
+                raise RuntimeError('TEAMS_SEND_REVOKED') from None
             result=await asyncio.to_thread(self.adapter.http.send,service,context['conversation_id'],context['activity_id'],token,packet)
             receipts.append(_text(result.get('id')))
         return receipts

@@ -44,3 +44,18 @@ def test_teams_adaptive_inputs_return_standard_rich_form_response():
     wire=json.loads(event['message'])
     assert wire['response']['name']=='입력값' and wire['response']['kept']=='보존'
     assert wire['sourceMessageId']==source['id'] and event['addressed']
+
+
+@pytest.mark.parametrize('input_id',['response','sourceMessageId','sourceTalkNodeId','webchatRichFormVersion'])
+def test_native_input_names_cannot_overwrite_internal_card_metadata(input_id):
+    from app.services.channel_connection_teams import TeamsAdapter
+    from tests.test_channel_connection_teams_adapter import activity
+    tenant=str(uuid4());client=str(uuid4())
+    source=message('form-a-card',{'adaptiveCard':{'type':'AdaptiveCard','version':'1.6','body':[{'type':'Input.Text','id':input_id}],'actions':[{'type':'Action.Submit','title':'제출','data':{'ticketId':'A'}}]}})
+    card=convert_channel_packet('ms-teams','replies',{'messages':[source]})[0]['attachments'][0]['content']
+    value={**card['actions'][0]['data'],card['body'][0]['id']:'입력값'}
+    body=activity(tenant,client);body.update(text='',value=value,entities=[])
+    event=TeamsAdapter._event(body,{'tenant':tenant},body['conversation']['id'],body['from']['id'],body['recipient']['id'])
+    wire=json.loads(event['message'])
+    assert wire['sourceMessageId']==source['id'] and wire['sourceTalkNodeId']=='teams-talk'
+    assert wire['response'][input_id]=='입력값' and wire['response']['ticketId']=='A'

@@ -48,6 +48,7 @@ export function buildAidotTeamsReplyPayload(message){
   if(Array.isArray(value))return value.map(bind);
   if(!value||typeof value!=="object")return value;
   const copy=Object.fromEntries(Object.entries(value).map(([key,child])=>[key,bind(child)]));
+  if(typeof copy.type==="string"&&copy.type.startsWith("Input.")&&typeof copy.id==="string")copy.id="__cga_input_"+Buffer.from(copy.id,"utf8").toString("base64url");
   if(copy.type==="Action.Submit"||copy.type==="Action.Execute"){
    const data=typeof copy.data==="string"?{response:{buttonValue:copy.data}}:record(copy.data);
    copy.data={...data,...metadata,response:type==="form-a-card"?data:record(data.response)};
