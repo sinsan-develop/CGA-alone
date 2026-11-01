@@ -156,8 +156,8 @@
   },
   {
     "path": "apps/api/app/models/__init__.py",
-    "stage": "P01",
-    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증"
+    "stage": "P01 / C01",
+    "reason": "승인된 지속 LLM 샘플 영속 매핑·버전 pin·공용 예산 원자예약과 전용 PG 검증; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
   },
   {
     "path": "apps/api/app/schemas/persistent_llm.py",
@@ -236,8 +236,8 @@
   },
   {
     "path": "apps/api/app/core/config.py",
-    "stage": "P03",
-    "reason": "승인된 단일 지속 샘플 기본OFF 및 실제 실행 전 모델/예산/횟수/요금표 미설정 gate"
+    "stage": "P03 / C01",
+    "reason": "승인된 단일 지속 샘플 기본OFF 및 실제 실행 전 모델/예산/횟수/요금표 미설정 gate; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
   },
   {
     "path": "apps/api/app/main.py",
@@ -406,8 +406,8 @@
   },
   {
     "path": "apps/api/app/api/routes/admin.py",
-    "stage": "S08·S09·S10",
-    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완; S09 사용자 직접 승인: 승인 Discord 6가지 renderer 검증만 추가; S10 직접 승인: 승인 Telegram 6renderer 검증만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만 / S13 직접승인 기존 기본 채널·템플릿 초기화의 조직 row 잠금 한곳만 추가"
+    "stage": "S08·S09·S10 / C01",
+    "reason": "직접승인 exact추가경로: SLACK 지원renderer 검증만 보완; S09 사용자 직접 승인: 승인 Discord 6가지 renderer 검증만 추가; S10 직접 승인: 승인 Telegram 6renderer 검증만 추가; S11 사용자 직접 승인: google-chat/GOOGLE_CHAT·공간/thread·6종cardsV2/원본메시지선택복원과 기존 원장/관리 renderer 소비만 최소 연결, 공개HTTP필드/schema/Secret/배포 없음 / S12 직접 승인 LINE 최소 연결·6표현·postback 복원·일회용 응답 토큰 guard 및 해당 회귀만 / S13 직접승인 기존 기본 채널·템플릿 초기화의 조직 row 잠금 한곳만 추가; C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
   },
   {
     "path": "apps/web/app/admin/templates/page.tsx",
@@ -488,5 +488,70 @@
     "path": "apps/web/components/password-change-navigation.test.mjs",
     "stage": "S15",
     "reason": "비밀번호 변경 제출 handler 성공/대기/오류/확인 불일치와 이동 회귀"
+  },
+  {
+    "path": "apps/api/app/api/router.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/alembic/versions/20261102_0030_channel_connections.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/app/api/routes/channel_connections.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/app/models/channel_connection.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/app/schemas/channel_connection.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/app/services/channel_connections.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connections.py",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/web/app/admin/channels/page.tsx",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/web/components/channel-connections-panel.tsx",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/web/components/channel-connections.test.mjs",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/web/lib/channel-connections-api.ts",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "apps/web/lib/i18n/channel-connections.ts",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
+  },
+  {
+    "path": "docs/manual/channel-connections.md",
+    "stage": "C01",
+    "reason": "C01 승인된 복수 연결 관리: 자식 설정·암호화·관리자 API/기존 화면 연결 및 직접 회귀 보호"
   }
 ]

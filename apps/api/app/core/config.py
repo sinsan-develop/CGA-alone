@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     cors_origin_regex: str = r"https?://(localhost|127\.0\.0\.1):\d+"
     login_history_retention_days: int = 90
     webchat_api_key: str = ""
+    channel_connection_encryption_key: str = Field(default="", repr=False)
+    channel_connection_key_version: str = "v1"
     # 지속 LLM 첫 샘플은 모델/횟수/예산 확인 전 실제 실행을 허용하지 않는다.
     persistent_llm_enabled: bool = False
     persistent_llm_execution_enabled: bool = False

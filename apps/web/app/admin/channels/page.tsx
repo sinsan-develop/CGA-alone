@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { ChannelConnectionsPanel } from "@/components/channel-connections-panel";
+import { CONNECTION_COPY } from "@/lib/i18n/channel-connections";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { DataGrid, dataGridCellText, type DataGridRow, type DataGridSortState } from "@/components/data-grid";
@@ -141,6 +143,7 @@ export default function AdminChannelsPage() {
   const pageMessages = CHANNEL_PAGE_MESSAGES[uiLanguage];
   const locale = SUPPORTED_LANGUAGES.find((item) => item.code === uiLanguage)?.intlLocale ?? "ko-KR";
   const [token, setToken] = useState("");
+  const [connectionChannel, setConnectionChannel] = useState<AdminChannelItem | null>(null);
   const [channels, setChannels] = useState<AdminChannelItem[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
@@ -472,6 +475,7 @@ export default function AdminChannelsPage() {
         <button type="button" className="admin-page__ghost" onClick={() => checkChannelConnection(channel)}>
           {copy.connectionTest}
         </button>
+        {channelDataText(channel, "provider") !== "simulator" ? <button type="button" className="admin-page__ghost" onClick={() => setConnectionChannel(channel)}>{CONNECTION_COPY[uiLanguage].title}</button> : null}
         <button type="button" className="admin-page__ghost" onClick={() => openEdit(channel)}>
           {copy.edit}
         </button>
@@ -645,6 +649,8 @@ export default function AdminChannelsPage() {
         </>
       ) : null}
 
+      {connectionChannel && token ? <ChannelConnectionsPanel key={connectionChannel.id} token={token} channel={connectionChannel} onClose={() => setConnectionChannel(null)} /> : null}
+
       {dialogOpen ? (
         <div className="settings-dialog-backdrop">
           <div className="settings-dialog admin-variable-dialog">
@@ -696,6 +702,11 @@ export default function AdminChannelsPage() {
                   <option value="webchat">Webchat</option>
                   <option value="kakao">Kakao</option>
                   <option value="ms_teams">MS Teams</option>
+                  <option value="slack">Slack</option>
+                  <option value="discord">Discord</option>
+                  <option value="telegram">Telegram</option>
+                  <option value="google_chat">Google Chat</option>
+                  <option value="line">LINE</option>
                   <option value="simulator">Simulator</option>
                 </select>
               </label>

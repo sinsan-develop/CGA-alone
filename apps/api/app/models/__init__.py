@@ -1,3 +1,4 @@
+from app.models.channel_connection import ChannelConnection
 from app.models.base import Base
 from app.models.access_control import (
     Group,
@@ -29,6 +30,7 @@ __all__ = [
     "ChannelLlmVersionGuard",
     "LlmBudgetAccount",
     "LlmBudgetReservation",
+    "ChannelConnection",
     "ChannelMessage",
     "ChannelQueueEvent",
     "ChannelRoom",
