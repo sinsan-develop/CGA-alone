@@ -172,13 +172,34 @@ async def stop_edit_lock_cleanup_worker() -> None:
     edit_lock_cleanup_task = None
 
 
+async def start_connection_supervisor(app: FastAPI) -> None:
+    if not settings.channel_connection_worker_enabled:
+        return
+    from app.services.channel_connection_supervisor import ConnectionSupervisor
+    supervisor=ConnectionSupervisor(SessionLocal)
+    app.state.connection_supervisor=supervisor
+    app.state.connection_supervisor_task=asyncio.create_task(supervisor.serve())
+
+
+async def stop_connection_supervisor(app: FastAPI) -> None:
+    supervisor=getattr(app.state,"connection_supervisor",None)
+    if supervisor is None:return
+    task=app.state.connection_supervisor_task
+    task.cancel()
+    await asyncio.gather(task,return_exceptions=True)
+    await supervisor.stop()
+    app.state.connection_supervisor=None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_channel_queue_worker()
     await start_edit_lock_cleanup_worker()
+    await start_connection_supervisor(app)
     try:
         yield
     finally:
+        await stop_connection_supervisor(app)
         await stop_edit_lock_cleanup_worker()
         await stop_channel_queue_worker()
 

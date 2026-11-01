@@ -99,6 +99,7 @@ def _apply(row, payload, user):
     row.installation_id = payload.installation_id
     row.account_id = payload.account_id
     row.target_id = payload.target_id
+    row.listener_scope_hash = None
     row.last_checked_at = None
     row.last_error_code = None
     row.updated_by = user.id
@@ -108,7 +109,7 @@ def _apply(row, payload, user):
 def list_connections(channel_id: UUID, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     parent = _parent(db, current_user, channel_id)
     rows = db.scalars(select(ChannelConnection).where(ChannelConnection.channel_id == parent.id, ChannelConnection.organization_id == current_user.organization_id, ChannelConnection.deleted_at.is_(None)).order_by(ChannelConnection.created_at, ChannelConnection.id)).all()
-    return success_response(request, {"items": [serialize_connection(row) for row in rows], "total": len(rows)})
+    return success_response(request, {"items": [serialize_connection(row) for row in rows], "total": len(rows), "execution_available": _execution_available(parent)})
 
 
 @router.get("/{channel_id}/connections/bots")
@@ -157,13 +158,29 @@ def check_connection(channel_id: UUID, connection_id: UUID, request: Request, db
         decrypt_credentials(row.credential_ciphertext,row.organization_id,row.id,settings.channel_connection_encryption_key,row.credential_key_version)
     row.last_checked_at=datetime.now(timezone.utc)
     _audit(db,request,current_user,row,"check");_commit(db)
-    return success_response(request,{"configuration_valid":not issues,"external_verified":False,"issues":issues,"execution_available":False,"item":serialize_connection(row)})
+    return success_response(request,{"configuration_valid":not issues,"external_verified":False,"issues":issues,"execution_available":_execution_available(parent),"item":serialize_connection(row)})
+
+
+def _execution_available(parent):
+    from app.services.channel_connection_supervisor import execution_available
+    return execution_available(str((parent.data_json or {}).get("provider", "")).replace("-", "_"))
 
 
 @router.post("/{channel_id}/connections/{connection_id}/connect")
 def connect_connection(channel_id: UUID, connection_id: UUID, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    parent=_parent(db,current_user,channel_id,write=True);_connection(db,current_user,parent,connection_id)
-    raise HTTPException(409,"CONNECTION_EXECUTION_UNAVAILABLE: 実接속 실행부 준비 전입니다.".replace("実", "실"))
+    parent=_parent(db,current_user,channel_id,write=True);row=_connection(db,current_user,parent,connection_id)
+    if not _execution_available(parent):
+        raise HTTPException(409,"CONNECTION_EXECUTION_UNAVAILABLE: 실행 설정과 해당 Provider 준비를 확인하세요.")
+    _bot(db,current_user,row.bot_id)
+    if parent.status!="active":raise HTTPException(409,"CHANNEL_INACTIVE")
+    if not row.credential_ciphertext:raise HTTPException(409,"CREDENTIALS_MISSING")
+    decrypt_credentials(row.credential_ciphertext,row.organization_id,row.id,settings.channel_connection_encryption_key,row.credential_key_version)
+    if row.desired_state!="connected":
+        row.generation+=1;row.desired_state="connected";row.observed_state="connecting"
+        row.lease_owner=None;row.lease_expires_at=None;row.listener_scope_hash=None;row.accept_after=None;row.last_error_code=None
+    row.updated_by=current_user.id
+    _audit(db,request,current_user,row,"connect");_commit(db)
+    return success_response(request,{"item":serialize_connection(row)})
 
 
 @router.post("/{channel_id}/connections/{connection_id}/disconnect")

@@ -13,7 +13,7 @@ function path(channelId: string, id?: string) {
   return `/api/v1/admin/channels/${encodeURIComponent(channelId)}/connections${id ? `/${encodeURIComponent(id)}` : ""}`;
 }
 export function fetchChannelConnections(token: string, channelId: string) {
-  return apiRequest<{items: ChannelConnection[]}>(path(channelId), {}, token);
+  return apiRequest<{items: ChannelConnection[]; execution_available: boolean}>(path(channelId), {}, token);
 }
 export function fetchConnectionBots(token: string, channelId: string) {
   return apiRequest<{items: {id: string; name: string}[]}>(`${path(channelId)}/bots`, {}, token);

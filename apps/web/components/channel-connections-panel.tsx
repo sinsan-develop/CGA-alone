@@ -28,6 +28,10 @@ export function connectionErrorMessage(error: unknown, copy: Record<string, stri
   return Object.hasOwn(messages, code) ? messages[code] : copy.error;
 }
 
+export function connectDisabled(item: Pick<ChannelConnection,"desired_state">, available: boolean, busy: boolean): boolean {
+  return busy || !available || item.desired_state === "connected";
+}
+
 export function ConnectionDetails({ item, bots, copy, language }: { item: ChannelConnection; bots: {id: string; name: string}[]; copy: Record<string, string>; language: string }) {
   const botName = bots.find(bot => bot.id === item.bot_id)?.name ?? item.bot_id;
   const checked = item.last_checked_at ? new Intl.DateTimeFormat(language, {dateStyle: "medium", timeStyle: "short"}).format(new Date(item.last_checked_at)) : copy.notChecked;
@@ -37,6 +41,7 @@ export function ConnectionDetails({ item, bots, copy, language }: { item: Channe
 export function ChannelConnectionsPanel({ token, channel, onClose }: { token: string; channel: {id: string; name: string; data_json: Record<string, unknown>}; onClose: () => void }) {
   const {language} = useI18n(); const copy = CONNECTION_COPY[language];
   const [items, setItems] = useState<ChannelConnection[]>([]);
+  const [available, setAvailable] = useState(false);
   const [bots, setBots] = useState<{id: string; name: string}[]>([]);
   const [draft, setDraft] = useState<ConnectionDraft>(emptyDraft);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -49,14 +54,22 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
     let active = true;
     setLoading(true);
     Promise.all([fetchChannelConnections(token, channel.id), fetchConnectionBots(token, channel.id)])
-      .then(([connections, choices]) => { if (active) { setItems(connections.items); setBots(choices.items); } })
+      .then(([connections, choices]) => { if (active) { setItems(connections.items); setAvailable(connections.execution_available); setBots(choices.items); } })
       .catch(() => { if (active) setError(copy.error); })
       .finally(() => { if (active) setLoading(false); });
     return () => {active = false;};
   }, [token, channel.id, copy.error]);
 
   function resetForm() {setFormOpen(false);setEditing(undefined);setDraft(emptyDraft);setCredentials({});}
-  async function reload() {setItems((await fetchChannelConnections(token, channel.id)).items);}
+  async function reload() {const result=await fetchChannelConnections(token,channel.id);setItems(result.items);setAvailable(result.execution_available);}
+  useEffect(() => {
+    if (!items.some(item => item.desired_state === "connected")) return;
+    let active=true;
+    const timer=window.setInterval(() => {
+      fetchChannelConnections(token,channel.id).then(result => {if(active){setItems(result.items);setAvailable(result.execution_available);}}).catch(() => {if(active)setError(copy.error);});
+    },3000);
+    return () => {active=false;window.clearInterval(timer);};
+  },[token,channel.id,items.some(item => item.desired_state === "connected"),copy.error]);
   async function handleSave(event: React.FormEvent) {
     event.preventDefault(); if (busy) return;
     setBusy(true);setError("");setNotice("");
@@ -65,12 +78,12 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
       resetForm();setNotice(copy.saved);await reload();
     } catch (error) {setError(connectionErrorMessage(error, copy));} finally {setBusy(false);}
   }
-  async function action(item: ChannelConnection, name: "check" | "disconnect" | "delete") {
+  async function action(item: ChannelConnection, name: "check" | "connect" | "disconnect" | "delete") {
     if (busy || (name === "delete" && !window.confirm(copy.confirmDelete))) return;
     setBusy(true);setError("");setNotice("");
     try {
       const result = await actOnChannelConnection(token, channel.id, item.id, name);
-      setNotice(name === "check" ? (result.configuration_valid ? copy.configOk : copy.configBad) : name === "delete" ? copy.deleted : copy.disconnected);
+      setNotice(name === "check" ? (result.configuration_valid ? copy.configOk : copy.configBad) : name === "delete" ? copy.deleted : name === "connect" ? copy.connecting : copy.disconnected);
       if (name === "delete" && editing === item.id) resetForm();
       await reload();
     } catch (error) {setError(connectionErrorMessage(error, copy));} finally {setBusy(false);}
@@ -81,7 +94,7 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
   }
   return <section className="admin-page" aria-label={copy.title} aria-busy={busy || loading}>
     <div className="admin-page__table-actions"><h2>{channel.name} · {copy.title}</h2><button type="button" className="admin-page__ghost" disabled={busy} onClick={onClose}>{copy.close}</button></div>
-    <p>{copy.pending}</p>
+    {!available ? <p>{copy.pending}</p> : null}
     {error ? <p role="alert">{error}</p> : null}{notice ? <p role="status">{notice}</p> : null}
     <button type="button" className="admin-page__ghost" disabled={busy || loading} onClick={() => {resetForm();setFormOpen(true);}}>{copy.add}</button>
     {!loading && !items.length ? <p>{copy.empty}</p> : null}
@@ -92,7 +105,7 @@ export function ChannelConnectionsPanel({ token, channel, onClose }: { token: st
       {item.last_error_code ? <p>{item.last_error_code}</p> : null}
       <div className="admin-page__table-actions">
         <button type="button" className="admin-page__ghost" disabled={busy} onClick={() => action(item,"check")}>{copy.check}</button>
-        <button type="button" className="admin-page__ghost" disabled title={copy.pending}>{copy.connect}</button>
+        <button type="button" className="admin-page__ghost" disabled={connectDisabled(item,available,busy)} title={!available ? copy.pending : undefined} onClick={() => action(item,"connect")}>{copy.connect}</button>
         <button type="button" className="admin-page__ghost" disabled={busy || item.desired_state === "disconnected" && item.observed_state === "disconnected"} onClick={() => action(item,"disconnect")}>{copy.disconnect}</button>
         <button type="button" className="admin-page__ghost" disabled={busy || item.desired_state !== "disconnected" || !["disconnected","error"].includes(item.observed_state)} onClick={() => edit(item)}>{copy.edit}</button>
         <button type="button" className="admin-page__ghost" disabled={busy || item.desired_state !== "disconnected" || !["disconnected","error"].includes(item.observed_state)} onClick={() => action(item,"delete")}>{copy.remove}</button>

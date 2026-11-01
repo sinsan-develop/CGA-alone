@@ -29,3 +29,9 @@ Webchat/카카오톡은 기존 CGA 연결을 유지한다. Teams는 개인 Micro
 Slack → Discord → Telegram → Google Chat → LINE 순으로 실행부와 연결·해제·재연결 설명을 추가한다. 실제 계정/Secret/앱 설치·공개 주소·게시·배포는 별도 승인으로 진행한다.
 
 Teams 준비 근거: https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register
+
+## 공통 실행 상태(C02)
+
+실행은 서버의 CHANNEL_CONNECTION_WORKER_ENABLED 기본 false이다. 승인된 실제 Provider 실행부와 암호화 키가 준비된 경우에만 연결 버튼이 활성화된다. 연결 명령은 연결 중으로 표시하며, 실제 인증과 수신 준비 확인 뒤에만 연결됨으로 바뀐다. 화면은 연결 희망 대상의 상태를 자동 갱신한다.
+
+동일 앱의 수신 연결을 공유해도 대상별 해제는 독립적이다. 해제 후 과거 질문을 자동으로 가져오지 않으며, 게시 결과가 불명확하면 자동으로 재전송하지 않는다. 서비스 재시작은 연결 희망 상태를 복원하되 명시적으로 해제한 대상은 유지한다. C02만으로 실제 메신저 접속이 제공되는 것은 아니며 각 Provider 구현·실제 인증 검증은 후속 단계다.

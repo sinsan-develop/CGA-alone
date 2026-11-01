@@ -54,3 +54,11 @@ test("connection list renders assigned bot and last-check information",async()=>
  const initial=renderToStaticMarkup(React.createElement(Details,base));assert.ok(initial.includes("Support A")&&initial.includes("Not checked"));
  const checked=renderToStaticMarkup(React.createElement(Details,{...base,item:{...base.item,last_checked_at:"2026-11-02T00:00:00Z"}}));assert.ok(checked.includes("2026")&&!checked.includes("Not checked"));
 });
+
+test("connect remains disabled without runtime and prevents duplicate connecting commands",()=>{
+ const disabled=extract("connectDisabled");const item={desired_state:"disconnected"};
+ assert.equal(disabled(item,false,false),true);
+ assert.equal(disabled(item,true,false),false);
+ assert.equal(disabled(item,true,true),true);
+ assert.equal(disabled({desired_state:"connected"},true,false),true);
+});

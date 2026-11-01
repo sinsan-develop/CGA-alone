@@ -598,5 +598,25 @@
     "path": "apps/api/tests/test_channel_connection_runtime.py",
     "stage": "C02",
     "reason": "C02 승인된 기존방/참가자 증명 원자적재사용·연결방 공유키join 차단·기존SDK선택복원·직접통합회귀"
+  },
+  {
+    "path": "apps/api/alembic/versions/20261102_0032_verified_listener_scope.py",
+    "stage": "C02",
+    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_supervisor.py",
+    "stage": "C02",
+    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_supervisor.py",
+    "stage": "C02",
+    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀"
+  },
+  {
+    "path": "apps/api/Dockerfile",
+    "stage": "C02",
+    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀"
   }
 ]

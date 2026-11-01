@@ -9,11 +9,12 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class ChannelInstallationLease(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "channel_installation_leases"
-    __table_args__ = (UniqueConstraint("organization_id","provider","installation_id","account_id",name="uq_connection_installation"),)
+    __table_args__ = (UniqueConstraint("organization_id","provider","listener_scope_hash",name="uq_connection_listener_scope"),)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"),nullable=False)
     provider: Mapped[str] = mapped_column(String(40),nullable=False)
     installation_id: Mapped[str] = mapped_column(String(200),nullable=False)
     account_id: Mapped[str] = mapped_column(String(200),nullable=False)
+    listener_scope_hash: Mapped[str] = mapped_column(String(64),nullable=False)
     owner: Mapped[str | None] = mapped_column(String(120))
     fence: Mapped[int] = mapped_column(BigInteger,nullable=False,default=0,server_default="0")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

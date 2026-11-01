@@ -40,17 +40,28 @@ def _target_active(db, row):
         raise HTTPException(409,"CONNECTION_TARGET_INACTIVE")
 
 
+def _listener_scope(row, verified_scope=None):
+    if verified_scope is not None:
+        if not isinstance(verified_scope,str) or not verified_scope.strip() or len(verified_scope)>300:
+            raise HTTPException(422,"INVALID_LISTENER_SCOPE")
+        source="verified-listener:"+row.provider+":"+verified_scope
+    else:
+        source=json.dumps([row.provider,row.installation_id,row.account_id],ensure_ascii=False,separators=(",",":"))
+    return scoped_hash(source)
+
+
 def _scope_matches(row, installation):
-    if (row.organization_id,row.provider,row.installation_id,row.account_id)!=(installation.organization_id,installation.provider,installation.installation_id,installation.account_id):
+    expected=row.listener_scope_hash or _listener_scope(row)
+    if (row.organization_id,row.provider,expected)!=(installation.organization_id,installation.provider,installation.listener_scope_hash):
         raise HTTPException(409,"INSTALLATION_SCOPE_MISMATCH")
 
 
-def claim_installation(db, connection, owner: str, *, ttl_seconds: int):
+def claim_installation(db, connection, owner: str, *, ttl_seconds: int, listener_scope: str | None=None):
     if not owner or len(owner)>120 or not 5<=ttl_seconds<=600:raise HTTPException(422,"INVALID_LEASE_INPUT")
     row=_connection(db,connection.id,lock=False)
     _target_active(db,row)
-    values=dict(organization_id=row.organization_id,provider=row.provider,installation_id=row.installation_id,account_id=row.account_id)
-    db.execute(pg_insert(ChannelInstallationLease).values(id=uuid4(),**values).on_conflict_do_nothing(index_elements=["organization_id","provider","installation_id","account_id"]))
+    values=dict(organization_id=row.organization_id,provider=row.provider,listener_scope_hash=_listener_scope(row,listener_scope))
+    db.execute(pg_insert(ChannelInstallationLease).values(id=uuid4(),installation_id=row.installation_id,account_id=row.account_id,**values).on_conflict_do_nothing(index_elements=["organization_id","provider","listener_scope_hash"]))
     lease=db.scalar(select(ChannelInstallationLease).filter_by(**values).with_for_update().execution_options(populate_existing=True))
     now=clock(db)
     if lease.owner!=owner and lease.lease_expires_at is not None and lease.lease_expires_at>now:
@@ -63,11 +74,15 @@ def claim_installation(db, connection, owner: str, *, ttl_seconds: int):
 
 def activate_connection(db, connection_id, installation_id, owner, fence, verified_identity: dict):
     lease=_installation(db,installation_id,owner,fence)
-    row=_connection(db,connection_id);_scope_matches(row,lease);_target_active(db,row)
+    row=_connection(db,connection_id);_target_active(db,row)
+    expected=_listener_scope(row,verified_identity.get("listener_scope"))
+    if (row.organization_id,row.provider,expected)!=(lease.organization_id,lease.provider,lease.listener_scope_hash):
+        raise HTTPException(409,"INSTALLATION_SCOPE_MISMATCH")
     if verified_identity.get("installation_id")!=row.installation_id or verified_identity.get("account_id")!=row.account_id:
         raise HTTPException(409,"VERIFIED_IDENTITY_MISMATCH")
     if row.observed_state!="connected" or row.lease_owner!=owner or row.lease_expires_at is None or row.lease_expires_at<=clock(db):
         row.accept_after=clock(db)
+    row.listener_scope_hash=expected
     row.observed_state="connected";row.lease_owner=owner;row.lease_expires_at=lease.lease_expires_at;row.last_error_code=None
     db.flush();return row
 
