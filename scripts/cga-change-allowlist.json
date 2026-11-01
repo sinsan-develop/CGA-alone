@@ -668,5 +668,10 @@
     "path": "apps/api/tests/test_channel_connection_slack.py",
     "stage": "C04",
     "reason": "승인계획 Slack Socket Mode의 고정 API·검증 workspace/bot/app/channel·목적지·결과불명 경계 및 합성시험"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_slack_runtime.py",
+    "stage": "C04",
+    "reason": "승인 Slack Socket→기존방/큐→SDK→대역게시·중복/공유/카드/복구/격리 실제QA DB회귀"
   }
 ]

@@ -81,3 +81,106 @@ def test_read_only_info_methods_use_documented_get_without_credentials_in_query(
     subject().SlackHttpTransport(post=request).call('bots.info','synthetic-only',{'bot':'BQA001'})
     assert calls[0][0]=='https://slack.com/api/bots.info?bot=BQA001' and calls[0][2] is None
     assert calls[0][1]['Authorization']=='Bearer synthetic-only'
+
+
+class Ws:
+    def __init__(self,app='AQA001'):
+        self.queue=asyncio.Queue();self.queue.put_nowait(json.dumps({'type':'hello','connection_info':{'app_id':app}}));self.sent=[];self.closed=False
+    async def recv(self):return await self.queue.get()
+    async def send(self,value):self.sent.append(json.loads(value))
+    async def close(self):self.closed=True
+
+
+class Socket:
+    def __init__(self,ws):self.ws=ws;self.urls=[]
+    async def open(self,url):self.urls.append(url);return self.ws
+
+
+def socket_frame(event='message'):
+    import time
+    stamp=f'{time.time():.6f}'
+    return {'type':'events_api','envelope_id':'synthetic-envelope','payload':{'type':'event_callback','api_app_id':'AQA001','team_id':'TQA001','event':{'type':event,'channel':'CQA001','user':'UQA002','text':'<@UQA001> 검증 질문','ts':stamp}}}
+
+
+async def listener(ws=None):
+    h=Http();h.responses['apps.connections.open']={'ok':True,'url':'wss://wss.slack.com/link/?ticket=synthetic-only'}
+    sock=Socket(ws or Ws());a=subject().SlackAdapter(None,owner='c04-qa',http=h,socket=sock)
+    target=await a.verify(spec(),{'bot_token':'synthetic-bot-token','app_token':'synthetic-app-token'})
+    return await a.open([target]),h,sock,target
+
+
+def test_socket_hello_verifies_app_before_listener_is_ready():
+    async def run():
+        live,h,sock,target=await listener()
+        assert h.calls[-1][:2]==('apps.connections.open','synthetic-app-token') and len(sock.urls)==1
+        assert live.targets[target.spec.id]==target
+        await live.close();assert sock.ws.closed
+    asyncio.run(run())
+
+
+def test_socket_wrong_app_is_closed_without_ready_state():
+    async def run():
+        ws=Ws('AOTHER')
+        with pytest.raises(HTTPException):await listener(ws)
+        assert ws.closed
+    asyncio.run(run())
+
+
+def test_socket_ack_is_sent_only_after_sdk_event_is_committed():
+    async def run():
+        live,h,sock,target=await listener();seen=[]
+        async def accept(envelopes):
+            assert not sock.ws.sent;seen.extend(envelopes);return [uuid4()]
+        try:
+            await live.handle(socket_frame(),accept)
+            assert sock.ws.sent==[{'envelope_id':'synthetic-envelope'}]
+            assert len(seen)==1 and seen[0].connection_id==target.spec.id
+            event=seen[0].event;assert event['message']=='검증 질문' and event['addressed'] and event['occurredAt']
+            assert event['channelId']=='CQA001' and 'synthetic-bot-token' not in str(seen[0])
+        finally:await live.close()
+    asyncio.run(run())
+
+
+def test_socket_commit_failure_never_acknowledges_the_question():
+    async def run():
+        live,h,sock,target=await listener()
+        async def fail(envelopes):raise RuntimeError('synthetic commit unknown')
+        try:
+            with pytest.raises(RuntimeError):await live.handle(socket_frame(),fail)
+            assert not sock.ws.sent
+        finally:await live.close()
+    asyncio.run(run())
+
+
+def test_socket_ignores_self_and_unconfigured_targets_without_cga_execution():
+    async def run():
+        live,h,sock,target=await listener();seen=[]
+        async def accept(envelopes):seen.extend(envelopes);return [uuid4()]
+        try:
+            body=socket_frame();body['payload']['event']['user']='UQA001';await live.handle(body,accept)
+            body=socket_frame();body['payload']['event']['channel']='COTHER';await live.handle(body,accept)
+            assert not seen and len(sock.ws.sent)==2
+            body=socket_frame();body['payload']['event']['text']='일반 대화';await live.handle(body,accept)
+            assert len(seen)==1 and not seen[0].event['addressed']
+        finally:await live.close()
+    asyncio.run(run())
+
+
+def test_default_socket_transport_disables_redirects_proxy_and_sensitive_logs(monkeypatch):
+    async def run():
+        import websockets.asyncio.client as client
+        from websockets.exceptions import SecurityError
+        calls=[];ws=Ws()
+        class Connect:
+            def __init__(self,url,**options):calls.append((url,options,self))
+            def __await__(self):
+                async def result():return ws
+                return result().__await__()
+        monkeypatch.setattr(client,'connect',Connect)
+        result=await subject().SlackSocketTransport().open('wss://wss.slack.com/link/?ticket=synthetic-only')
+        assert result is ws and len(calls)==1
+        url,options,transport=calls[0]
+        assert options['proxy'] is None and options['max_size']==262144 and options['max_queue']==8 and options['logger'].disabled and not options['logger'].propagate
+        assert options['open_timeout']==5 and options['close_timeout']==2 and options['compression'] is None
+        assert isinstance(transport.process_redirect(ValueError('synthetic')),SecurityError)
+    asyncio.run(run())

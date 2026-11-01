@@ -76,3 +76,50 @@ Teams 준비 근거: https://learn.microsoft.com/en-us/microsoftteams/platform/t
 C03 개발 검증은 합성 JWT, PostgreSQL 원장, 기존 고정 Q/A·카드 실행과 대역 Microsoft 전송을 사용한다. 실제 Teams 테넌트·앱 설치·Microsoft 왕복은 **NOT_RUN / 인수 필수**다. 외부 HTTPS·키·실제 호출 승인 후 이 절차를 실제 환경에서 확인해야 한다.
 
 근거: [Bot Connector 인증](https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication?view=azure-bot-service-4.0), [Teams 카드](https://learn.microsoft.com/en-us/microsoftteams/platform/task-modules-and-cards/cards/cards-reference), [Universal Actions](https://learn.microsoft.com/en-us/adaptive-cards/authoring-cards/universal-action-model).
+
+
+## Slack 연결(C04)
+
+### 준비
+
+기존 워크스페이스에 설치할 Slack 앱을 준비한다. 이 단계는 **Socket Mode**로 수신하므로 외부에 공개한 HTTP 수신 주소가 필요하지 않다. 앱 설치·토큰 발급·서버 키 등록과 실제 연결 활성화는 별도 승인 후 진행한다.
+
+1. Slack 앱의 Socket Mode를 켜고 앱 수준 토큰을 준비한다. 앱 수준 토큰에는 `connections:write` 권한을 설정한다. 보호 입력란 `app_token`에 보관할 값이다.
+2. Bot Token Scopes에 `chat:write`, `users:read`, `app_mentions:read`와 연결할 대화 종류의 조회 권한을 준비한다. 공개 채널은 `channels:read`, 비공개 채널은 `groups:read`, 개인 대화는 `im:read`, 다인 대화는 `mpim:read`를 사용한다. 메시지 구독에는 종류별 `channels:history`, `groups:history`, `im:history`, `mpim:history`가 필요할 수 있다. 사용하는 종류에 맞춰 최소 권한을 설정하고 앱을 설치한다.
+3. Event Subscriptions에서 `app_mention`, 개인 대화용 `message.im`을 설정한다. 일반 채팅이나 그룹 메시지도 수신하려면 해당 `message.channels`, `message.groups`, `message.mpim` 이벤트와 권한을 설정한다. Interactivity도 켠다. 사용하지 않는 명령·모달은 등록하지 않는다.
+4. 봇을 대상 채널에 초대한다. 이 실행부는 채널 자동 참가·생성이나 권한 변경을 하지 않는다.
+
+### CGA-alone 등록
+
+시스템 연계 → 채널 관리에서 Slack Provider 채널을 만들거나 기존 채널을 선택하고 [연결 대상] → [연결 대상 추가]를 연다.
+
+| 입력 | Slack 값 |
+|---|---|
+| 연결 이름 | 관리자가 구분할 이름 |
+| 답변 봇 | 기존 운영 버전·봇스테이션이 준비된 본인 봇 |
+| 설치·워크스페이스 ID | `auth.test`의 `team_id` (`T...`) |
+| 외부 봇 계정 ID | `auth.test`의 `user_id` (`U...` 또는 `W...`). `bot_id` (`B...`)와 구분한다. |
+| 대상 방·채널 ID | Slack의 채널·DM ID (`C...`, `G...`, `D...`) |
+| bot_token | 설치된 앱의 Bot User OAuth Token |
+| app_token | 같은 Slack 앱의 앱 수준 Socket Mode 토큰 |
+
+실제 토큰은 보호 입력란에만 넣는다. 채팅·문서·CSV·기존 채널 인증 JSON에 붙이지 않는다. 화면에서는 등록 여부만 표시하고 수정 시 공란은 기존 값을 유지한다. 같은 앱을 여러 대상에 연결할 때는 해당 앱의 같은 앱 수준 토큰을 사용한다. 다른 워크스페이스에는 각각 설치된 봇 토큰을 등록한다.
+
+[설정 검사]는 저장 상태 검사이며 외부 인증 성공을 의미하지 않는다. [연결]은 서버 실행 설정과 암호화 키가 승인·준비된 경우에 사용할 수 있다. 서버는 workspace·bot user·bot·app·대상 채널을 조회하고, 실제 Socket의 hello에서 앱 ID를 대조한 뒤에만 연결됨을 표시한다. 같은 앱은 수신 연결 하나를 공유하며, 다른 CGA 조직에서 같은 앱을 중복 수신하지 않는다.
+
+### 사용·해제·재연결
+
+- 개인 대화는 봇에 보낸 메시지를 질문으로 처리한다. 공유 채널은 봇을 명시적으로 호출한 메시지와 해당 봇 카드의 선택만 실행한다. 일반 대화는 봇 답변을 만들지 않는다.
+- 같은 채널이라도 Slack 스레드별로 기존 CGA 방을 분리한다. 다른 스레드의 질문자·문맥을 섞지 않는다. 같은 방의 답변 처리 중 들어온 새 질문을 나중에 실행하도록 쌓지 않는다.
+- 기존 6종 표현(text/button/link-button/card/table/carousel)과 채널 템플릿을 사용한다. 카드 응답은 원본 메시지·노드·질문자를 서버에서 검증한다. 지원하지 않는 모달·슬래시 명령·편집 이벤트는 시나리오로 실행하지 않는다.
+- A 연결을 [연결 해제]해도 같은 앱의 B 대상은 계속 사용할 수 있다. 설정 수정·삭제는 해제 후 한다. 삭제는 외부 앱 제거·토큰 폐기와 별개다.
+- [연결]로 다시 시작할 수 있다. 서버 재시작 때 연결 희망 상태만 복구하며 명시적으로 해제한 대상은 유지한다. 과거 질문을 자동으로 가져오지 않는다.
+- 수신 ACK는 질문을 PostgreSQL 원장에 저장한 뒤 보낸다. Slack 재수신은 기존 메시지 ID로 중복 실행을 방지한다. 게시 시간초과나 재시작으로 결과가 불명확하면 자동 재게시하지 않는다. 일반적인 수신 소켓 갱신은 답변 재전송과 구분한다.
+
+### 문제 확인·검증 범위
+
+권한·인증 오류는 앱 설치, 토큰의 workspace/app 일치와 만료, 채널 참가 여부를 확인한다. 다른 앱의 app_token을 섞거나 다른 CGA 조직에 같은 앱을 동시에 연결하지 않는다. 수신 문제는 Socket Mode·앱 이벤트·Interactivity 구독을 확인한다. Secret 원문을 오류 보고에 넣지 않는다.
+
+개발 검증은 대역 Socket/Slack API, 실제 QA PostgreSQL과 기존 고정 Q/A·카드 실행을 사용한다. 실제 Slack 앱 설치·토큰 등록·Socket 접속·워크스페이스 왕복은 **NOT_RUN / 인수 필수**이며 별도 승인 후 확인한다.
+
+근거: [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/), [auth.test](https://docs.slack.dev/reference/methods/auth.test/), [bots.info](https://docs.slack.dev/reference/methods/bots.info/), [conversations.info](https://docs.slack.dev/reference/methods/conversations.info/), [chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/).
