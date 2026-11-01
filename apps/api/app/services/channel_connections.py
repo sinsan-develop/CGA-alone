@@ -71,3 +71,24 @@ def disconnect_connection(row) -> None:
     row.lease_owner = None
     row.lease_expires_at = None
     row.last_error_code = None
+
+
+def encrypt_connection_state(value: dict, org: UUID, connection: UUID, key: str, version: str, purpose: str) -> str:
+    if not isinstance(value,dict) or not purpose or len(purpose)>200:
+        raise HTTPException(422,"INVALID_CONNECTION_STATE")
+    data=json.dumps(value,ensure_ascii=False).encode()
+    if len(data)>1048576:raise HTTPException(422,"CONNECTION_STATE_LIMIT")
+    nonce=os.urandom(12)
+    encrypted=_cipher(key).encrypt(nonce,data,_aad(org,connection,version)+b":state:"+purpose.encode())
+    return base64.urlsafe_b64encode(nonce+encrypted).decode()
+
+
+def decrypt_connection_state(ciphertext: str, org: UUID, connection: UUID, key: str, version: str, purpose: str) -> dict:
+    cipher=_cipher(key)
+    try:
+        raw=base64.b64decode(ciphertext.encode("ascii"),altchars=b"-_",validate=True)
+        result=json.loads(cipher.decrypt(raw[:12],raw[12:],_aad(org,connection,version)+b":state:"+purpose.encode()))
+        if not isinstance(result,dict):raise ValueError()
+        return result
+    except (ValueError,UnicodeError,InvalidTag,binascii.Error):
+        raise HTTPException(503,"CONNECTION_STATE_UNAVAILABLE") from None

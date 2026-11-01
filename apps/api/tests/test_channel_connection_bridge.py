@@ -53,3 +53,15 @@ def test_answer_table_columns_named_token_are_preserved():
 
 def test_reply_packet_rejects_extra_server_credential_fields():
     with pytest.raises(HTTPException):bridge().convert_channel_packet("slack","replies",{"messages":[],"destination":{},"bot_token":"server-synthetic-private"})
+
+
+@pytest.mark.parametrize("fixture",[x for x in PROVIDERS if x["channel"]!="slack"],ids=lambda x:x["channel"])
+def test_compact_button_restores_original_value_using_same_sdk(fixture):
+    source={"id":str(uuid4()),"participantKind":"bot","text":"선택","messageType":"button","payload":{"options":["확인","다음"],"sourceTalkNodeId":"talk-1"}}
+    ev=bridge().convert_channel_packet(fixture["channel"],"normalize",{"input":fixture["addressed"],"connection":fixture["connection"]})
+    ev.update(sourceMessageId=source["id"],choiceIndex=1)
+    wire=json.loads(bridge().convert_channel_packet(fixture["channel"],"selection",{"source":source,"event":ev}))
+    assert wire["sourceMessageId"]==source["id"] and wire["sourceTalkNodeId"]=="talk-1"
+    assert wire["response"]["buttonValue"]=="다음"
+    with pytest.raises(HTTPException):bridge().convert_channel_packet(fixture["channel"],"selection",{"source":source,"event":{**ev,"choiceIndex":999}})
+    with pytest.raises(HTTPException):bridge().convert_channel_packet(fixture["channel"],"selection",{"source":{**source,"participantKind":"user"},"event":ev})

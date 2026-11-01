@@ -1067,3 +1067,26 @@ export async function sendAidotLineEvent(serverUrl: string, member: AidotLineMem
   try { const packet = buildAidotLineReplyPayload(response.botMessages ?? (response.botMessage ? [response.botMessage] : []), input, connection, delivery, eventIndex); return { response, replies: packet ? [packet] : [] }; }
   catch (cause) { throw Object.assign(new Error("CGA 답변은 수신했지만 LINE reply를 준비하지 못했습니다. 자동 재실행하지 않습니다."), { cause, cgaResponse: response }); }
 }
+
+
+// 서버 bridge가 같은 방에서 조회한 원본 메시지에만 사용한다. 기존 client 전송 계약은 유지한다.
+export function restoreAidotNativeSelection(provider: string, source: AidotChannelStoredMessage, event: Record<string, unknown>): string {
+  if (source.participantKind !== "bot" || source.id !== event.sourceMessageId || !source.payload?.sourceTalkNodeId
+      || !Number.isSafeInteger(event.choiceIndex) || Number(event.choiceIndex) < 0) throw new Error("선택 원본/번호를 확인할 수 없습니다.");
+  const index = event.choiceIndex as number;
+  let value: string | undefined;
+  if (provider === "discord") {
+    value = discordReply(source, {channelId: event.channelId as string}).choices[index];
+    if (value !== undefined) return discordSelectionMessage(source, value);
+  } else if (provider === "telegram") {
+    value = telegramReply(source, {chatId: event.chatId as string, threadId: event.threadId as number | null}).choices[index];
+    if (value !== undefined) return telegramSelectionMessage(source, value);
+  } else if (provider === "google-chat") {
+    value = googleChatReply(source, {spaceName: event.spaceName as string, threadName: event.threadName as string | null}).choices[index];
+    if (value !== undefined) return googleChatSelectionMessage(source, value);
+  } else if (provider === "line") {
+    value = lineReply(source).choices[index];
+    if (value !== undefined) return lineSelectionMessage(source, value);
+  }
+  throw new Error("선택 원본/번호를 확인할 수 없습니다.");
+}

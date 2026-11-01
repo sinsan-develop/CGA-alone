@@ -35,7 +35,7 @@ def bridge_environment() -> dict[str, str]:
 def _prepare_payload(provider: str, operation: str, payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError()
-    allowed = {"input", "connection", "eventIndex"} if operation == "normalize" else {"messages", "destination"}
+    allowed = {"input", "connection", "eventIndex"} if operation == "normalize" else {"source", "event"} if operation == "selection" else {"messages", "destination"}
     if set(payload) - allowed:
         raise ValueError()
     if operation == "normalize":
@@ -50,6 +50,11 @@ def _prepare_payload(provider: str, operation: str, payload: dict) -> dict:
         if not isinstance(connection, dict) or set(connection) - fields:
             raise ValueError()
         return {**payload, "input": sanitize_native_payload(payload.get("input"))}
+    if operation == "selection":
+        source,event=payload.get("source"),payload.get("event")
+        if not isinstance(source,dict) or set(source)-{"id","participantId","participantKind","participantName","messageType","text","payload","createdAt"} or not isinstance(event,dict):
+            raise ValueError()
+        return {"source":source,"event":sanitize_native_payload(event)}
     destination = payload.get("destination", {})
     if not isinstance(destination, dict) or set(destination) - {"channelId", "threadTs", "chatId", "threadId", "spaceName", "threadName"}:
         raise ValueError()
@@ -62,7 +67,7 @@ def _prepare_payload(provider: str, operation: str, payload: dict) -> dict:
 
 def convert_channel_packet(provider: str, operation: str, payload: dict):
     provider = provider.replace("_", "-")
-    if provider not in _PROVIDERS or operation not in {"normalize", "replies"}:
+    if provider not in _PROVIDERS or operation not in {"normalize", "replies", "selection"}:
         raise HTTPException(422, "CHANNEL_PACKET_INVALID")
     try:
         data = json.dumps({"provider": provider, "operation": operation, "payload": _prepare_payload(provider, operation, payload)}, ensure_ascii=False)

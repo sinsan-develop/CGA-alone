@@ -16,6 +16,7 @@ try {
   if (!normalizers.has(provider) || !payload || typeof payload !== "object") throw Error("input");
   let value;
   if (operation === "normalize") value = await normalizers.get(provider)(payload.input, payload.connection, payload.eventIndex);
+  else if (operation === "selection") value = sdk.restoreAidotNativeSelection(provider, payload.source, payload.event);
   else if (operation === "replies") {
     if (!Array.isArray(payload.messages) || payload.messages.length > (provider === "line" ? 5 : 20)) throw Error("messages");
     value = payload.messages.map(message => builders.get(provider)(message, payload.destination));

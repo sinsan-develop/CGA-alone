@@ -22,7 +22,7 @@ from app.db.session import SessionLocal
 from app.core.config import settings
 from app.core.responses import success_response
 from app.core.version_documents import normalize_version_document
-from app.models import AdminChannel, Bot, BotVersion, Group, ChannelRoom, ChannelMessage, ChannelQueueEvent
+from app.models import AdminChannel, Bot, BotVersion, Group, ChannelRoom, ChannelMessage, ChannelQueueEvent, ChannelConnectionRoom
 from app.services.default_messages import resolve_default_message_text
 from app.services.bot_ai_policy import runtime_block_reason, secondary_llm_block_reason
 from app.services.llm_client import LlmClientError
@@ -950,7 +950,7 @@ def _room_client_state(db, room):
             "waitingNodeId": str(state.get("waitingNodeId") or "").strip() or None}}
 
 
-def _issue_shared_member(db, room, binding, bot, version, name, participant_kind="user"):
+def _issue_shared_member(db, room, binding, bot, version, name, participant_kind="user", *, commit=True):
     actor, secret = "wc:" + uuid4().hex, secrets.token_urlsafe(32)
     members = {**binding["members"], actor: {"digest": _webchat_secret_digest(secret),
         "participant_name": name, "participant_kind": participant_kind, "expires_at": _webchat_credential_expiry(bot, version)}}
@@ -959,7 +959,10 @@ def _issue_shared_member(db, room, binding, bot, version, name, participant_kind
         room.participant_id = actor
         room.participant_name = name
     flag_modified(room, "metadata_json")
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return {"roomId": str(room.id), "participantId": actor, "participantKind": participant_kind, "conversationToken": str(room.id) + "." + secret,
         "turn": _shared_turn_view(db, room, actor), **_room_client_state(db, room)}
 
@@ -1004,6 +1007,9 @@ def _client_room_target(db, channel, room_id):
     from app.api.routes import channels
     room = db.get(ChannelRoom, room_id)
     if room is None or room.channel_type != channel or room.deleted_at is not None:
+        raise _credential_denied()
+    # 연결 실행부가 발급한 증명은 공개 공유키/방ID로 새로 발급하지 않는다.
+    if db.scalar(select(ChannelConnectionRoom.id).where(ChannelConnectionRoom.room_id==room.id).limit(1)) is not None:
         raise _credential_denied()
     bot, version, _ = channels._get_active_bot_version(db, str(room.bot_id), channel)
     return bot, version
