@@ -618,5 +618,15 @@
     "path": "apps/api/Dockerfile",
     "stage": "C02",
     "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_teams_auth.py",
+    "stage": "C03",
+    "reason": "승인된 Teams 준비 범위의 순수 BotConnector JWT/OIDC·회신host 검증 및 합성회귀; 공개수신연결/실제호출/배포없음"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_teams_auth.py",
+    "stage": "C03",
+    "reason": "승인된 Teams 준비 범위의 순수 BotConnector JWT/OIDC·회신host 검증 및 합성회귀; 공개수신연결/실제호출/배포없음"
   }
 ]
