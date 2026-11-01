@@ -658,5 +658,15 @@
     "path": "apps/api/tests/test_channel_connection_teams_packets.py",
     "stage": "C03",
     "reason": "승인된 Teams 기본6표현/기존AdaptiveCard 정규화재사용·원본/양식응답·전송크기 경계검증"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_slack.py",
+    "stage": "C04",
+    "reason": "승인계획 Slack Socket Mode의 고정 API·검증 workspace/bot/app/channel·목적지·결과불명 경계 및 합성시험"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_slack.py",
+    "stage": "C04",
+    "reason": "승인계획 Slack Socket Mode의 고정 API·검증 workspace/bot/app/channel·목적지·결과불명 경계 및 합성시험"
   }
 ]
