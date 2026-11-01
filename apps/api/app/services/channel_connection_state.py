@@ -56,11 +56,20 @@ def _scope_matches(row, installation):
         raise HTTPException(409,"INSTALLATION_SCOPE_MISMATCH")
 
 
-def claim_installation(db, connection, owner: str, *, ttl_seconds: int, listener_scope: str | None=None):
+def claim_installation(db, connection, owner: str, *, ttl_seconds: int, listener_scope: str | None=None, exclusive: bool=False):
     if not owner or len(owner)>120 or not 5<=ttl_seconds<=600:raise HTTPException(422,"INVALID_LEASE_INPUT")
     row=_connection(db,connection.id,lock=False)
     _target_active(db,row)
     values=dict(organization_id=row.organization_id,provider=row.provider,listener_scope_hash=_listener_scope(row,listener_scope))
+    if exclusive:
+        # 같은 실제 앱의 서로 다른 조직 수신기가 이벤트를 나눠 받지 않도록 직렬화한다.
+        lock=int(values['listener_scope_hash'][:16],16)
+        if lock>=2**63:lock-=2**64
+        db.execute(select(func.pg_advisory_xact_lock(lock)))
+        other=db.scalar(select(ChannelInstallationLease.id).where(ChannelInstallationLease.provider==row.provider,
+            ChannelInstallationLease.listener_scope_hash==values['listener_scope_hash'],ChannelInstallationLease.organization_id!=row.organization_id,
+            ChannelInstallationLease.lease_expires_at>clock(db),ChannelInstallationLease.owner.is_not(None)).limit(1))
+        if other is not None:return None
     db.execute(pg_insert(ChannelInstallationLease).values(id=uuid4(),installation_id=row.installation_id,account_id=row.account_id,**values).on_conflict_do_nothing(index_elements=["organization_id","provider","listener_scope_hash"]))
     lease=db.scalar(select(ChannelInstallationLease).filter_by(**values).with_for_update().execution_options(populate_existing=True))
     now=clock(db)
@@ -80,7 +89,8 @@ def activate_connection(db, connection_id, installation_id, owner, fence, verifi
         raise HTTPException(409,"INSTALLATION_SCOPE_MISMATCH")
     if verified_identity.get("installation_id")!=row.installation_id or verified_identity.get("account_id")!=row.account_id:
         raise HTTPException(409,"VERIFIED_IDENTITY_MISMATCH")
-    if row.observed_state!="connected" or row.lease_owner!=owner or row.lease_expires_at is None or row.lease_expires_at<=clock(db):
+    initial_handshake=row.observed_state=="connecting" and row.accept_after is not None and row.lease_owner in {None,owner}
+    if not initial_handshake and (row.observed_state!="connected" or row.lease_owner!=owner or row.lease_expires_at is None or row.lease_expires_at<=clock(db)):
         row.accept_after=clock(db)
     row.listener_scope_hash=expected
     row.observed_state="connected";row.lease_owner=owner;row.lease_expires_at=lease.lease_expires_at;row.last_error_code=None

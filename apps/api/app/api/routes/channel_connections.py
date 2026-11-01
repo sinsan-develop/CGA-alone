@@ -177,7 +177,7 @@ def connect_connection(channel_id: UUID, connection_id: UUID, request: Request, 
     decrypt_credentials(row.credential_ciphertext,row.organization_id,row.id,settings.channel_connection_encryption_key,row.credential_key_version)
     if row.desired_state!="connected":
         row.generation+=1;row.desired_state="connected";row.observed_state="connecting"
-        row.lease_owner=None;row.lease_expires_at=None;row.listener_scope_hash=None;row.accept_after=None;row.last_error_code=None
+        row.lease_owner=None;row.lease_expires_at=None;row.listener_scope_hash=None;row.accept_after=datetime.now(timezone.utc);row.last_error_code=None
     row.updated_by=current_user.id
     _audit(db,request,current_user,row,"connect");_commit(db)
     return success_response(request,{"item":serialize_connection(row)})

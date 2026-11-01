@@ -628,5 +628,10 @@
     "path": "apps/api/tests/test_channel_connection_teams_auth.py",
     "stage": "C03",
     "reason": "승인된 Teams 준비 범위의 순수 BotConnector JWT/OIDC·회신host 검증 및 합성회귀; 공개수신연결/실제호출/배포없음"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_teams.py",
+    "stage": "C03",
+    "reason": "승인된 Teams 첫 Activity 대기·앱 교차조직단독수신·기준시각 및 기존공통경계회귀"
   }
 ]

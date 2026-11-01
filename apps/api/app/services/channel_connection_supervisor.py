@@ -39,6 +39,7 @@ class VerifiedTarget:
     account_id: str
     listener_scope: str
     transport: object = field(default=None,repr=False,compare=False)
+    exclusive_scope: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,10 @@ class InboundEnvelope:
     connection_id: UUID
     event: dict
     private_context: dict = field(default_factory=dict,repr=False)
+
+
+class NativeHandshakePending(Exception):
+    """외부 인증은 준비됐지만 실제 대상의 첫 검증 Activity를 기다린다."""
 
 
 class NativeListener(Protocol):
@@ -107,13 +112,19 @@ class ConnectionSupervisor:
             row=db.get(ChannelConnection,spec.id)
             # 다른 프로세스의 유효한 소유권/새 명령에 오류를 덮어쓰지 않는다.
             if row and row.generation==spec.generation and row.desired_state=='connected' and (row.lease_owner in {None,self.owner} or row.lease_expires_at is None or row.lease_expires_at<=state.clock(db)):
-                row.observed_state='error';row.last_error_code=code;row.lease_owner=None;row.lease_expires_at=None;db.commit()
+                row.observed_state='error';row.last_error_code=code;row.lease_owner=None;row.lease_expires_at=None;row.accept_after=None;db.commit()
+
+    def _pending(self,spec):
+        with self.sessions() as db:
+            row=state._connection(db,spec.id)
+            if row.generation==spec.generation and row.desired_state=='connected' and row.lease_owner in {None,self.owner}:
+                row.observed_state='connecting';row.last_error_code='WAITING_FIRST_ACTIVITY';db.commit()
 
     def _lease(self,targets):
         with self.sessions() as db:
             first=targets[0];row=state._connection(db,first.spec.id,lock=False)
             if row.generation!=first.spec.generation:return None
-            lease=state.claim_installation(db,row,self.owner,ttl_seconds=self.lease_seconds,listener_scope=first.listener_scope)
+            lease=state.claim_installation(db,row,self.owner,ttl_seconds=self.lease_seconds,listener_scope=first.listener_scope,exclusive=first.exclusive_scope)
             if lease is None:db.commit();return None
             value=(lease.id,lease.fence);db.commit();return value
 
@@ -145,7 +156,7 @@ class ConnectionSupervisor:
                     row=state._connection(db,target.spec.id)
                     if row.generation==target.spec.generation and row.lease_owner==self.owner:
                         row.lease_expires_at=lease.lease_expires_at
-                        if row.desired_state=='connected':row.observed_state='connecting'
+                        if row.desired_state=='connected':row.observed_state='connecting';row.accept_after=None
                 db.commit()
 
     async def heartbeat_once(self,run):
@@ -197,6 +208,8 @@ class ConnectionSupervisor:
                         raise ValueError('VERIFIED_IDENTITY_MISMATCH')
                     self.verified[spec.id]=target
                 grouped.setdefault((spec.organization_id,spec.provider,target.listener_scope),[]).append(target)
+            except NativeHandshakePending:
+                await asyncio.to_thread(self._pending,spec)
             except Exception:
                 await asyncio.to_thread(self._error,spec,'CONNECTION_VERIFICATION_FAILED')
         self.verified={cid:target for cid,target in self.verified.items() if active_specs.get(cid)==target.spec}
