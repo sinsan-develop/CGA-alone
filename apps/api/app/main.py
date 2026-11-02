@@ -186,6 +186,8 @@ async def start_connection_supervisor(app: FastAPI) -> None:
     ADAPTERS["discord"]=DiscordAdapter(SessionLocal,owner=supervisor.owner)
     from app.services.channel_connection_telegram import TelegramAdapter
     ADAPTERS["telegram"]=TelegramAdapter(SessionLocal,owner=supervisor.owner)
+    from app.services.channel_connection_google_chat import GoogleChatAdapter
+    ADAPTERS["google_chat"]=GoogleChatAdapter(SessionLocal,owner=supervisor.owner)
     app.state.connection_supervisor=supervisor
     app.state.connection_supervisor_task=asyncio.create_task(supervisor.serve())
 

@@ -242,7 +242,7 @@
   {
     "path": "apps/api/app/main.py",
     "stage": "P03",
-    "reason": "승인된 기존 queue worker에 persistent operation 전용 처리 연결, 일반 worker 분리 유지"
+    "reason": "승인된 기존 queue worker에 persistent operation 전용 처리 연결, 일반 worker 분리 유지; C07 별도승인 Google Chat startup등록/단일수신주소·Google인증/원장commit뒤ACK, 기존기본값false/기존Teams경로유지"
   },
   {
     "path": "apps/web/components/simulator-page.tsx",
@@ -642,7 +642,7 @@
   {
     "path": "apps/api/app/api/routes/channel_connection_events.py",
     "stage": "C03",
-    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀"
+    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀; C07 별도승인 Google Chat startup등록/단일수신주소·Google인증/원장commit뒤ACK, 기존기본값false/기존Teams경로유지"
   },
   {
     "path": "apps/api/tests/test_channel_connection_teams_adapter.py",
@@ -748,5 +748,25 @@
     "path": "apps/api/tests/test_public_repo_policy.py",
     "stage": "C07",
     "reason": "별도승인 Google 공식공개issuer 정확1개만허용·타이메일/유사/혼합거부 회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_google_chat.py",
+    "stage": "C07",
+    "reason": "승인 Google Chat 고정OAuth/앱·공간귀속·첫인증수신/보호proof·원장commit ACK/기존Q&A/대상별게시·중복/UNKNOWN/경합 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_google_chat.py",
+    "stage": "C07",
+    "reason": "승인 Google Chat 고정OAuth/앱·공간귀속·첫인증수신/보호proof·원장commit ACK/기존Q&A/대상별게시·중복/UNKNOWN/경합 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_google_chat_runtime.py",
+    "stage": "C07",
+    "reason": "승인 Google Chat 고정OAuth/앱·공간귀속·첫인증수신/보호proof·원장commit ACK/기존Q&A/대상별게시·중복/UNKNOWN/경합 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_google_chat_route.py",
+    "stage": "C07",
+    "reason": "승인 Google Chat 고정OAuth/앱·공간귀속·첫인증수신/보호proof·원장commit ACK/기존Q&A/대상별게시·중복/UNKNOWN/경합 회귀"
   }
 ]
