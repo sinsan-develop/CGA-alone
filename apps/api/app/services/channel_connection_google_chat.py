@@ -123,9 +123,13 @@ class GoogleChatAdapter:
     def __init__(self,sessions,*,owner,http=None,authenticator=None):
         self.sessions=sessions;self.owner=owner;self.http=http or GoogleChatHttpTransport();self.authenticator=authenticator or GoogleChatAuthenticator();self.tokens={};self.token_lock=asyncio.Lock()
     @staticmethod
-    def scope(project):
+    def project(project):
         if not isinstance(project,str) or not re.fullmatch('[1-9][0-9]{0,19}',project):raise HTTPException(422,'GOOGLE_CHAT_CONFIGURATION_INVALID')
-        return 'google-chat-project:'+project
+        return project
+    @classmethod
+    def scope(cls,project,bot):
+        cls.project(project);resource_name(bot,'user')
+        return 'google-chat-app:'+bot
     async def _token(self,credentials):
         identity=service_account(credentials);key=hashlib.sha256(json.dumps(credentials,sort_keys=True).encode()).hexdigest()
         async with self.token_lock:
@@ -141,7 +145,7 @@ class GoogleChatAdapter:
             row=state._connection(db,spec.id,lock=False)
             if row.generation!=spec.generation:raise HTTPException(409,'CONNECTION_CHANGED')
             state._target_active(db,row)
-            lease=state.claim_installation(db,row,self.owner,ttl_seconds=45,listener_scope=self.scope(spec.installation_id),exclusive=True)
+            lease=state.claim_installation(db,row,self.owner,ttl_seconds=45,listener_scope=self.scope(spec.installation_id,spec.account_id),exclusive=True)
             if lease is None:raise HTTPException(409,'GOOGLE_CHAT_APP_SCOPE_IN_USE')
             row=state._connection(db,spec.id)
             if row.generation!=spec.generation:raise HTTPException(409,'CONNECTION_CHANGED')
@@ -157,7 +161,7 @@ class GoogleChatAdapter:
             db.commit();return ready
     async def verify(self,spec,credentials):
         if spec.provider!='google_chat':raise HTTPException(422,'GOOGLE_CHAT_CONFIGURATION_INVALID')
-        scope=self.scope(spec.installation_id);resource_name(spec.account_id,'user');resource_name(spec.target_id,'space')
+        scope=self.scope(spec.installation_id,spec.account_id);resource_name(spec.account_id,'user');resource_name(spec.target_id,'space')
         token=await self._token(credentials);kind=await asyncio.to_thread(verify_space,self.http,token,spec.target_id,spec.account_id)
         if not await asyncio.to_thread(self._prepare,spec,kind):raise NativeHandshakePending()
         return VerifiedTarget(spec,spec.installation_id,spec.account_id,scope,GoogleChatBinding(dict(credentials),kind),True)
@@ -168,13 +172,15 @@ class GoogleChatAdapter:
         resource_name(space,'space')
         with self.sessions() as db:
             rows=list(db.scalars(select(ChannelConnection).where(ChannelConnection.provider=='google_chat',ChannelConnection.installation_id==project,ChannelConnection.target_id==space,ChannelConnection.desired_state=='connected',ChannelConnection.deleted_at.is_(None))))
-            scope=state.scoped_hash('verified-listener:google_chat:'+self.scope(project))
-            leases=list(db.scalars(select(ChannelInstallationLease).where(ChannelInstallationLease.provider=='google_chat',ChannelInstallationLease.listener_scope_hash==scope,ChannelInstallationLease.owner.is_not(None),ChannelInstallationLease.lease_expires_at>state.clock(db))))
-            if len(leases)!=1:raise HTTPException(503,'GOOGLE_CHAT_RECEIVER_NOT_READY')
-            lease=leases[0];bindings=(lease.cursor_json or {}).get('google_chat_bindings',{});selected=[]
-            for row in rows:
-                binding=bindings.get(str(row.id))
-                if row.organization_id==lease.organization_id and isinstance(binding,dict) and binding=={'generation':row.generation,'project':project,'bot':row.account_id,'space':space,'space_type':binding.get('space_type')}:selected.append((row.id,row.generation,lease.id,dict(binding)))
+            scopes={state.scoped_hash('verified-listener:google_chat:'+self.scope(project,row.account_id)) for row in rows}
+            leases=list(db.scalars(select(ChannelInstallationLease).where(ChannelInstallationLease.provider=='google_chat',ChannelInstallationLease.listener_scope_hash.in_(scopes),ChannelInstallationLease.owner.is_not(None),ChannelInstallationLease.lease_expires_at>state.clock(db))))
+            if not leases:raise HTTPException(503,'GOOGLE_CHAT_RECEIVER_NOT_READY')
+            selected=[]
+            for lease in leases:
+                bindings=(lease.cursor_json or {}).get('google_chat_bindings',{})
+                for row in rows:
+                    binding=bindings.get(str(row.id));expected=state.scoped_hash('verified-listener:google_chat:'+self.scope(project,row.account_id))
+                    if row.organization_id==lease.organization_id and lease.listener_scope_hash==expected and isinstance(binding,dict) and binding=={'generation':row.generation,'project':project,'bot':row.account_id,'space':space,'space_type':binding.get('space_type')}:selected.append((row.id,row.generation,lease.id,dict(binding)))
             if len(selected)!=1:raise HTTPException(403,'GOOGLE_CHAT_TARGET_FORBIDDEN')
             return selected[0]
     def _accept(self,selected,event):
@@ -183,7 +189,7 @@ class GoogleChatAdapter:
             lease=db.scalar(select(ChannelInstallationLease).where(ChannelInstallationLease.id==lid).with_for_update())
             if lease is None or not lease.owner or lease.lease_expires_at is None or lease.lease_expires_at<=state.clock(db):raise HTTPException(503,'GOOGLE_CHAT_RECEIVER_NOT_READY')
             row=state._connection(db,cid)
-            if (row.organization_id,row.provider,state._listener_scope(row,self.scope(binding['project'])))!=(lease.organization_id,lease.provider,lease.listener_scope_hash):raise HTTPException(409,'INSTALLATION_SCOPE_MISMATCH')
+            if (row.organization_id,row.provider,state._listener_scope(row,self.scope(binding['project'],binding['bot'])))!=(lease.organization_id,lease.provider,lease.listener_scope_hash):raise HTTPException(409,'INSTALLATION_SCOPE_MISMATCH')
             state._target_active(db,row)
             if row.generation!=generation or row.installation_id!=binding['project'] or row.account_id!=binding['bot'] or row.target_id!=binding['space']:raise HTTPException(409,'CONNECTION_CHANGED')
             cursor=dict(lease.cursor_json or {})
@@ -208,7 +214,7 @@ class GoogleChatAdapter:
         try:
             parts=authorization.split(' ')
             if len(parts)!=2 or parts[0].lower()!='bearer' or len(authorization)>20000:raise ValueError()
-            project=jwt.decode(parts[1],options={'verify_signature':False})['aud'];self.scope(project)
+            project=jwt.decode(parts[1],options={'verify_signature':False})['aud'];self.project(project)
         except (jwt.PyJWTError,ValueError,TypeError,KeyError,HTTPException,AttributeError):raise HTTPException(401,'GOOGLE_CHAT_AUTHENTICATION_FAILED') from None
         if not await asyncio.to_thread(self._candidate,project):raise HTTPException(401,'GOOGLE_CHAT_AUTHENTICATION_FAILED')
         await asyncio.to_thread(self.authenticator.authenticate,authorization,project)
@@ -267,7 +273,7 @@ class GoogleChatListener:
             except (HTTPException,ValueError):
                 if not receipts:raise NativeNotSubmitted() from None
                 raise RuntimeError('GOOGLE_CHAT_SEND_REVOKED') from None
-            try:result=await asyncio.to_thread(self.adapter.http.send,target.spec.target_id,token,packet['body'],str(uuid5(NAMESPACE_URL,'cga-google-chat:'+str(did)+':'+str(index))),packet.get('messageReplyOption'))
+            try:result=await asyncio.to_thread(self.adapter.http.send,target.spec.target_id,token,packet['body'],str(uuid5(NAMESPACE_URL,'cga-google-chat:'+str(did)+':'+str(index))),packet.get('messageReplyOption') if target.transport.space_type=='SPACE' else None)
             except GoogleChatApiRejected:
                 if not receipts:raise NativeNotSubmitted() from None
                 raise RuntimeError('GOOGLE_CHAT_PARTIAL_SEND_REJECTED') from None

@@ -53,7 +53,7 @@ def test_space_and_calling_app_membership_are_verified(bad):
     else:assert m.verify_space(Http(),'synthetic-access','spaces/QA','users/100')=='SPACE'
 
 
-@pytest.mark.parametrize('value',['https://untrusted.invalid','spaces/../private','spaces/QA?token=x','spaces/QA/threads/other'])
+@pytest.mark.parametrize('value',['https://untrusted.invalid','spaces/../private','spaces/QA?token=x','spaces/QA/threads/other','spaces/.','spaces/..'])
 def test_space_resource_cannot_change_host_or_resource_type(value):
     with pytest.raises(HTTPException):subject().resource_name(value,'space')
 

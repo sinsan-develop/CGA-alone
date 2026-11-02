@@ -32,7 +32,7 @@ def test_google_signed_project_number_request_is_verified(signing):
     auth.authenticate('Bearer '+token(key),'1234567890');assert calls==[m.CERTS_URL]
 
 
-@pytest.mark.parametrize('bad',['issuer','audience','expired','future','missing','audience_list','boolean_time','signature','kid'])
+@pytest.mark.parametrize('bad',['issuer','audience','expired','future','missing','audience_list','boolean_time','signature','kid','algorithm'])
 def test_untrusted_or_stale_requests_are_rejected(signing,bad):
     key,cert=signing;p=claims();header={'kid':'synthetic-key'}
     if bad=='issuer':p['iss']='untrusted.invalid'
@@ -44,7 +44,7 @@ def test_untrusted_or_stale_requests_are_rejected(signing,bad):
     elif bad=='boolean_time':p['iat']=True
     elif bad=='signature':key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
     elif bad=='kid':header['kid']='other-key'
-    value=jwt.encode(p,key,algorithm='RS256',headers=header)
+    value=jwt.encode(p,None,algorithm='none',headers=header) if bad=='algorithm' else jwt.encode(p,key,algorithm='RS256',headers=header)
     auth=subject().GoogleChatAuthenticator(transport=lambda _: {'synthetic-key':cert})
     with pytest.raises(HTTPException,match='GOOGLE_CHAT_AUTHENTICATION_FAILED'):auth.authenticate('Bearer '+value,'1234567890')
 

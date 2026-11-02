@@ -201,3 +201,34 @@ A 대상의 [연결 해제]는 같은 앱의 B 대상에 영향을 주지 않는
 Telegram의 7일 유휴 기준은 플랫폼의 새 update 발생 시각이다. CGA-alone은 각 수신 요청 시작 DB 시각에서 최대 보관기간 24시간을 뺀 보수적인 발생 하한을 보호 저장하고, 그 하한으로부터 7일이 되기 60초 전에 높은 이전 offset 대신 offset=0으로 확인해 새 수신 구간을 시작한다. 60초 여유는 20초 long polling·25초 HTTP 제한·전송 준비 시간을 고려한다. 요청 준비가 5초를 넘으면 높은 offset을 전송하지 않는다. 따라서 로컬 저장 후 7일보다 일찍 안전 조회할 수 있다. 저장 시각은 감사용으로 따로 남긴다. 구간 안에서는 원장 commit 후에만 offset을 전진시킨다. 빈 조회 뒤 재시작해도 초기화가 반복되지 않으며 과거와 같은 update ID는 구간 번호로 구별한다. 기존 결과불명 요청·방·기록은 보존하고 자동 재실행하지 않는다. 플랫폼 보관기한(최대24시간)을 넘겨 삭제된 질문은 복구할 수 없다. 감사 이력 system.connection.telegram_idle_reset에서 고정 사유·시각·구간 전환을 확인한다.
 
 실제 Telegram 인증·송수신은 **NOT_RUN / 인수 필수**이며 개발 검증은 합성 API·QA PostgreSQL·기존 고정 Q/A만 사용한다. [Update](https://core.telegram.org/bots/api#update), [Getting updates](https://core.telegram.org/bots/api#getting-updates).
+
+
+## Google Chat — C07
+
+### 준비·등록
+
+Google Chat API로 만든 HTTP Chat 앱을 사용한다. Google Workspace add-on과 Workspace Events API/PubSub는 이 연결 경로와 구분한다. Chat API 활성화·앱 구성·서비스계정 키 등록·공개 HTTPS 노출은 별도 승인 후 진행한다. 앱을 대상 공간에 추가하고 앱 인증의 `chat.bot` 권한으로 사용할 수 있어야 한다.
+
+1. 시스템 연계→채널 관리에서 표준 채널 ID `GOOGLE_CHAT`, Provider Google Chat, 렌더러 `google_chat`을 사용한다. 기존 CGA 운영 버전·봇스테이션을 준비한다.
+2. 연결 대상에서 CGA 답변봇과 연결 이름을 정한다. **설치·워크스페이스 ID**에는 숫자 Google Cloud 프로젝트번호, **외부 봇 계정 ID**에는 앱의 canonical `users/...` 이름, **대상 ID**에는 `spaces/...` 공간 이름을 넣는다. 봇 이름은 앱 멤버십 응답의 `member.name`을 사용하며 프로젝트번호에서 추측하지 않는다.
+3. 보호 입력 `service_account_json`에는 해당 앱 프로젝트의 서비스계정 JSON 문서를 넣는다. `project_id`를 입력하면 JSON 문서의 프로젝트 ID와 같아야 한다. 숫자 프로젝트번호와 문자열 프로젝트 ID는 다르다. 키 원문은 채팅·문서·오류 보고에 넣지 않는다.
+4. 같은 앱의 공간 A/B를 각각 등록할 수 있다. 기존 CGA 봇은 공유하고 공간·스레드별 대화는 분리한다. 다른 CGA 조직이 같은 실제 Google 봇을 동시에 수신하도록 등록하는 것은 거부한다.
+5. Google Chat API 앱 구성에서 HTTP 수신 주소를 승인된 공개 HTTPS 주소의 `/api/v1/channel-connections/google-chat/events`로 지정하고 Authentication Audience를 **Project Number**로 선택한다. 개인 PC/WSL의 사설 주소는 Google이 호출할 공개 수신 주소가 아니다. 채널 생성의 범용 Endpoint URL에 임의의 Google API 주소를 넣는 방식으로 대체하지 않는다.
+
+### 연결·질문·해제
+
+[설정 저장]과 [설정 검사]는 실제 Google 접속 성공을 뜻하지 않는다. [연결]은 서비스계정 인증·공간·호출 앱 멤버십을 검증한 뒤, 첫 Google 서명 수신까지 **연결 중**으로 둔다. 대상에서 봇을 명시해 질문하거나 봇 개인 대화에 질문하면 수신 인증을 확정하고 답변한다. 앱 추가·권한 변경을 자동으로 수행하지 않는다.
+
+공유 공간은 해당 봇을 명시한 질문과 자신의 최신 카드 선택을 실행한다. 일반 대화와 다른 봇의 카드를 실행하지 않는다. 같은 방에서 답변 중 들어온 새 질문을 뒤늦게 실행하도록 쌓지 않는다. 공간·스레드·개인 방은 각각 기존 CGA 방으로 구분한다. 대화상자 입력은 이 실행 경로의 지원 범위가 아니다.
+
+기존 6종 표현과 Google Chat cardsV2 템플릿을 사용한다. named space의 스레드 답변은 해당 스레드를 지정하며 실패해도 새 스레드로 바꾸지 않는다. 개인 대화와 그룹 채팅에는 named-space 전용 회신 옵션을 보내지 않는다. 카드 원본·질문자·변수 복원은 기존 CGA 검증을 거친다.
+
+A의 [연결 해제]는 B를 유지한다. 수정·삭제는 해제 후 진행하며 외부 앱 제거·키 폐기와 구분한다. 같은 세대의 일시 검증 지연·재시작은 기존 연결 의도의 접수 기준과 방·카드를 유지한다. 명시적 해제 뒤 재연결은 새 접수 기준을 적용하므로 그 이전 질문을 자동 실행하지 않는다.
+
+이벤트는 PostgreSQL 원장에 저장한 뒤 빈 ACK를 반환하고, 답변은 기존 작업자가 별도 게시한다. 동일 수신은 저장된 ID·요청 해시로 중복 실행을 방지한다. 접수 ID가 같고 내용이 달라지면 충돌로 거부한다. 부분 게시·시간초과·재시작으로 결과가 불명확하면 UNKNOWN으로 남기고 자동 재게시하지 않는다.
+
+### 검증 범위
+
+개발 검증은 합성 Google JWT/인증서·OAuth/HTTP 대역, 실제 QA PostgreSQL, 기존 고정 Q/A·카드·SDK를 사용한다. 실제 Google 계정·앱 설치·서비스계정 키 등록·Google Chat 인증/메시지 왕복은 **NOT_RUN / 인수 필수**다. 지속 LLM 개발은 보류 상태다.
+
+근거: [Google 요청 검증](https://developers.google.com/workspace/chat/verify-requests-from-chat), [앱 멤버십 확인](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.members/get), [메시지 게시·스레드 옵션](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/create).

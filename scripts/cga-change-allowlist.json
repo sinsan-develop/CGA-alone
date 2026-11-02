@@ -607,7 +607,7 @@
   {
     "path": "apps/api/app/services/channel_connection_supervisor.py",
     "stage": "C02",
-    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀"
+    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀; C07 Google Chat만동일generation 검증지연/재시작접수기준유지·기존타provider불변"
   },
   {
     "path": "apps/api/tests/test_channel_connection_supervisor.py",
