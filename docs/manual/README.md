@@ -1,6 +1,6 @@
 # CGA 메뉴얼
 
-CGA 메뉴얼은 사용 목적에 따라 다음 세 문서로 제공합니다.
+CGA 매뉴얼은 기존 CGA 3종과 CGA-alone 보충 매뉴얼 2종으로 제공합니다.
 
 CGA-alone에서 달라진 봇 생성·2차 답변·공유방·클라이언트 사용은 [CGA-alone 개발 기능 사용 안내](CGA_ALONE_DEVELOPMENT_GUIDE.md)를 먼저 확인하십시오. 아래 원본 CGA 안내와 함께 읽으며, 배포 여부와 실제 외부 연동 확인 범위를 구분합니다.
 
@@ -37,3 +37,13 @@ CGA-alone에서 달라진 봇 생성·2차 답변·공유방·클라이언트 �
 ## 다시 생성하는 방법
 
 Word 문서는 build_manual_docx.py가 7개 언어의 세 문서를 생성합니다. 생성된 Word 문서는 LibreOffice로 PDF 변환한 뒤 apps/web/public/manuals에 언어별 이름으로 배치합니다. 배포 전에 문서 링크, PDF 헤더, 페이지 수, 첫 페이지 언어, 화면 레이아웃을 확인합니다.
+
+## CGA-alone 도움말 메뉴
+
+화면 왼쪽 아래 [?] → 도움말에서 **CGA-alone 기능 안내**와 **채널 연결 관리**를 새 탭으로 열 수 있습니다. 보충 문서는 현재 한국어판이며 기존 3종 PDF는 선택 언어를 유지합니다.
+
+- [CGA-alone 기능 안내](CGA_ALONE_DEVELOPMENT_GUIDE.md): 봇 생성·2차 답변·공유방·템플릿
+- [채널 연결 관리](channel-connections.md): 8개 채널과 연결 대상의 등록·연결·해제·재연결
+- 웹 산출물 생성: `python docs/manual/build_web_manuals.py`
+- 문서 변경 후 일치 확인: `python docs/manual/build_web_manuals.py --check`
+- 기존 PDF·체험 시작 기능은 그대로 유지합니다.

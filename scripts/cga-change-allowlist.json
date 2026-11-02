@@ -823,5 +823,30 @@
     "path": "apps/web/components/api-upload-http.test.mjs",
     "stage": "API_UPLOAD_FIX",
     "reason": "사용자 API업로드결함수정: API자산UUID 생성만 HTTP암호학적난수호환/기존키·ID보존회귀"
+  },
+  {
+    "path": "apps/web/components/studio-rail.tsx",
+    "stage": "HELP_MANUALS",
+    "reason": "신산님 직접 요청: 기존 도움말/3 PDF·체험 보존, CGA-alone 보충 매뉴얼 2종 웹 열람과 원문 일치 검증"
+  },
+  {
+    "path": "docs/manual/build_web_manuals.py",
+    "stage": "HELP_MANUALS",
+    "reason": "신산님 직접 요청: 기존 도움말/3 PDF·체험 보존, CGA-alone 보충 매뉴얼 2종 웹 열람과 원문 일치 검증"
+  },
+  {
+    "path": "scripts/tests/test_help_manuals.py",
+    "stage": "HELP_MANUALS",
+    "reason": "신산님 직접 요청: 기존 도움말/3 PDF·체험 보존, CGA-alone 보충 매뉴얼 2종 웹 열람과 원문 일치 검증"
+  },
+  {
+    "path": "apps/web/public/manuals/cga-alone-guide-ko.html",
+    "stage": "HELP_MANUALS",
+    "reason": "신산님 직접 요청: 기존 도움말/3 PDF·체험 보존, CGA-alone 보충 매뉴얼 2종 웹 열람과 원문 일치 검증"
+  },
+  {
+    "path": "apps/web/public/manuals/channel-connections-ko.html",
+    "stage": "HELP_MANUALS",
+    "reason": "신산님 직접 요청: 기존 도움말/3 PDF·체험 보존, CGA-alone 보충 매뉴얼 2종 웹 열람과 원문 일치 검증"
   }
 ]

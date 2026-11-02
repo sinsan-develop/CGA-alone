@@ -482,16 +482,23 @@ export function StudioRail() {
               </dl>
             </section>
             <section className="studio-rail__help-section studio-rail__help-section--links">
+              <strong>{t("nav.help")}</strong>
+              <a href="/manuals/cga-alone-guide-ko.html" target="_blank" rel="noreferrer" lang="ko">
+                {language === "ko" ? "CGA-alone 기능 안내" : "CGA-alone guide (한국어)"}
+              </a>
+              <a href="/manuals/channel-connections-ko.html" target="_blank" rel="noreferrer" lang="ko">
+                {language === "ko" ? "채널 연결 관리" : "Channel connections (한국어)"}
+              </a>
               <button
                 type="button"
                 className="studio-rail__help-title"
                 aria-haspopup="dialog"
                 onClick={() => openGettingStarted()}
               >
-                {t("gettingStarted.title")}
+                {language === "ko" ? "시작하기 체험" : t("gettingStarted.title")}
               </button>
               <a href={manualHref("getting-started")} target="_blank" rel="noreferrer">
-                {t("gettingStarted.title")} PDF
+                {language === "ko" ? "시작하기" : t("gettingStarted.title")} PDF
               </a>
               <a href={manualHref("user-manual")} target="_blank" rel="noreferrer">
                 {t("help.userManual")}

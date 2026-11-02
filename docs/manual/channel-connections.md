@@ -43,7 +43,7 @@
 
 Webchat/카카오톡은 기존 CGA 연결을 유지한다. Teams는 개인 Microsoft 로그인과 봇 앱 등록 조건을 구분한다. 공식 개발 절차는 custom app upload가 허용된 M365 테넌트와 공개 HTTPS 수신 주소를 요구한다. 개인 로그인만으로 봇 설치 가능을 확인한 것은 아니다.
 
-Slack → Discord → Telegram → Google Chat → LINE 순으로 실행부와 연결·해제·재연결 설명을 추가한다. 실제 계정/Secret/앱 설치·공개 주소·게시·배포는 별도 승인으로 진행한다.
+Teams·Slack·Discord·Telegram·Google Chat·LINE의 연결·해제·재연결 방법은 아래 각 절에서 확인한다. 실제 계정/Secret/앱 설치·공개 주소·게시·배포는 별도 승인으로 진행한다.
 
 Teams 준비 근거: https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register
 
