@@ -121,3 +121,25 @@ def test_adapter_matches_both_existing_ids_to_authenticated_bot():
         for bad in [replace(s,installation_id='101'),replace(s,account_id='101')]:
             with pytest.raises(HTTPException):await a.verify(bad,{'bot_token':'synthetic-only'})
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('preparation_seconds',[.1,6])
+def test_stale_poll_preparation_never_sends_old_offset(monkeypatch,preparation_seconds):
+    from types import SimpleNamespace
+    import app.services.channel_connection_telegram_polling as module
+    calls=[];ticks=iter([0,preparation_seconds])
+    monkeypatch.setattr(module,'time',SimpleNamespace(monotonic=lambda:next(ticks)))
+    cursor={'offset':9001,'epoch':2,'request_started_at':'2026-11-02T00:00:00+00:00'}
+    listener=module.TelegramListener.__new__(module.TelegramListener);listener.stopped=False
+    listener.targets={'synthetic':SimpleNamespace(transport=SimpleNamespace(credentials={'bot_token':'synthetic-only'}))}
+    listener.gate=SimpleNamespace(poll_cursor=lambda:cursor)
+    def call(*args):calls.append(args);return []
+    listener.adapter=SimpleNamespace(http=SimpleNamespace(call=call))
+    async def run():
+        if preparation_seconds>5:
+            with pytest.raises(HTTPException,match='TELEGRAM_POLL_PREPARATION_EXPIRED'):await listener.poll()
+            assert calls==[]
+        else:
+            assert await listener.poll()==[] and len(calls)==1 and calls[0][2]['offset']==9001
+            assert listener.request_started_at==cursor['request_started_at']
+    asyncio.run(run())

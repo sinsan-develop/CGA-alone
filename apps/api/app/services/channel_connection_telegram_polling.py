@@ -27,12 +27,12 @@ class TelegramState:
         return lease
     def _load(self,lease):
         saved=(lease.cursor_json or {}).get('telegram_polling')
-        if saved is None:return {'bot_id':self.bot_id,'offset':0,'targets':{},'epoch':0,'last_commit_at':None,'idle_reset_at':None}
+        if saved is None:return {'bot_id':self.bot_id,'offset':0,'targets':{},'epoch':0,'last_commit_at':None,'idle_reset_at':None,'last_update_lower_bound':None}
         value=decrypt_connection_state(saved['ciphertext'],lease.organization_id,lease.id,settings.channel_connection_encryption_key,saved['key_version'],'telegram-polling')
         if value.get('bot_id')!=self.bot_id or type(value.get('offset')) is not int or value['offset']<0 or not isinstance(value.get('targets'),dict):raise HTTPException(409,'TELEGRAM_CURSOR_INVALID')
-        value.setdefault('epoch',0);value.setdefault('last_commit_at',None);value.setdefault('idle_reset_at',None)
+        value.setdefault('epoch',0);value.setdefault('last_commit_at',None);value.setdefault('idle_reset_at',None);value.setdefault('last_update_lower_bound',None)
         if type(value['epoch']) is not int or value['epoch']<0:raise HTTPException(409,'TELEGRAM_CURSOR_INVALID')
-        for key in ['last_commit_at','idle_reset_at']:
+        for key in ['last_commit_at','idle_reset_at','last_update_lower_bound']:
             if value[key] is not None:
                 try:
                     stamp=datetime.fromisoformat(value[key])
@@ -48,20 +48,26 @@ class TelegramState:
         from app.models import AuditLog
         with self.sessions() as db:
             lease=self.lease(db);value=self._load(lease)
-            anchors=[datetime.fromisoformat(value[k]) for k in ['last_commit_at','idle_reset_at'] if value[k] is not None]
-            if value['offset'] and not anchors:raise HTTPException(409,'TELEGRAM_CURSOR_TIME_UNKNOWN')
+            anchor=value['last_update_lower_bound']
+            if value['offset'] and anchor is None:raise HTTPException(409,'TELEGRAM_CURSOR_TIME_UNKNOWN')
             now=state.clock(db)
-            if anchors and now-max(anchors)>=timedelta(days=7):
+            # 24h 보관 지연은 발생하한에 포함한다. 60초는 20초 poll/25초 HTTP와 전송 전 5초 여유를 덮는다.
+            if value['offset'] and now-datetime.fromisoformat(anchor)>=timedelta(days=7,seconds=-60):
                 receipt={'reason':'TELEGRAM_LONG_IDLE','recorded_at':now.isoformat(),'previous_offset':value['offset'],'epoch':value['epoch']+1,'expired_updates_recoverable':False}
-                value.update(offset=0,epoch=receipt['epoch'],idle_reset_at=receipt['recorded_at'],idle_reset=receipt)
+                value.update(offset=0,epoch=receipt['epoch'],idle_reset_at=receipt['recorded_at'],idle_reset=receipt,last_update_lower_bound=None)
                 self._save(lease,value)
                 db.add(AuditLog(action_type='system.connection.telegram_idle_reset',target_type='channel_installation_lease',target_id=lease.id,after_json=receipt));db.commit()
-            return value
-    def advance(self,update_id):
+            return {**value,'request_started_at':now.isoformat()}
+    def advance(self,update_id,*,request_started_at):
         if type(update_id) is not int or not 0<=update_id<9007199254740991:raise HTTPException(422,'TELEGRAM_UPDATE_INVALID')
         with self.sessions() as db:
             lease=self.lease(db);value=self._load(lease)
-            if update_id>=value['offset']:value.update(offset=update_id+1,last_commit_at=state.clock(db).isoformat())
+            now=state.clock(db)
+            try:
+                started=datetime.fromisoformat(request_started_at)
+                if started.tzinfo is None or started>now:raise ValueError()
+            except (ValueError,TypeError):raise HTTPException(409,'TELEGRAM_POLL_TIME_INVALID') from None
+            if update_id>=value['offset']:value.update(offset=update_id+1,last_commit_at=now.isoformat(),last_update_lower_bound=(started-timedelta(hours=24)).isoformat())
             self._save(lease,value);db.commit()
     def prepare_targets(self,targets):
         with self.sessions() as db:
@@ -146,7 +152,7 @@ from app.services.channel_connection_bridge import convert_channel_packet,Native
 
 class TelegramListener:
     def __init__(self,adapter,targets,gate,digest):
-        self.adapter=adapter;self.gate=gate;self.digest=digest;self.bot_id=targets[0].transport.bot_user_id;self.stopped=False;self.buffer=[];self.offset=0;self.epoch=0
+        self.adapter=adapter;self.gate=gate;self.digest=digest;self.bot_id=targets[0].transport.bot_user_id;self.stopped=False;self.buffer=[];self.offset=0;self.epoch=0;self.request_started_at=None
         self.targets={t.spec.id:t for t in targets if self.accepts_target(t)}
     def accepts_target(self,target):return target.transport.bot_user_id==self.bot_id and hashlib.sha256(target.transport.credentials['bot_token'].encode()).hexdigest()==self.digest
     def can_execute(self,item):return self.gate.can_execute(item)
@@ -161,12 +167,18 @@ class TelegramListener:
     async def poll(self,*,timeout=20):
         from app.services.channel_connection_telegram import TelegramApiRejected
         if self.stopped or not self.targets:raise RuntimeError('TELEGRAM_LISTENER_STOPPED')
-        target=next(iter(self.targets.values()));cursor=await asyncio.to_thread(self.gate.poll_cursor);self.offset=cursor['offset'];self.epoch=cursor['epoch']
+        target=next(iter(self.targets.values()))
+        def request():
+            prepared=time.monotonic();cursor=self.gate.poll_cursor()
+            if time.monotonic()-prepared>5:raise HTTPException(503,'TELEGRAM_POLL_PREPARATION_EXPIRED')
+            value=self.adapter.http.call('getUpdates',target.transport.credentials['bot_token'],{'offset':cursor['offset'],'limit':100,'timeout':timeout,'allowed_updates':['message','callback_query']})
+            return value,cursor
         try:
-            value=await asyncio.to_thread(self.adapter.http.call,'getUpdates',target.transport.credentials['bot_token'],{'offset':self.offset,'limit':100,'timeout':timeout,'allowed_updates':['message','callback_query']})
+            value,cursor=await asyncio.to_thread(request)
         except TelegramApiRejected as error:
             self.adapter.not_before[self.bot_id]=time.monotonic()+max(5,error.retry_after or 5);raise
         if not isinstance(value,list) or len(value)>100:raise HTTPException(503,'TELEGRAM_POLL_INVALID')
+        self.offset=cursor['offset'];self.epoch=cursor['epoch'];self.request_started_at=cursor['request_started_at']
         return value
     async def listen(self,accept):
         while not self.stopped:
@@ -187,7 +199,7 @@ class TelegramListener:
             definite=error.status_code==422 and error.detail=='TELEGRAM_EVENT_TIME_INVALID'
             disconnected=error.status_code in {404,409} and error.detail in {'CONNECTION_CHANGED','CONNECTION_TARGET_INACTIVE','CONNECTION_NOT_FOUND'}
             if not definite and not disconnected:raise
-        await asyncio.to_thread(self.gate.advance,identifier);self.offset=identifier+1
+        await asyncio.to_thread(self.gate.advance,identifier,request_started_at=self.request_started_at);self.offset=identifier+1
     async def dispatch(self,update,accept):
         query=update.get('callback_query');message=query.get('message') if isinstance(query,dict) else update.get('message')
         if not isinstance(message,dict):return

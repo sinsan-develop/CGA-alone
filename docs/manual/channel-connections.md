@@ -198,6 +198,6 @@ A 대상의 [연결 해제]는 같은 앱의 B 대상에 영향을 주지 않는
 근거: [Telegram Bot API](https://core.telegram.org/bots/api), [Privacy Mode](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
 
 
-7일 이상 새 수신이 없으면 높은 이전 offset을 전송하기 전에 offset=0으로 확인하고 새 수신 구간 번호를 보호 저장한다. 구간 안에서는 원장 commit 후에만 offset을 전진시킨다. 빈 조회 뒤 재시작해도 초기화가 반복되지 않으며 과거와 같은 update ID는 구간 번호로 구별한다. 기존 결과불명 요청·방·기록은 보존하고 자동 재실행하지 않는다. 플랫폼 보관기한(최대24시간)을 넘겨 삭제된 질문은 복구할 수 없다. 감사 이력 system.connection.telegram_idle_reset에서 고정 사유·시각·구간 전환을 확인한다.
+Telegram의 7일 유휴 기준은 플랫폼의 새 update 발생 시각이다. CGA-alone은 각 수신 요청 시작 DB 시각에서 최대 보관기간 24시간을 뺀 보수적인 발생 하한을 보호 저장하고, 그 하한으로부터 7일이 되기 60초 전에 높은 이전 offset 대신 offset=0으로 확인해 새 수신 구간을 시작한다. 60초 여유는 20초 long polling·25초 HTTP 제한·전송 준비 시간을 고려한다. 요청 준비가 5초를 넘으면 높은 offset을 전송하지 않는다. 따라서 로컬 저장 후 7일보다 일찍 안전 조회할 수 있다. 저장 시각은 감사용으로 따로 남긴다. 구간 안에서는 원장 commit 후에만 offset을 전진시킨다. 빈 조회 뒤 재시작해도 초기화가 반복되지 않으며 과거와 같은 update ID는 구간 번호로 구별한다. 기존 결과불명 요청·방·기록은 보존하고 자동 재실행하지 않는다. 플랫폼 보관기한(최대24시간)을 넘겨 삭제된 질문은 복구할 수 없다. 감사 이력 system.connection.telegram_idle_reset에서 고정 사유·시각·구간 전환을 확인한다.
 
 실제 Telegram 인증·송수신은 **NOT_RUN / 인수 필수**이며 개발 검증은 합성 API·QA PostgreSQL·기존 고정 Q/A만 사용한다. [Update](https://core.telegram.org/bots/api#update), [Getting updates](https://core.telegram.org/bots/api#getting-updates).

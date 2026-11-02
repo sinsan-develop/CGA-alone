@@ -352,7 +352,7 @@ def test_long_idle_lower_id_restarts_with_epoch_and_preserves_unknown(native_con
             assert len(h.posts)==2
             with c.sessions() as db:
                 old=db.scalar(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][1]));old_id=old.id;assert old.status=='unknown'
-                lease=db.get(ChannelInstallationLease,gate.lease_id);v=gate._load(lease);v['last_commit_at']=(state.clock(db)-timedelta(days=8)).isoformat();gate._save(lease,v);db.commit()
+                lease=db.get(ChannelInstallationLease,gate.lease_id);v=gate._load(lease);v['last_commit_at']=(state.clock(db)-timedelta(days=8)).isoformat();v['last_update_lower_bound']=(state.clock(db)-timedelta(days=9)).isoformat();gate._save(lease,v);db.commit()
             await a.stop();h.fail=False
             with h.lock:h.pending.clear()
             before=len(h.polls)
@@ -370,5 +370,33 @@ def test_long_idle_lower_id_restarts_with_epoch_and_preserves_unknown(native_con
                 assert {x.event_json['eventId'] for x in rows}=={'telegram-update:1','telegram-epoch:1:telegram-update:1'}
                 for audit in db.scalars(select(AuditLog).where(AuditLog.target_id==gate.lease_id,AuditLog.action_type=='system.connection.telegram_idle_reset')):db.delete(audit)
                 db.commit()
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['telegram'],indirect=True)
+def test_poll_request_time_survives_processing_and_callback_without_click_timestamp(native_context):
+    async def run():
+        from datetime import datetime
+        from app.services import channel_connection_state as state
+        c=native_context;buttons(c);a,adapter,h=setup(c)
+        try:
+            await a.step();listener=next(iter(a.runs.values())).listener
+            with c.sessions() as db:started=(state.clock(db)-timedelta(hours=12)).isoformat()
+            original=listener.gate.poll_cursor
+            def captured():return {**original(),'request_started_at':started}
+            listener.gate.poll_cursor=captured
+            # The initial empty probe is already running; wait for a batch carrying the controlled DB receipt.
+            for _ in range(150):
+                if listener.request_started_at==started:break
+                await asyncio.sleep(.02)
+            assert listener.request_started_at==started
+            await delivered(a,h,message());await finish(a)
+            data=h.posts[0][1]['reply_markup']['inline_keyboard'][1][0]['callback_data']
+            frame=action(2,data,int(time.time()));assert 'date' not in frame['callback_query']
+            await delivered(a,h,frame);await finish(a)
+            cursor=listener.gate.load_cursor();assert len(h.posts)==2 and len(h.acks)==1 and cursor['offset']==3
+            assert cursor['last_update_lower_bound']==(datetime.fromisoformat(started)-timedelta(hours=24)).isoformat()
+            assert datetime.fromisoformat(cursor['last_commit_at'])>datetime.fromisoformat(started)+timedelta(hours=11)
         finally:await a.stop()
     asyncio.run(run())
