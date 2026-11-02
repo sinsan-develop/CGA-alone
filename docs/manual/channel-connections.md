@@ -183,3 +183,21 @@ A 대상의 [연결 해제]는 같은 앱의 B 대상에 영향을 주지 않는
 재개가 불가능한 종료(예: 4007/4009) 또는 재개 버퍼 상한(64개·1 MiB)에 도달하면 같은 cursor로 재시도하지 않는다. 해당 Gateway cursor만 폐기하고 새 Identify/READY 이후의 입력을 받는다. 아직 원장에 접수하지 못한 구간은 기존 감사 이력의 `system.connection.discord_resume_reset`에 마지막 영속 sequence·관측된 끝·끝 범위 미확정 여부·고정 사유·시각을 남긴다. 기존 방·메시지·원장과 결과불명 요청은 보존한다. 이 구간의 질문은 자동으로 소급 실행하지 않으므로 필요한 질문은 새로 보내야 한다. 명시적 해제/재연결과 수신 장애 복구는 게시 재시도 승인이 아니다.
 
 세션 종료 코드 근거: [Gateway 종료 코드](https://docs.discord.com/developers/topics/opcodes-and-status-codes).
+
+## Telegram — C06
+
+
+1. 시스템 연계→채널 관리에서 채널 ID TELEGRAM·Provider Telegram을 사용한다. 기존 운영 버전·봇스테이션을 준비한다.
+2. 연결 이름과 CGA 답변봇을 선택한다. 설치·워크스페이스 ID와 외부 봇 계정 ID에는 getMe의 Bot User ID를 같은 값으로 넣고, 대상에는 숫자 chat ID(그룹은 음수 가능)를 넣는다. username은 getMe에서 확인하므로 별도 입력하지 않는다.
+3. Bot Token은 보호 입력란에만 넣는다. 실제 토큰·서버 암호화 키·앱 등록·실제 활성화는 별도 승인이다. 설정 검사만으로 외부 접속이 확인된 것은 아니다.
+4. 기존 webhook이나 다른 polling 프로그램이 있으면 CGA가 자동 변경하지 않는다. 기존 운영자를 확인해 별도로 정리해야 한다. 공개 HTTPS 수신 주소는 이 long-polling 경로에서 필요하지 않다.
+5. 개인 대화는 봇에게 질문한다. 그룹 Privacy Mode에서는 /ask@봇username 질문처럼 해당 봇을 명시한 명령을 사용한다. 일반 @멘션은 Telegram이 전달하는 경우에만 처리한다. 자동 Privacy Mode/권한 변경은 하지 않는다.
+6. 그룹·supergroup·topic 및 개인 방을 분리한다. 미디어 질문·익명 채널 발신·채널 게시를 개인 질문자로 합치지 않는다. 다른 봇/LLM은 기존 CGA 질문 API도 사용할 수 있으며 native에서는 플랫폼이 실제로 전달한 식별 가능한 입력만 다룬다.
+7. 해제/수정/삭제는 대상별 독립적이다. 명시적 해제·재연결 뒤 구카드는 실행하지 않으므로 새 질문/시작 시나리오로 카드를 다시 받아야 한다. 자동 재시작은 기존 카드·방·offset을 유지한다. 게시/접수 결과불명은 자동 재시도하지 않는다.
+
+근거: [Telegram Bot API](https://core.telegram.org/bots/api), [Privacy Mode](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
+
+
+7일 이상 새 수신이 없으면 높은 이전 offset을 전송하기 전에 offset=0으로 확인하고 새 수신 구간 번호를 보호 저장한다. 구간 안에서는 원장 commit 후에만 offset을 전진시킨다. 빈 조회 뒤 재시작해도 초기화가 반복되지 않으며 과거와 같은 update ID는 구간 번호로 구별한다. 기존 결과불명 요청·방·기록은 보존하고 자동 재실행하지 않는다. 플랫폼 보관기한(최대24시간)을 넘겨 삭제된 질문은 복구할 수 없다. 감사 이력 system.connection.telegram_idle_reset에서 고정 사유·시각·구간 전환을 확인한다.
+
+실제 Telegram 인증·송수신은 **NOT_RUN / 인수 필수**이며 개발 검증은 합성 API·QA PostgreSQL·기존 고정 Q/A만 사용한다. [Update](https://core.telegram.org/bots/api#update), [Getting updates](https://core.telegram.org/bots/api#getting-updates).

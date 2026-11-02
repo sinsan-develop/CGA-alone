@@ -336,3 +336,39 @@ def test_private_chat_and_group_keep_separate_existing_rooms(native_context):
                 rows=list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id.in_(c.ids['connections']))));assert len(rows)==2 and rows[0].room_id!=rows[1].room_id and {x.event_json['roomMode'] for x in rows}=={'private','shared'}
         finally:await a.stop()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['telegram'],indirect=True)
+def test_long_idle_lower_id_restarts_with_epoch_and_preserves_unknown(native_context):
+    async def run():
+        from app.models import ChannelConnectionDelivery,ChannelInstallationLease,AuditLog
+        from app.services import channel_connection_state as state
+        from app.services.channel_connection_supervisor import ConnectionSupervisor
+        c=native_context;a,adapter,h=setup(c)
+        try:
+            await a.step();await delivered(a,h,message(1));await finish(a)
+            h.fail=True;await delivered(a,h,message(2,chat=-301));await finish(a)
+            listener=next(iter(a.runs.values())).listener;gate=listener.gate
+            assert len(h.posts)==2
+            with c.sessions() as db:
+                old=db.scalar(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][1]));old_id=old.id;assert old.status=='unknown'
+                lease=db.get(ChannelInstallationLease,gate.lease_id);v=gate._load(lease);v['last_commit_at']=(state.clock(db)-timedelta(days=8)).isoformat();gate._save(lease,v);db.commit()
+            await a.stop();h.fail=False
+            with h.lock:h.pending.clear()
+            before=len(h.polls)
+            a=ConnectionSupervisor(c.sessions,{'telegram':adapter},owner=c.owner);await a.step()
+            assert h.polls[before]['offset']==0
+            await delivered(a,h,message(1));await finish(a)
+            with c.sessions() as db:diagnostic=[(x.status,x.last_error_code,x.event_json['eventId']) for x in db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][0]))]
+            assert len(h.posts)==3,diagnostic
+            await delivered(a,h,message(1));await finish(a);assert len(h.posts)==3
+            await a.stop();a=ConnectionSupervisor(c.sessions,{'telegram':adapter},owner=c.owner);await a.step()
+            assert next(iter(a.runs.values())).listener.gate.load_cursor()['epoch']==1
+            with c.sessions() as db:
+                rows=list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][0])))
+                assert len(rows)==2 and db.get(ChannelConnectionDelivery,old_id).status=='unknown'
+                assert {x.event_json['eventId'] for x in rows}=={'telegram-update:1','telegram-epoch:1:telegram-update:1'}
+                for audit in db.scalars(select(AuditLog).where(AuditLog.target_id==gate.lease_id,AuditLog.action_type=='system.connection.telegram_idle_reset')):db.delete(audit)
+                db.commit()
+        finally:await a.stop()
+    asyncio.run(run())

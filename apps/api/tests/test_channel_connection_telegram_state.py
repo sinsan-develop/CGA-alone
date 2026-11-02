@@ -68,3 +68,37 @@ def test_prepare_keeps_active_target_connected_and_restores_generation_cutoff(na
     assert s.prepare_targets([target])==0
     with c.sessions() as db:
         row=db.get(ChannelConnection,cid);assert row.observed_state=='connected' and row.accept_after==cutoff
+
+
+@pytest.mark.parametrize('native_context',['telegram'],indirect=True)
+def test_long_idle_resets_once_before_poll_and_preserves_unknown(native_context):
+    from datetime import timedelta
+    from app.models import ChannelInstallationLease,ChannelConnectionDelivery,AuditLog
+    from sqlalchemy import select
+    c=native_context;s=gate(c);s.advance(9000)
+    s,did=pending(c);reservation=s.reserve_ack(did);s.finish_ack(did,reservation.claim_id,'unknown')
+    with c.sessions() as db:
+        lease=db.get(ChannelInstallationLease,c.leases[0][0]);v=s._load(lease)
+        v['last_commit_at']=(state.clock(db)-timedelta(days=8)).isoformat();s._save(lease,v);db.commit()
+    first=s.poll_cursor();assert first['offset']==0 and first['epoch']==1
+    assert s.poll_cursor()['epoch']==1
+    recreated=gate(c);assert recreated.poll_cursor()['offset']==0 and recreated.poll_cursor()['epoch']==1
+    recreated.advance(3);assert recreated.poll_cursor()['offset']==4 and recreated.poll_cursor()['epoch']==1
+    with c.sessions() as db:
+        assert db.get(ChannelConnectionDelivery,did).status=='unknown'
+        audits=list(db.scalars(select(AuditLog).where(AuditLog.target_id==c.leases[0][0],AuditLog.action_type=='system.connection.telegram_idle_reset')))
+        assert len(audits)==1 and audits[0].after_json['reason']=='TELEGRAM_LONG_IDLE'
+        for audit in audits:db.delete(audit)
+        db.commit()
+
+
+@pytest.mark.parametrize('native_context',['telegram'],indirect=True)
+def test_short_idle_and_duplicate_commit_do_not_extend_idle_window(native_context):
+    from datetime import timedelta
+    from app.models import ChannelInstallationLease
+    c=native_context;s=gate(c);s.advance(30)
+    with c.sessions() as db:
+        lease=db.get(ChannelInstallationLease,c.leases[0][0]);v=s._load(lease)
+        previous=(state.clock(db)-timedelta(days=6)).isoformat();v['last_commit_at']=previous;s._save(lease,v);db.commit()
+    assert s.poll_cursor()['offset']==31 and s.poll_cursor()['epoch']==0
+    s.advance(29);assert s.load_cursor()['last_commit_at']==previous
