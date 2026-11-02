@@ -99,3 +99,25 @@ def test_default_transport_does_not_accept_redirect_as_success_or_leak_url(monke
     with pytest.raises(HTTPException) as e:m._post('https://api.telegram.org/bot100:synthetic-only/getMe',b'{}')
     assert e.value.detail=='TELEGRAM_TRANSPORT_FAILED'
     assert m._NoRedirect().redirect_request(None,None,302,'redirect',{},'https://example.invalid') is None
+
+
+def test_native_transport_methods_validate_polling_and_ack_return_types():
+    m=subject();responses={'getUpdates':[],'answerCallbackQuery':True,'sendMessage':{'message_id':1},'sendPhoto':{'message_id':2}}
+    h=m.TelegramHttpTransport(post=lambda url,_:{'ok':True,'result':responses[url.rsplit('/',1)[1]]})
+    assert h.call('getUpdates','100:synthetic-only',{'offset':17,'limit':100,'timeout':20,'allowed_updates':['message','callback_query']})==[]
+    assert h.call('answerCallbackQuery','100:synthetic-only',{'callback_query_id':'synthetic'}) is True
+    assert h.call('sendMessage','100:synthetic-only',{'chat_id':'-300','text':'QA'})['message_id']==1
+    with pytest.raises(HTTPException):h.call('getUpdates','100:synthetic-only',{'offset':-1})
+    with pytest.raises(HTTPException):h.call('getUpdates','100:synthetic-only',{'timeout':99})
+
+
+def test_adapter_matches_both_existing_ids_to_authenticated_bot():
+    async def run():
+        from tests.test_channel_connection_discord import spec
+        m=subject();h=Http();s=spec(provider='telegram',installation_id='100',account_id='100',target_id='-300')
+        a=m.TelegramAdapter(None,owner='c06',http=h);target=await a.verify(s,{'bot_token':'synthetic-only'})
+        assert target.exclusive_scope and target.listener_scope=='telegram-bot:100' and target.transport.bot_username=='CgaQaBot'
+        from dataclasses import replace
+        for bad in [replace(s,installation_id='101'),replace(s,account_id='101')]:
+            with pytest.raises(HTTPException):await a.verify(bad,{'bot_token':'synthetic-only'})
+    asyncio.run(run())

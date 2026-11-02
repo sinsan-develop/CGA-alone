@@ -166,7 +166,7 @@ class ConnectionSupervisor:
                         row.lease_expires_at=lease.lease_expires_at
                         if row.desired_state=='connected':
                             row.observed_state='connecting'
-                            if row.provider!='discord':row.accept_after=None
+                            if row.provider not in {'discord','telegram'}:row.accept_after=None
                 if lease.provider=='discord' and not resumable:
                     cursor=dict(lease.cursor_json or {});cursor.pop('discord_gateway',None);lease.cursor_json=cursor
                 db.commit()
@@ -283,9 +283,9 @@ class ConnectionSupervisor:
                     if not isinstance(envelope,InboundEnvelope) or envelope.connection_id not in targets:raise HTTPException(403,'CONNECTION_RECEIVER_SCOPE_MISMATCH')
                     target=targets[envelope.connection_id];row=state._live(db,target.spec.id,run.lease_id,self.owner,run.fence)
                     if row.generation!=target.spec.generation:raise HTTPException(409,'CONNECTION_CHANGED')
-                    existing=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.event_key==state.scoped_hash(envelope.event['eventId']))) if row.provider in {'slack','discord'} else None
+                    existing=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.event_key==state.scoped_hash(envelope.event['eventId']))) if row.provider in {'slack','discord','telegram'} else None
                     item=state.accept_delivery(db,row.id,run.lease_id,self.owner,run.fence,envelope.event)
-                    if row.provider in {'slack','discord'} and existing is None and item.status=='received' and envelope.event['addressed']:
+                    if row.provider in {'slack','discord','telegram'} and existing is None and item.status=='received' and envelope.event['addressed']:
                         busy=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.id!=item.id,
                             ChannelConnectionDelivery.generation==row.generation,ChannelConnectionDelivery.native_room_hash==item.native_room_hash,
                             ChannelConnectionDelivery.status.in_(['received','executing','ready','sending','unknown']),ChannelConnectionDelivery.event_json['addressed'].astext=='true').limit(1))

@@ -1,12 +1,13 @@
 """Telegram 고정 Bot API와 읽기 전용 신원·채팅 권한 검증. 실제 실행 등록은 별도다."""
 from __future__ import annotations
 import asyncio,json,re
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from urllib.request import Request,build_opener,HTTPRedirectHandler
 from urllib.error import HTTPError
 from fastapi import HTTPException
 
 READ_METHODS=frozenset({'getMe','getWebhookInfo','getChat','getChatMember'})
+NATIVE_METHODS=READ_METHODS|{'getUpdates','answerCallbackQuery','sendMessage','sendPhoto'}
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -20,7 +21,8 @@ class TelegramApiRejected(Exception):
 def _post(url,body):
     try:
         try:
-            response=build_opener(_NoRedirect()).open(Request(url,data=body,headers={'Content-Type':'application/json','Accept':'application/json'},method='POST'),timeout=5)
+            timeout=25 if url.endswith('/getUpdates') and json.loads(body).get('timeout')==20 else 5
+            response=build_opener(_NoRedirect()).open(Request(url,data=body,headers={'Content-Type':'application/json','Accept':'application/json'},method='POST'),timeout=timeout)
         except HTTPError as error:response=error
         with response:
             raw=response.read(1048577)
@@ -35,7 +37,8 @@ def _post(url,body):
 class TelegramHttpTransport:
     def __init__(self,*,post=_post):self.post=post
     def call(self,method,token,payload):
-        if method not in READ_METHODS or not isinstance(token,str) or not re.fullmatch('[1-9][0-9]{0,19}:[A-Za-z0-9_-]{1,2000}',token) or not isinstance(payload,dict):raise HTTPException(422,'TELEGRAM_CONFIGURATION_INVALID')
+        if method not in NATIVE_METHODS or not isinstance(token,str) or not re.fullmatch('[1-9][0-9]{0,19}:[A-Za-z0-9_-]{1,2000}',token) or not isinstance(payload,dict):raise HTTPException(422,'TELEGRAM_CONFIGURATION_INVALID')
+        if method=='getUpdates' and (set(payload)-{'offset','limit','timeout','allowed_updates'} or type(payload.get('offset',0)) is not int or payload.get('offset',0)<0 or type(payload.get('timeout',0)) is not int or payload.get('timeout',0) not in {0,20} or type(payload.get('limit',100)) is not int or not 1<=payload.get('limit',100)<=100 or payload.get('allowed_updates',['message','callback_query'])!=['message','callback_query']):raise HTTPException(422,'TELEGRAM_POLL_INVALID')
         raw=json.dumps(payload,ensure_ascii=False).encode()
         if len(raw)>1000000:raise HTTPException(422,'TELEGRAM_PACKET_LIMIT')
         value=self.post('https://api.telegram.org/bot'+token+'/'+method,raw)
@@ -46,7 +49,8 @@ class TelegramHttpTransport:
             if type(code) is int and code in {400,401,403,404,409,429}:raise TelegramApiRejected(code,delay) from None
             raise HTTPException(503,'TELEGRAM_TRANSPORT_FAILED')
         result=value.get('result')
-        if not isinstance(result,dict):raise HTTPException(503,'TELEGRAM_TRANSPORT_FAILED')
+        valid=isinstance(result,list) and len(result)<=100 if method=='getUpdates' else result is True if method=='answerCallbackQuery' else isinstance(result,dict)
+        if not valid:raise HTTPException(503,'TELEGRAM_TRANSPORT_FAILED')
         return result
 
 
@@ -108,3 +112,51 @@ async def verify_chat_access(http,token,bot_user_id,chat_id):
         if not isinstance(permissions,dict) or permissions.get('can_send_messages') is not True:raise ValueError()
         return TelegramChat(expected,kind,permissions.get('can_send_photos') is True)
     except (ValueError,TypeError,AttributeError,TelegramApiRejected):raise HTTPException(403,'TELEGRAM_CHAT_VERIFICATION_FAILED') from None
+
+
+@dataclass(frozen=True)
+class TelegramBinding:
+    credentials:dict=field(repr=False)
+    bot_user_id:str
+    bot_username:str
+    chat_id:str
+    chat_type:str
+    can_send_photos:bool
+
+
+class TelegramAdapter:
+    def __init__(self,sessions,*,owner,http=None):self.sessions=sessions;self.owner=owner;self.http=http or TelegramHttpTransport();self.not_before={}
+    async def verify(self,spec,credentials):
+        from app.services.channel_connection_supervisor import VerifiedTarget
+        token=credentials.get('bot_token')
+        if spec.provider!='telegram' or not isinstance(token,str) or not token or len(token)>24000 or any(c.isspace() for c in token):raise HTTPException(422,'TELEGRAM_CONFIGURATION_INVALID')
+        identity=await verify_bot_identity(self.http,token)
+        if (spec.installation_id,spec.account_id)!=(identity.bot_user_id,identity.bot_user_id):raise HTTPException(403,'TELEGRAM_IDENTITY_VERIFICATION_FAILED')
+        await verify_polling_available(self.http,token)
+        chat=await verify_chat_access(self.http,token,identity.bot_user_id,spec.target_id)
+        binding=TelegramBinding(dict(credentials),identity.bot_user_id,identity.bot_username,chat.chat_id,chat.chat_type,chat.can_send_photos)
+        return VerifiedTarget(spec,identity.bot_user_id,identity.bot_user_id,'telegram-bot:'+identity.bot_user_id,binding,True)
+
+
+    async def open(self,targets):
+        from sqlalchemy import select
+        from app.models import ChannelInstallationLease
+        from app.services import channel_connection_state as state
+        from app.services.channel_connection_telegram_polling import TelegramState,TelegramListener
+        import time,hashlib
+        if not targets:raise HTTPException(422,'TELEGRAM_TARGET_MISSING')
+        first=targets[0];binding=first.transport
+        if self.not_before.get(binding.bot_user_id,0)>time.monotonic():raise HTTPException(503,'TELEGRAM_POLL_BACKOFF')
+        def current():
+            with self.sessions() as db:
+                lease=db.scalar(select(ChannelInstallationLease).where(ChannelInstallationLease.organization_id==first.spec.organization_id,ChannelInstallationLease.provider=='telegram',ChannelInstallationLease.listener_scope_hash==state.scoped_hash('verified-listener:telegram:'+first.listener_scope)))
+                if lease is None:raise HTTPException(409,'INSTALLATION_LEASE_LOST')
+                state._installation(db,lease.id,self.owner,lease.fence);return lease.id,lease.fence
+        lid,fence=await asyncio.to_thread(current)
+        gate=TelegramState(self.sessions,lease_id=lid,owner=self.owner,fence=fence,bot_id=binding.bot_user_id)
+        listener=TelegramListener(self,targets,gate,hashlib.sha256(binding.credentials['bot_token'].encode()).hexdigest())
+        await listener.prepare(targets)
+        await verify_polling_available(self.http,binding.credentials['bot_token'])
+        listener.buffer=await listener.poll(timeout=0)
+        await asyncio.to_thread(gate.mark_ready,list(listener.targets.values()))
+        return listener

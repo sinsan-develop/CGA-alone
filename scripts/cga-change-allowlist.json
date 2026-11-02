@@ -707,11 +707,26 @@
   {
     "path": "apps/api/app/services/channel_connection_telegram.py",
     "stage": "C06",
-    "reason": "승인 Telegram 순수 고정 Bot API/getMe/기존webhook보존/채팅권한 검증 및 대역회귀·실제실행등록없음"
+    "reason": "승인 Telegram 고정BotAPI/getMe/기존webhook보존/채팅권한·신원/longpoll·게시메서드 검증 및 대역회귀"
   },
   {
     "path": "apps/api/tests/test_channel_connection_telegram.py",
     "stage": "C06",
-    "reason": "승인 Telegram 순수 고정 Bot API/getMe/기존webhook보존/채팅권한 검증 및 대역회귀·실제실행등록없음"
+    "reason": "승인 Telegram 고정BotAPI/getMe/기존webhook보존/채팅권한·신원/longpoll·게시메서드 검증 및 대역회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_telegram_polling.py",
+    "stage": "C06",
+    "reason": "승인 Telegram long polling/보호offset·세대별cutoff/ACK확정전gate·기존방/큐/원장재사용 및 실제QA DB대역회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_telegram_state.py",
+    "stage": "C06",
+    "reason": "승인 Telegram long polling/보호offset·세대별cutoff/ACK확정전gate·기존방/큐/원장재사용 및 실제QA DB대역회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_telegram_runtime.py",
+    "stage": "C06",
+    "reason": "승인 Telegram long polling/보호offset·세대별cutoff/ACK확정전gate·기존방/큐/원장재사용 및 실제QA DB대역회귀"
   }
 ]
