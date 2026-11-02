@@ -803,5 +803,25 @@
     "path": "apps/api/tests/test_channel_connection_line_runtime.py",
     "stage": "C08",
     "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀·공식숫자reply ID정밀도보존/동일봇eventID복합변조원자거부 회귀"
+  },
+  {
+    "path": "apps/web/lib/api-assets.ts",
+    "stage": "API_UPLOAD_FIX",
+    "reason": "사용자 API업로드결함수정: API자산UUID 생성만 HTTP암호학적난수호환/기존키·ID보존회귀"
+  },
+  {
+    "path": "apps/web/components/group-api-list-page.tsx",
+    "stage": "API_UPLOAD_FIX",
+    "reason": "사용자 API업로드결함수정: API자산UUID 생성만 HTTP암호학적난수호환/기존키·ID보존회귀"
+  },
+  {
+    "path": "apps/web/components/api-store-list-page.tsx",
+    "stage": "API_UPLOAD_FIX",
+    "reason": "사용자 API업로드결함수정: API자산UUID 생성만 HTTP암호학적난수호환/기존키·ID보존회귀"
+  },
+  {
+    "path": "apps/web/components/api-upload-http.test.mjs",
+    "stage": "API_UPLOAD_FIX",
+    "reason": "사용자 API업로드결함수정: API자산UUID 생성만 HTTP암호학적난수호환/기존키·ID보존회귀"
   }
 ]

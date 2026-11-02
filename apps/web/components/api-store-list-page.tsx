@@ -10,6 +10,7 @@ import { SortHeaderLabel } from "@/components/sort-header-label";
 import { useStudioWorkspace } from "@/components/studio-workspace-provider";
 import {
   buildApiExportPayload,
+  createApiAssetId,
   createEmptyApiAsset,
   createEmptyApiMethod,
   createEmptyApiParameter,
@@ -70,7 +71,7 @@ function buildOutputParametersFromSample(value: unknown, name = "root", path = "
       ? []
       : [
           {
-            id: crypto.randomUUID(),
+            id: createApiAssetId(),
             name,
             path,
             dataType: getSampleOutputType(value),
@@ -813,7 +814,7 @@ export function ApiStoreListPage() {
           const index = nextApis.findIndex((item) => item.id === existing.id);
           nextApis[index] = { ...api, id: existing.id, updatedAt: new Date().toISOString() };
         } else {
-          nextApis.push({ ...api, id: crypto.randomUUID(), updatedAt: new Date().toISOString() });
+          nextApis.push({ ...api, id: createApiAssetId(), updatedAt: new Date().toISOString() });
         }
       });
       await persistApis(nextApis, formatApiManagementText(common.uploaded, { count: importedApis.length }));

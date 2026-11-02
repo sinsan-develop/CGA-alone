@@ -57,6 +57,18 @@ export type ApiExportPayload = {
   apis: VersionApiAsset[];
 };
 
+// HTTP 개발 주소에서도 API 자산 식별자를 암호학적 난수로 생성한다.
+export function createApiAssetId(): string {
+  if (typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -114,7 +126,7 @@ function normalizeDataType(value: unknown): VersionApiDataType {
 
 export function createEmptyApiParameter(location: VersionApiParameterLocation = "query"): VersionApiParameter {
   return {
-    id: crypto.randomUUID(),
+    id: createApiAssetId(),
     name: "",
     location,
     dataType: "string",
@@ -127,7 +139,7 @@ export function createEmptyApiParameter(location: VersionApiParameterLocation = 
 
 export function createEmptyApiMethod(): VersionApiMethod {
   return {
-    id: crypto.randomUUID(),
+    id: createApiAssetId(),
     name: "Method 1",
     httpMethod: "GET",
     methodUrl: "",
@@ -142,11 +154,11 @@ export function createEmptyApiMethod(): VersionApiMethod {
 }
 
 export function createEmptyApiAsset(): VersionApiAsset {
-  const id = crypto.randomUUID();
+  const id = createApiAssetId();
   return {
     id,
     type: "api",
-    apiKey: crypto.randomUUID(),
+    apiKey: createApiAssetId(),
     name: "",
     baseUrl: "",
     description: "",
@@ -164,7 +176,7 @@ export function normalizeApiParameter(value: unknown): VersionApiParameter | nul
   }
 
   return {
-    id: readString(source, ["id"], crypto.randomUUID()),
+    id: readString(source, ["id"], createApiAssetId()),
     name: readString(source, ["name", "parameterName"]).trim(),
     location: normalizeParameterLocation(source.location ?? source.parameterType),
     dataType: normalizeDataType(source.dataType),
@@ -188,7 +200,7 @@ export function normalizeApiOutputParameter(value: unknown): VersionApiOutputPar
   }
 
   return {
-    id: readString(source, ["id"], crypto.randomUUID()),
+    id: readString(source, ["id"], createApiAssetId()),
     name: name || path,
     path,
     dataType: normalizeDataType(source.dataType),
@@ -212,7 +224,7 @@ export function normalizeApiMethod(value: unknown, index = 0): VersionApiMethod 
     : [];
 
   return {
-    id: readString(source, ["id"], crypto.randomUUID()),
+    id: readString(source, ["id"], createApiAssetId()),
     name: readString(source, ["name", "methodName"], `Method ${index + 1}`).trim() || `Method ${index + 1}`,
     httpMethod: normalizeHttpMethod(source.httpMethod ?? source.method),
     methodUrl: readString(source, ["methodUrl", "path", "url"]).trim(),
@@ -243,9 +255,9 @@ export function normalizeApiAsset(value: unknown): VersionApiAsset | null {
   }
 
   return {
-    id: readString(source, ["id"], crypto.randomUUID()),
+    id: readString(source, ["id"], createApiAssetId()),
     type: "api",
-    apiKey: readString(source, ["apiKey", "key"], crypto.randomUUID()).trim(),
+    apiKey: readString(source, ["apiKey", "key"], createApiAssetId()).trim(),
     name,
     baseUrl,
     description: readString(source, ["description"]),

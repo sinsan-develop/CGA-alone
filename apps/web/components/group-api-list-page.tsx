@@ -9,6 +9,7 @@ import { DataGrid, type DataGridRow } from "@/components/data-grid";
 import { SortHeaderLabel } from "@/components/sort-header-label";
 import {
   buildApiExportPayload,
+  createApiAssetId,
   createEmptyApiAsset,
   normalizeApiAssets,
   parseApiImportPayload,
@@ -65,8 +66,8 @@ function mergeApisByApiKey(currentApis: VersionApiAsset[], incomingApis: Version
 
     nextApis.push({
       ...api,
-      id: api.id || crypto.randomUUID(),
-      apiKey: api.apiKey || crypto.randomUUID(),
+      id: api.id || createApiAssetId(),
+      apiKey: api.apiKey || createApiAssetId(),
       updatedAt: new Date().toISOString(),
     });
   });
@@ -286,10 +287,10 @@ export function GroupApiListPage() {
     const now = new Date().toISOString();
     const preparedApi = {
       ...api,
-      id: api.id || crypto.randomUUID(),
+      id: api.id || createApiAssetId(),
       type: "api" as const,
       category: "API",
-      apiKey: api.apiKey || crypto.randomUUID(),
+      apiKey: api.apiKey || createApiAssetId(),
       updatedAt: now,
       updatedBy: authSession?.user.login_id ?? api.updatedBy,
     };
