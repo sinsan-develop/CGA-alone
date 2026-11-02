@@ -38,6 +38,8 @@ FORBIDDEN_CONTENT = {
     "server-deploy-path": re.compile(r"/home/(?:ubuntu|daon)/deploy/"),
     "windows-user-path": re.compile(r"[A-Za-z]:\\Users\\[^\\\s]+"),
 }
+PUBLIC_PROTOCOL_EMAILS = frozenset({"chat@system.gserviceaccount.com"})
+
 EMAIL_PATTERN = re.compile(
     r"(?i)\b[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
@@ -114,6 +116,8 @@ def find_content_violations(repo: Path, paths: Iterable[str]) -> list[str]:
                 if pattern.search(line):
                     violations.append(f"{path}:{line_number}:{rule}")
             for match in EMAIL_PATTERN.finditer(line):
+                if match.group(0) in PUBLIC_PROTOCOL_EMAILS:
+                    continue
                 domain = match.group(0).rsplit("@", 1)[1].lower()
                 if domain not in {"example.com", "example.org", "example.net"} and not domain.endswith(".invalid"):
                     violations.append(f"{path}:{line_number}:personal-email")

@@ -121,3 +121,24 @@ def test_office_and_pdf_manuals_are_treated_as_binary() -> None:
 
     assert "*.docx binary" in attributes
     assert "*.pdf binary" in attributes
+
+
+
+def test_exact_public_google_chat_issuer_is_allowed(tmp_path):
+    sample=tmp_path/'sample.py'
+    sample.write_text('issuer = "chat@system.gserviceaccount.com"',encoding='utf-8')
+    assert find_content_violations(tmp_path,['sample.py'])==[]
+
+
+def test_other_google_like_addresses_remain_private(tmp_path):
+    addresses=[('other','system.gserviceaccount.com'),('chat','project.iam.gserviceaccount.com'),('chat','system.gserviceaccount.com.attacker.com'),('notchat','system.gserviceaccount.com'),('CHAT','system.gserviceaccount.com')]
+    sample=tmp_path/'sample.py'
+    for local,domain in addresses:
+        sample.write_text(f'email = "{local}@{domain}"',encoding='utf-8')
+        assert find_content_violations(tmp_path,['sample.py'])==['sample.py:1:personal-email']
+
+
+def test_public_google_issuer_does_not_hide_mixed_private_email(tmp_path):
+    sample=tmp_path/'sample.py';local='private';domain='unapproved.test'
+    sample.write_text(f'issuer = "chat@system.gserviceaccount.com"; email = "{local}@{domain}"',encoding='utf-8')
+    assert find_content_violations(tmp_path,['sample.py'])==['sample.py:1:personal-email']

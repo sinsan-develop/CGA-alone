@@ -728,5 +728,25 @@
     "path": "apps/api/tests/test_channel_connection_telegram_runtime.py",
     "stage": "C06",
     "reason": "승인 Telegram long polling/보호offset·세대별cutoff/ACK확정전gate·기존방/큐/원장재사용 및 실제QA DB대역회귀; 별도승인 장기유휴offset0·보호commit시각/epoch/감사·기존UNKNOWN보존 회귀; 독립I1 별도승인 수신요청DB시각-24h 발생하한·poll시간여유/시각검증"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_google_chat_auth.py",
+    "stage": "C07",
+    "reason": "승인C07 독립순수 Google Chat Project Number JWT/고정공개인증서·issuer/audience/시각 검증; 수신등록·실키·외부호출없음"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_google_chat_auth.py",
+    "stage": "C07",
+    "reason": "승인C07 독립순수 Google Chat Project Number JWT/고정공개인증서·issuer/audience/시각 검증; 수신등록·실키·외부호출없음"
+  },
+  {
+    "path": "scripts/security/public_repo_policy.py",
+    "stage": "C07",
+    "reason": "별도승인 Google 공식공개issuer 정확1개만허용·타이메일/유사/혼합거부 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_public_repo_policy.py",
+    "stage": "C07",
+    "reason": "별도승인 Google 공식공개issuer 정확1개만허용·타이메일/유사/혼합거부 회귀"
   }
 ]
