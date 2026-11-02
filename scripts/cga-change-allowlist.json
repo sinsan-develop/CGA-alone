@@ -703,5 +703,15 @@
     "path": "apps/api/tests/test_channel_connection_discord_runtime.py",
     "stage": "C05",
     "reason": "승인 Discord Gateway/암호화cursor/ACK확정전실행gate·기존방과원장재사용 및 대역/실제QA DB 회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_telegram.py",
+    "stage": "C06",
+    "reason": "승인 Telegram 순수 고정 Bot API/getMe/기존webhook보존/채팅권한 검증 및 대역회귀·실제실행등록없음"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_telegram.py",
+    "stage": "C06",
+    "reason": "승인 Telegram 순수 고정 Bot API/getMe/기존webhook보존/채팅권한 검증 및 대역회귀·실제실행등록없음"
   }
 ]
