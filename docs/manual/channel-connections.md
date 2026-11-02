@@ -256,12 +256,12 @@ LINE Official Account의 Messaging API를 사용한다. 실제 계정·채널 �
 
 기존 6종 text/Flex 표현·postback을 사용하며 답변은 최대5개 메시지를 한 번의 reply로 보낸다. 카드의 원본·질문자·변수 복원은 기존 CGA 검증을 거친다.
 
-reply token은 일회용이다. 서버의 **최초 수신부터55초** 안에 사용하고 재수신으로 기한을 늘리지 않는다. 같은 token은 다른 이벤트·대상에도 재사용하지 않도록 기존 PostgreSQL 설치 원장에 해시를 예약한다. 원문 token은 기존 암호화 context에만 보관하며 SDK·로그에는 보내지 않는다.
+reply token은 일회용이다. 서버의 **최초 수신부터55초** 안에 사용하고 재수신으로 기한을 늘리지 않는다. 같은 token은 다른 이벤트·대상에도 재사용하지 않도록 기존 PostgreSQL 설치 원장에 해시를 예약한다. 같은 봇의 이벤트 ID도 대상·질문·회신 증명에 귀속시켜 복합 변조를 거부한다. 원문 token은 기존 암호화 context에만 보관하며 SDK·로그에는 보내지 않는다.
 
 기한 안에 답변이 완성되지 않으면 외부 회신이 불가능할 수 있다. 만료·이미 사용·결과불명은 자동 재시도하거나 push로 바꾸지 않는다. 재전송 event에는 발생20분 기한도 적용한다. timeout 뒤 답변을 못 받았다는 이유만으로 같은 질문·유료 처리를 자동 재실행하지 않는다. 새로운 질문은 새 이벤트로 입력한다.
 
 ### 검증 상태
 
-현재는 합성 HMAC·고정 HTTP 대역·실제 QA PostgreSQL·기존 Q/A와 SDK로 개발 검증 중이다. 실제 LINE 계정·키·webhook·인증·게시 왕복은 **NOT_RUN / 인수 필수**다. 실제 연결 준비와 배포는 별도 승인이다. 지속 LLM 개발은 보류 상태다.
+개발 검증은 합성 HMAC·고정 HTTP 대역·실제 QA PostgreSQL·기존 Q/A와 SDK를 사용한다. 실제 LINE 계정·키·webhook·인증·게시 왕복은 **NOT_RUN / 인수 필수**다. 실제 연결 준비와 배포는 별도 승인이다. 지속 LLM 개발은 보류 상태다.
 
 근거: [원문 서명](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/), [Bot info](https://developers.line.biz/en/reference/messaging-api/nojs/#get-bot-info), [reply token·회신 기한](https://developers.line.biz/en/reference/messaging-api/nojs/#send-reply-message), [재전송과 중복](https://developers.line.biz/en/docs/messaging-api/receiving-messages/).

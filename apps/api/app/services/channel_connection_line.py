@@ -124,17 +124,22 @@ class LineAdapter:
             if row.generation!=generation or row.account_id!=binding['bot'] or row.target_id!=binding['source']:raise HTTPException(409,'CONNECTION_CHANGED')
             cursor=dict(lease.cursor_json or {})
             if cursor.get('line_bindings',{}).get(str(cid))!=binding:raise HTTPException(409,'CONNECTION_CHANGED')
-            proofs=dict(cursor.get('line_proofs',{}));proofs[str(cid)]={'generation':generation,'ciphertext':encrypt_connection_state(binding,row.organization_id,cid,settings.channel_connection_encryption_key,settings.channel_connection_key_version,'line-handshake:'+str(generation)),'key_version':settings.channel_connection_key_version};cursor['line_proofs']=proofs;lease.cursor_json=cursor
-            if row.observed_state!='connected':db.commit();return None
-            existing=db.execute(select(ChannelConnectionDelivery.id,ChannelConnectionDelivery.request_hash,ChannelConnectionDelivery.context_ciphertext,ChannelConnectionDelivery.context_key_version).where(ChannelConnectionDelivery.connection_id==cid,ChannelConnectionDelivery.event_key==state.scoped_hash(event['eventId']))).one_or_none()
+            event_key=state.scoped_hash(event['eventId']);request_hash=state._event(event);token_hash=state.scoped_hash(reply_token)
+            events=dict(cursor.get('line_events',{}));receipt=events.get(event_key)
+            if receipt is not None and (receipt.get('connection')!=str(cid) or receipt.get('request_hash')!=request_hash or receipt.get('token_hash')!=token_hash):raise HTTPException(409,'NATIVE_EVENT_CONFLICT')
+            existing=db.execute(select(ChannelConnectionDelivery.id,ChannelConnectionDelivery.request_hash,ChannelConnectionDelivery.context_ciphertext,ChannelConnectionDelivery.context_key_version).where(ChannelConnectionDelivery.connection_id==cid,ChannelConnectionDelivery.event_key==event_key)).one_or_none()
             if existing is not None:
                 context=decrypt_connection_state(existing.context_ciphertext,row.organization_id,cid,settings.channel_connection_encryption_key,existing.context_key_version,'delivery:'+str(existing.id))
-                if existing.request_hash!=state._event(event) or context.get('reply_hash')!=state.scoped_hash(reply_token):raise HTTPException(409,'NATIVE_EVENT_CONFLICT')
+                if existing.request_hash!=request_hash or context.get('reply_hash')!=token_hash or receipt is not None and receipt.get('delivery')!=str(existing.id):raise HTTPException(409,'NATIVE_EVENT_CONFLICT')
                 db.commit();return str(existing.id)
-            tokens=dict(cursor.get('line_reply_tokens',{}));token_hash=state.scoped_hash(reply_token)
+            if receipt is not None:raise HTTPException(409,'LINE_EVENT_RECEIPT_UNAVAILABLE')
+            tokens=dict(cursor.get('line_reply_tokens',{}))
             if token_hash in tokens:raise HTTPException(409,'LINE_REPLY_TOKEN_REUSED')
+            proofs=dict(cursor.get('line_proofs',{}));proofs[str(cid)]={'generation':generation,'ciphertext':encrypt_connection_state(binding,row.organization_id,cid,settings.channel_connection_encryption_key,settings.channel_connection_key_version,'line-handshake:'+str(generation)),'key_version':settings.channel_connection_key_version};cursor['line_proofs']=proofs;lease.cursor_json=cursor
+            if row.observed_state!='connected':db.commit();return None
             item=state.accept_delivery(db,cid,lid,lease.owner,lease.fence,event)
-            tokens[token_hash]={'delivery':str(item.id),'connection':str(cid),'generation':generation};cursor['line_reply_tokens']=tokens;lease.cursor_json=cursor
+            tokens[token_hash]={'delivery':str(item.id),'connection':str(cid),'generation':generation};cursor['line_reply_tokens']=tokens
+            events[event_key]={'delivery':str(item.id),'connection':str(cid),'request_hash':request_hash,'token_hash':token_hash};cursor['line_events']=events;lease.cursor_json=cursor
             if item.status=='received':
                 busy=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==cid,ChannelConnectionDelivery.id!=item.id,ChannelConnectionDelivery.generation==generation,ChannelConnectionDelivery.native_room_hash==item.native_room_hash,ChannelConnectionDelivery.status.in_(['received','executing','ready','sending','unknown']),ChannelConnectionDelivery.event_json['addressed'].astext=='true').limit(1))
                 if busy is not None:item.status='failed';item.last_error_code='ROOM_BUSY'
@@ -223,5 +228,11 @@ class LineListener:
         try:result=await asyncio.to_thread(self.adapter.http.reply,token,body)
         except LineApiRejected:raise NativeNotSubmitted() from None
         messages=result.get('sentMessages')
-        if not isinstance(messages,list) or len(messages)!=len(packets) or any(not isinstance(v,dict) or not isinstance(v.get('id'),str) or not re.fullmatch('[A-Za-z0-9_-]{1,200}',v['id']) for v in messages):raise RuntimeError('LINE_REPLY_RECEIPT_UNKNOWN')
-        return [v['id'] for v in messages]
+        if not isinstance(messages,list) or len(messages)!=len(packets):raise RuntimeError('LINE_REPLY_RECEIPT_UNKNOWN')
+        identifiers=[]
+        for message in messages:
+            identifier=message.get('id') if isinstance(message,dict) else None
+            if type(identifier) is int and identifier>0:identifier=str(identifier)
+            if not isinstance(identifier,str) or not re.fullmatch('[A-Za-z0-9_-]{1,200}',identifier):raise RuntimeError('LINE_REPLY_RECEIPT_UNKNOWN')
+            identifiers.append(identifier)
+        return identifiers

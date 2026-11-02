@@ -787,7 +787,7 @@
   {
     "path": "apps/api/app/services/channel_connection_line.py",
     "stage": "C08",
-    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀"
+    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀·공식숫자reply ID정밀도보존/동일봇eventID복합변조원자거부 회귀"
   },
   {
     "path": "apps/api/tests/test_channel_connection_line.py",
@@ -802,6 +802,6 @@
   {
     "path": "apps/api/tests/test_channel_connection_line_runtime.py",
     "stage": "C08",
-    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀"
+    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀·공식숫자reply ID정밀도보존/동일봇eventID복합변조원자거부 회귀"
   }
 ]

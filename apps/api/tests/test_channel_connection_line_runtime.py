@@ -328,3 +328,53 @@ def test_deactivated_target_before_reply_never_posts(native_context):
             with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(answer['deliveries'][0])).status!='sent'
         finally:await a.stop()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['line'],indirect=True)
+@pytest.mark.parametrize('base',[123456,12345678901234567890])
+def test_numeric_line_reply_ids_are_sent_without_precision_loss_or_room_lock(native_context,base):
+    async def run():
+        from app.models import ChannelConnectionDelivery
+        c=native_context;a,adapter,h=setup(c);send=h.reply
+        def numeric(*args):send(*args);return {'sentMessages':[{'id':base+len(h.posts)}]}
+        h.reply=numeric
+        try:
+            await a.step();one=await first(a,adapter,event());await finish(a)
+            with c.sessions() as db:
+                row=db.get(ChannelConnectionDelivery,UUID(one['deliveries'][0]));assert row.status=='sent' and row.provider_message_ids==[str(base+1)]
+            two=await receive(adapter,event(identifier='next-after-numeric'));await finish(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(two['deliveries'][0])).status=='sent'
+            assert len(h.posts)==2
+        finally:await a.stop()
+    asyncio.run(run())
+
+@pytest.mark.parametrize('native_context',['line'],indirect=True)
+def test_same_bot_event_id_cannot_change_both_target_and_reply_proof(native_context):
+    async def run():
+        from app.models import ChannelConnectionDelivery
+        c=native_context;a,adapter,h=setup(c)
+        try:
+            await a.step();body=event();await first(a,adapter,body);await finish(a)
+            moved=event(1);moved['events'][0]['replyToken']='different-synthetic-proof'
+            with pytest.raises(HTTPException) as err:await first(a,adapter,moved)
+            assert err.value.status_code==409
+            await finish(a);assert len(h.posts)==1
+            with c.sessions() as db:assert db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][1])) is None
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['line'],indirect=True)
+@pytest.mark.parametrize('bad',[True,1.5,None])
+def test_invalid_line_receipt_never_becomes_sent_or_retries(native_context,bad):
+    async def run():
+        from app.models import ChannelConnectionDelivery
+        c=native_context;a,adapter,h=setup(c);send=h.reply
+        def invalid(*args):send(*args);return {'sentMessages':[{'id':bad}]}
+        h.reply=invalid
+        try:
+            await a.step();body=event();result=await first(a,adapter,body);await finish(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(result['deliveries'][0])).status=='unknown'
+            await receive(adapter,body);await finish(a);assert len(h.posts)==1
+        finally:await a.stop()
+    asyncio.run(run())
