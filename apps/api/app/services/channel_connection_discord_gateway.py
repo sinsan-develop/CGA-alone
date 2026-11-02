@@ -98,6 +98,31 @@ class DiscordState:
             else:self._terminal(item,ctx,'unknown' if outcome=='unknown' else 'failed','DISCORD_ACK_UNKNOWN' if outcome=='unknown' else 'DISCORD_ACK_REJECTED')
             db.commit();return True
 
+    def reset_cursor(self,targets,reason,from_sequence,through_sequence):
+        from app.models import AuditLog
+        if reason not in {'DISCORD_SESSION_EXPIRED','DISCORD_SESSION_INVALID','DISCORD_RESUME_WINDOW_EXCEEDED'}:raise ValueError('INVALID_GATEWAY_RESET')
+        if any(v is not None and (type(v) is not int or v<0) for v in [from_sequence,through_sequence]):raise ValueError('INVALID_GATEWAY_SEQUENCE')
+        with self.sessions() as db:
+            lease=self._lease(db);cursor=dict(lease.cursor_json or {});cursor.pop('discord_gateway',None)
+            receipt={'reason':reason,'from_sequence':from_sequence,'through_sequence':through_sequence,'end_unknown':True,'recorded_at':state.clock(db).isoformat()}
+            version=settings.channel_connection_key_version
+            cursor['discord_gateway_reset']={'ciphertext':encrypt_connection_state(receipt,lease.organization_id,lease.id,settings.channel_connection_encryption_key,version,'discord-gateway-reset'),'key_version':version}
+            lease.cursor_json=cursor
+            db.add(AuditLog(action_type='system.connection.discord_resume_reset',target_type='channel_installation_lease',target_id=lease.id,after_json=receipt))
+            db.commit()
+
+    def fresh_cutoff(self,targets):
+        with self.sessions() as db:
+            lease=self._lease(db);now=state.clock(db)
+            for target in sorted(targets,key=lambda t:str(t.spec.id)):
+                row=state._connection(db,target.spec.id)
+                expected=state.scoped_hash('verified-listener:discord:'+target.listener_scope)
+                if row.organization_id!=lease.organization_id or expected!=lease.listener_scope_hash or row.provider!='discord':raise HTTPException(409,'INSTALLATION_SCOPE_MISMATCH')
+                if row.generation!=target.spec.generation or row.desired_state!='connected':continue
+                state._target_active(db,row)
+                row.accept_after=now;row.observed_state='connecting';row.lease_owner=self.owner
+            db.commit()
+
     def save_cursor(self,value):
         _validate_cursor(value)
         with self.sessions() as db:
@@ -140,9 +165,23 @@ def _validate_cursor(value):
     validate_gateway_url(value['resume_url'])
 
 
+class ResumeWindowExceeded(Exception):
+    """수신 공백의 범위만 기록하고 같은 재개를 무한 반복하지 않는다."""
+
+
+async def _reset_for_error(gate,targets,cursor,sequence,error):
+    code=getattr(getattr(error,'rcvd',None),'code',None)
+    sent=getattr(getattr(error,'sent',None),'code',None)
+    if code in {1000,1001,4007,4009}:reason='DISCORD_SESSION_EXPIRED'
+    elif isinstance(error,ResumeWindowExceeded) or sent==1009:reason='DISCORD_RESUME_WINDOW_EXCEEDED'
+    else:return
+    await asyncio.to_thread(gate.reset_cursor,list(targets),reason,cursor.get('sequence'),sequence)
+
+
 def _frame(raw):
     try:
-        if not isinstance(raw,(str,bytes)) or len(raw.encode() if isinstance(raw,str) else raw)>1048576:raise ValueError()
+        if not isinstance(raw,(str,bytes)):raise ValueError()
+        if len(raw.encode() if isinstance(raw,str) else raw)>1048576:raise ResumeWindowExceeded()
         value=json.loads(raw)
         if not isinstance(value,dict) or type(value.get('op')) is not int:raise ValueError()
         return value
@@ -165,7 +204,7 @@ async def open_gateway(adapter,targets,gate):
     binding=targets[0].transport;token=binding.credentials['bot_token'];app=binding.application_id
     if adapter.open_not_before.get(app,0)>time.monotonic():raise HTTPException(503,'DISCORD_GATEWAY_RECONNECT_DELAY')
     adapter.open_not_before[app]=time.monotonic()+5
-    ws=None;listener=None
+    ws=None;listener=None;saved=None
     try:
         info=await asyncio.to_thread(adapter.http.call,'GET','/gateway/bot',token)
         if info.get('shards')!=1:raise ValueError()
@@ -203,12 +242,15 @@ async def open_gateway(adapter,targets,gate):
                     listener.cursor={'application_id':app,'bot_user_id':binding.bot_user_id,'token_hash':digest,'session_id':sid,'resume_url':validate_gateway_url(data.get('resume_gateway_url')),'sequence':seq}
                     await asyncio.to_thread(gate.save_cursor,listener.cursor);return listener
                 size+=len(json.dumps(frame).encode())
-                if len(listener.buffer)>=64 or size>1048576 or seq<=saved['sequence']:raise ValueError()
+                if len(listener.buffer)>=64 or size>1048576:raise ResumeWindowExceeded()
+                if seq<=saved['sequence']:raise ValueError()
                 listener.buffer.append(frame)
                 if frame.get('t')=='RESUMED':listener.resumed=True;return listener
     except BaseException as error:
-        if listener is not None:await listener.close()
-        elif ws is not None:
+        try:await _reset_for_error(gate,targets,listener.cursor if listener else saved or {},listener.received_sequence if listener else None,error)
+        finally:
+            if listener is not None:await listener.close()
+        if listener is None and ws is not None:
             try:await ws.close(code=4000)
             except Exception:pass
         if isinstance(error,asyncio.CancelledError):raise
@@ -243,13 +285,15 @@ class DiscordListener:
         if op==1:
             await self.ws.send(json.dumps({'op':1,'d':self.received_sequence}));self.awaiting_ack=True;return True
         if op==9:
-            if frame.get('d') is not True:await asyncio.to_thread(self.gate.save_cursor,{})
+            if frame.get('d') is not True:await asyncio.to_thread(self.gate.reset_cursor,list(self.targets.values()),'DISCORD_SESSION_INVALID',self.cursor.get('sequence'),self.received_sequence)
             raise RuntimeError('DISCORD_SESSION_INVALID')
         if op==7:raise RuntimeError('DISCORD_RESUME_REQUIRED')
         return False
     async def listen(self,accept):
         while not self.stopped:
-            frame=self.buffer.pop(0) if self.buffer else _frame(await self.ws.recv())
+            try:frame=self.buffer.pop(0) if self.buffer else _frame(await self.ws.recv())
+            except Exception as error:
+                await _reset_for_error(self.gate,self.targets.values(),self.cursor,self.received_sequence,error);raise
             if await self.control(frame):continue
             await self.handle(frame,accept)
     async def handle(self,frame,accept):

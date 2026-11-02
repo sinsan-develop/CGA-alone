@@ -232,3 +232,40 @@ def test_discord_supported_thread_and_private_dm_keep_separate_existing_rooms(na
                 rows=list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id.in_(c.ids['connections']))));assert len(rows)==2 and rows[0].room_id!=rows[1].room_id and {x.event_json['roomMode'] for x in rows}=={'private','shared'}
         finally:await a.stop()
     asyncio.run(run())
+
+@pytest.mark.parametrize('native_context',['discord'],indirect=True)
+@pytest.mark.parametrize('cause',['expired','buffer'])
+def test_discord_invalid_resume_recovers_new_input_without_replaying_unknown(native_context,cause):
+    async def run():
+        from websockets.exceptions import ConnectionClosedError
+        from websockets.frames import Close
+        from app.models import ChannelConnection,ChannelConnectionDelivery,ChannelInstallationLease,AuditLog
+        from sqlalchemy import delete
+        c=native_context;a,adapter,h,ws=setup(c);h.fail=True
+        try:
+            await a.step();await delivered(a,ws,message());await finish(a)
+            with c.sessions() as db:
+                prior=db.get(ChannelConnection,c.ids['connections'][0]).accept_after
+                original=db.scalar(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][0]));did=original.id;assert original.status=='unknown'
+            old=next(iter(a.runs.values()));await ws.queue.put(ConnectionClosedError(Close(4009 if cause=='expired' else 4000,'synthetic'),None))
+            for _ in range(100):
+                if old.task.done():break
+                await asyncio.sleep(.02)
+            assert old.task.done();adapter.open_not_before.clear()
+            if cause=='buffer':
+                replay=[{'op':0,'t':'UNKNOWN_EVENT','s':3+i,'d':{}} for i in range(65)]
+                adapter.socket=Socket(Ws([hello(),*replay,{'op':0,'t':'RESUMED','s':68,'d':{}}]));await a.step();assert not a.runs;adapter.open_not_before.clear()
+            fresh=Ws([hello(),ready(session_id='synthetic-fresh')]);adapter.socket=Socket(fresh);h.fail=False;await a.step();assert fresh.sent[0]['op']==2
+            with c.sessions() as db:
+                assert db.get(ChannelConnection,c.ids['connections'][0]).accept_after>prior and db.get(ChannelConnectionDelivery,did).status=='unknown'
+            await delivered(a,fresh,message(channel='401',offset=100));await finish(a);assert len(h.posts)==2
+            with c.sessions() as db:
+                assert db.get(ChannelConnectionDelivery,did).status=='unknown'
+                lids=list(db.scalars(select(ChannelInstallationLease.id).where(ChannelInstallationLease.organization_id==c.ids['org_id'])))
+                assert db.scalar(select(AuditLog.id).where(AuditLog.target_id.in_(lids),AuditLog.action_type=='system.connection.discord_resume_reset'))
+        finally:
+            await a.stop()
+            with c.sessions() as db:
+                lids=list(db.scalars(select(ChannelInstallationLease.id).where(ChannelInstallationLease.organization_id==c.ids['org_id'])))
+                db.execute(delete(AuditLog).where(AuditLog.target_id.in_(lids),AuditLog.action_type=='system.connection.discord_resume_reset'));db.commit()
+    asyncio.run(run())

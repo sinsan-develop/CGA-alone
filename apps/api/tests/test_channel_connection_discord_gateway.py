@@ -13,7 +13,10 @@ class Ws:
     def __init__(self,frames):
         self.queue=asyncio.Queue();self.sent=[];self.closed=False
         for frame in frames:self.queue.put_nowait(json.dumps(frame))
-    async def recv(self):return await self.queue.get()
+    async def recv(self):
+        value=await self.queue.get()
+        if isinstance(value,BaseException):raise value
+        return value
     async def send(self,raw):self.sent.append(json.loads(raw))
     async def close(self,**kwargs):self.closed=True
 
@@ -28,6 +31,7 @@ class Gate:
     def load_cursor(self):return self.saved
     def save_cursor(self,value):self.saved=value;self.sequences.append(value.get('sequence'))
     def can_execute(self,item):return True
+    def reset_cursor(self,targets,reason,from_sequence,through_sequence):self.saved={};self.reset=(reason,from_sequence,through_sequence)
 
 
 def hello():return {'op':10,'d':{'heartbeat_interval':40000}}
@@ -122,3 +126,52 @@ def test_default_websocket_disables_redirect_proxy_compression_and_sensitive_log
     asyncio.run(subject().DiscordSocketTransport().open('wss://gateway.discord.gg'))
     assert captured['proxy'] is None and captured['compression'] is None and captured['max_queue']==8 and captured['ping_interval'] is None
     assert captured['logger'].disabled and not captured['logger'].propagate and captured['redirect'].__class__.__name__=='SecurityError'
+
+
+def saved_cursor():return {'application_id':'100','bot_user_id':'200','token_hash':hashlib.sha256(b'synthetic-only').hexdigest(),'session_id':'synthetic-session','resume_url':'wss://gateway.discord.gg/?v=10&encoding=json','sequence':7}
+
+
+@pytest.mark.parametrize('code',[4007,4009])
+@pytest.mark.parametrize('phase',['handshake','listen'])
+def test_expired_close_code_discards_resume_and_next_connection_identifies(code,phase):
+    async def run():
+        from websockets.exceptions import ConnectionClosedError
+        from websockets.frames import Close
+        gate=Gate(saved_cursor())
+        if phase=='handshake':
+            module=import_module('app.services.channel_connection_discord');h=Http();h.responses['/gateway/bot']={'url':'wss://gateway.discord.gg','shards':1,'session_start_limit':{'remaining':5}}
+            ws=Ws([hello()]);original=ws.recv
+            async def recv():
+                if not ws.queue.empty():return await original()
+                raise ConnectionClosedError(Close(code,'synthetic'),None)
+            ws.recv=recv;adapter=module.DiscordAdapter(None,owner='c05',http=h,socket=Socket(ws));target=await adapter.verify(spec(),{'bot_token':'synthetic-only'})
+            with pytest.raises(HTTPException):await subject().open_gateway(adapter,[target],gate)
+        else:
+            listener,adapter,_=await setup([hello(),{'op':0,'t':'RESUMED','s':8,'d':{}}],gate)
+            async def recv():raise ConnectionClosedError(Close(code,'synthetic'),None)
+            adapter.socket.ws.recv=recv
+            try:
+                with pytest.raises(ConnectionClosedError):await listener.listen(lambda _:None)
+            finally:await listener.close()
+        assert gate.saved=={} and gate.reset[0]=='DISCORD_SESSION_EXPIRED'
+        listener,adapter,_=await setup([hello(),ready()],gate)
+        try:assert adapter.socket.ws.sent[0]['op']==2
+        finally:await listener.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('count,oversized',[(63,False),(64,False),(1,True)])
+def test_resume_buffer_boundary_has_fresh_session_recovery(count,oversized):
+    async def run():
+        gate=Gate(saved_cursor());frames=[hello()]+[{'op':0,'t':'UNKNOWN_EVENT','s':8+i,'d':{'pad':'x'*1048500 if oversized else ''}} for i in range(count)]+[{'op':0,'t':'RESUMED','s':8+count,'d':{}}]
+        if count==63:
+            listener,adapter,_=await setup(frames,gate)
+            try:assert listener.resumed and len(listener.buffer)==64 and gate.saved['sequence']==7
+            finally:await listener.close()
+        else:
+            with pytest.raises(HTTPException):await setup(frames,gate)
+            assert gate.saved=={} and gate.reset[0]=='DISCORD_RESUME_WINDOW_EXCEEDED'
+            listener,adapter,_=await setup([hello(),ready()],gate)
+            try:assert adapter.socket.ws.sent[0]['op']==2
+            finally:await listener.close()
+    asyncio.run(run())

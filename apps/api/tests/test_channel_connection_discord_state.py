@@ -135,3 +135,19 @@ def test_callback_inflight_crash_becomes_unknown_without_reclaim(native_context)
     assert gate.reserve_ack(did) is None and not gate.finish_ack(did,reservation.claim_id,'confirmed')
     with c.sessions() as db:
         item=db.get(ChannelConnectionDelivery,did);assert item.status=='unknown' and 'callback_token' not in gate.context(item)
+
+@pytest.mark.parametrize('native_context',['discord'],indirect=True)
+def test_gateway_reset_preserves_unknown_delivery_and_records_unreceived_range(native_context):
+    from app.models import AuditLog,ChannelConnectionDelivery,ChannelInstallationLease
+    from sqlalchemy import select,delete
+    c=native_context;gate=gateway_state(c);did=accept(c,event());lid=c.leases[0][0]
+    with c.sessions() as db:item=db.get(ChannelConnectionDelivery,did);item.status='unknown';db.commit()
+    try:
+        gate.reset_cursor([], 'DISCORD_RESUME_WINDOW_EXCEEDED',7,72)
+        assert not gate.load_cursor()
+        with c.sessions() as db:
+            assert db.get(ChannelConnectionDelivery,did).status=='unknown'
+            audit=db.scalar(select(AuditLog).where(AuditLog.target_id==lid));assert audit.after_json['from_sequence']==7 and audit.after_json['through_sequence']==72 and audit.after_json['end_unknown'] is True
+            assert 'discord_gateway_reset' in db.get(ChannelInstallationLease,lid).cursor_json
+    finally:
+        with c.sessions() as db:db.execute(delete(AuditLog).where(AuditLog.target_id==lid));db.commit()

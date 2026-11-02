@@ -179,3 +179,7 @@ A 대상의 [연결 해제]는 같은 앱의 B 대상에 영향을 주지 않는
 개발 검증은 대역 Gateway/REST, 실제 QA PostgreSQL, 기존 고정 Q/A·카드와 SDK를 사용한다. 실제 Discord 접속·앱 설치·토큰 등록·메시지 왕복은 **NOT_RUN / 인수 필수**이다.
 
 근거: [Gateway](https://docs.discord.com/developers/events/gateway), [Gateway Events](https://docs.discord.com/developers/events/gateway-events), [Interactions](https://docs.discord.com/developers/interactions/receiving-and-responding), [Permissions](https://docs.discord.com/developers/topics/permissions).
+
+재개가 불가능한 종료(예: 4007/4009) 또는 재개 버퍼 상한(64개·1 MiB)에 도달하면 같은 cursor로 재시도하지 않는다. 해당 Gateway cursor만 폐기하고 새 Identify/READY 이후의 입력을 받는다. 아직 원장에 접수하지 못한 구간은 기존 감사 이력의 `system.connection.discord_resume_reset`에 마지막 영속 sequence·관측된 끝·끝 범위 미확정 여부·고정 사유·시각을 남긴다. 기존 방·메시지·원장과 결과불명 요청은 보존한다. 이 구간의 질문은 자동으로 소급 실행하지 않으므로 필요한 질문은 새로 보내야 한다. 명시적 해제/재연결과 수신 장애 복구는 게시 재시도 승인이 아니다.
+
+세션 종료 코드 근거: [Gateway 종료 코드](https://docs.discord.com/developers/topics/opcodes-and-status-codes).

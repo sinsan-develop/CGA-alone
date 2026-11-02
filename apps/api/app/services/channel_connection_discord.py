@@ -168,4 +168,10 @@ class DiscordAdapter:
                 if lease is None:raise HTTPException(409,'INSTALLATION_LEASE_LOST')
                 state._installation(db,lease.id,self.owner,lease.fence);return lease.id,lease.fence
         lid,fence=await asyncio.to_thread(current)
-        return await open_gateway(self,targets,DiscordState(self.sessions,lease_id=lid,owner=self.owner,fence=fence))
+        gate=DiscordState(self.sessions,lease_id=lid,owner=self.owner,fence=fence)
+        listener=await open_gateway(self,targets,gate)
+        try:
+            if not listener.resumed:await asyncio.to_thread(gate.fresh_cutoff,targets)
+            return listener
+        except BaseException:
+            await listener.close();raise
