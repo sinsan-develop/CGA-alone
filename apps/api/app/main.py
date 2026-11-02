@@ -182,6 +182,8 @@ async def start_connection_supervisor(app: FastAPI) -> None:
     ADAPTERS["ms_teams"]=TeamsAdapter(SessionLocal,owner=supervisor.owner)
     from app.services.channel_connection_slack import SlackAdapter
     ADAPTERS["slack"]=SlackAdapter(SessionLocal,owner=supervisor.owner)
+    from app.services.channel_connection_discord import DiscordAdapter
+    ADAPTERS["discord"]=DiscordAdapter(SessionLocal,owner=supervisor.owner)
     app.state.connection_supervisor=supervisor
     app.state.connection_supervisor_task=asyncio.create_task(supervisor.serve())
 

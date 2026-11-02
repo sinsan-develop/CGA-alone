@@ -683,5 +683,25 @@
     "path": "apps/api/tests/test_channel_connection_discord.py",
     "stage": "C05",
     "reason": "승인 Discord 고정 Bot API·앱/서버/채널·부모스레드/멤버/권한 검증과 합성회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_discord_gateway.py",
+    "stage": "C05",
+    "reason": "승인 Discord Gateway/암호화cursor/ACK확정전실행gate·기존방과원장재사용 및 대역/실제QA DB 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_discord_state.py",
+    "stage": "C05",
+    "reason": "승인 Discord Gateway/암호화cursor/ACK확정전실행gate·기존방과원장재사용 및 대역/실제QA DB 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_discord_gateway.py",
+    "stage": "C05",
+    "reason": "승인 Discord Gateway/암호화cursor/ACK확정전실행gate·기존방과원장재사용 및 대역/실제QA DB 회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_discord_runtime.py",
+    "stage": "C05",
+    "reason": "승인 Discord Gateway/암호화cursor/ACK확정전실행gate·기존방과원장재사용 및 대역/실제QA DB 회귀"
   }
 ]

@@ -140,3 +140,42 @@ C03 개발 검증은 합성 JWT, PostgreSQL 원장, 기존 고정 Q/A·카드 �
 개발 검증은 대역 Socket/Slack API, 실제 QA PostgreSQL과 기존 고정 Q/A·카드 실행을 사용한다. 실제 Slack 앱 설치·토큰 등록·Socket 접속·워크스페이스 왕복은 **NOT_RUN / 인수 필수**이며 별도 승인 후 확인한다.
 
 근거: [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/), [auth.test](https://docs.slack.dev/reference/methods/auth.test/), [bots.info](https://docs.slack.dev/reference/methods/bots.info/), [conversations.info](https://docs.slack.dev/reference/methods/conversations.info/), [chat.postMessage](https://docs.slack.dev/reference/methods/chat.postMessage/).
+
+## Discord 연결(C05)
+
+### 준비·등록
+
+Discord Developer Portal에서 Bot이 있는 앱을 준비하고 대상 서버에 설치한다. 실제 앱 설치·토큰 등록·서버 실행 활성화는 별도 승인 후 진행한다. 사용자 계정 토큰이나 self-bot은 지원하지 않는다. 수신은 Gateway이고 답변은 Discord REST API에 게시하므로 별도 공개 webhook 주소는 필요하지 않다.
+
+시스템 연계 → 채널 관리에서 채널 아이디 `DISCORD`, Provider `Discord`를 선택하고 [연결 대상 추가]를 연다. 기존 CGA의 운영 버전·봇스테이션 채널 설정을 먼저 준비한다.
+
+| 입력 | Discord 값 |
+|---|---|
+| 연결 이름 | 서버·채널을 구분할 관리용 이름 |
+| 답변 봇 | 연결할 CGA-alone 봇 |
+| 설치·워크스페이스 ID | 서버(guild) ID. 기존 개인 DM은 `DM` |
+| 외부 봇 계정 ID | Discord Bot User ID. Application ID와 구분 |
+| 대상 방·채널 ID | 텍스트 채널, 공지 채널, 스레드 또는 기존 개인 DM의 ID |
+| bot_token | 해당 Discord 앱의 Bot Token. 보호 입력란에만 등록 |
+
+같은 앱을 여러 대상에 연결하려면 같은 앱의 Bot Token을 사용하고 대상별 연결을 추가한다. 다른 CGA 조직이 같은 앱의 Gateway를 중복 소유하지 못한다. 서버는 봇·앱·서버·대상·권한을 대조하고 Gateway의 READY 또는 인증된 저장 세션의 RESUMED를 확인한 뒤 연결됨으로 표시한다. [설정 검사]만으로 실제 연결이 확인되지는 않는다.
+
+### 권한·질문 방식
+
+- 기본 수신 intent는 GUILDS·GUILD_MESSAGES·DIRECT_MESSAGES이다. MESSAGE_CONTENT 등 특권 intent를 자동으로 켜지 않는다. 공유 채널에서는 봇을 명시적으로 멘션한 질문을 사용한다. 개인 DM은 봇에게 보낸 메시지를 사용한다.
+- 텍스트 채널은 View Channel·Send Messages, 스레드는 부모 채널의 View Channel·Send Messages in Threads 권한이 필요하다. 카드·표 등 embed 표현에는 Embed Links도 필요하다. 비공개 스레드는 봇이 이미 참가한 경우만 연결한다. 채널 생성·자동 참가·권한 부여는 하지 않는다.
+- 서버 텍스트/공지 채널, 접근 가능한 공개·비공개 스레드, 기존 봇 개인 DM을 지원한다. 다인 DM·음성·포럼 부모 자체·슬래시 명령·모달은 이번 실행 범위가 아니다. 여러 shard가 필요한 앱은 연결 성공으로 처리하지 않는다.
+- 스레드와 채널은 각각 별도 CGA 방으로 구분한다. 일반 대화는 봇 답변을 만들지 않으며, 같은 방에서 답변 처리 중 들어온 새 질문을 나중에 실행하도록 쌓지 않는다. 다른 봇이 명시적으로 호출한 질문도 기존 질문자 구분으로 처리한다.
+- 기존 6종 표현을 사용하고 버튼 선택은 원본 메시지·현재 카드·질문자를 서버에서 검증한다. 버튼 이벤트를 PostgreSQL 원장에 먼저 저장한 뒤 화면 메시지를 만들지 않는 접수 callback을 보낸다. 접수가 확인되기 전에는 시나리오·NLU·LLM을 실행하지 않는다.
+
+### 해제·재연결·장애 확인
+
+A 대상의 [연결 해제]는 같은 앱의 B 대상에 영향을 주지 않는다. 수정·삭제는 해제 후 한다. 모든 대상의 명시적 해제는 Gateway 재개 정보를 폐기한다. 재연결은 새 접수 기준 이후의 입력만 처리한다. 삭제는 Discord 앱 제거·토큰 폐기와 별개다.
+
+서버 재시작·일시 소켓 장애는 PostgreSQL에 암호화한 세션과 마지막 영속 sequence로 재개한다. 인증된 동일 세대의 재개 이벤트만 원장에 반영하며 별도 과거 메시지 조회는 하지 않는다. 저장된 native event ID로 중복 실행·게시를 방지한다. Discord가 세션을 무효화하면 새 인증으로 연결하며 기존 CGA 대화 기록은 삭제하지 않는다.
+
+버튼 접수나 답변 게시가 시간초과되어 결과가 불명확하면 자동으로 재시도하지 않는다. 접수 결과 불명인 질문은 실행하지 않는다. Bot Token·앱/봇 ID·서버/채널 ID·접근 권한·스레드 참가/잠금·세션 시작 제한을 확인하며 Secret 원문을 오류 보고에 넣지 않는다.
+
+개발 검증은 대역 Gateway/REST, 실제 QA PostgreSQL, 기존 고정 Q/A·카드와 SDK를 사용한다. 실제 Discord 접속·앱 설치·토큰 등록·메시지 왕복은 **NOT_RUN / 인수 필수**이다.
+
+근거: [Gateway](https://docs.discord.com/developers/events/gateway), [Gateway Events](https://docs.discord.com/developers/events/gateway-events), [Interactions](https://docs.discord.com/developers/interactions/receiving-and-responding), [Permissions](https://docs.discord.com/developers/topics/permissions).

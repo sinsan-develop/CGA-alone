@@ -63,6 +63,13 @@ class DiscordHttpTransport:
         return value
 
 
+    def ack(self,interaction_id,token):
+        from urllib.parse import quote
+        iid=_id(interaction_id);token=_token(token)
+        status,_=self.request('POST',API+'/interactions/'+iid+'/'+quote(token,safe='')+'/callback',{'Content-Type':'application/json'},b'{"type":6}')
+        if status!=204:raise HTTPException(503,'DISCORD_CALLBACK_UNCONFIRMED')
+
+
 def _bits(value):
     if not isinstance(value,str) or not re.fullmatch('[0-9]{1,40}',value):raise HTTPException(422,'DISCORD_PERMISSION_INVALID')
     return int(value)
@@ -109,7 +116,9 @@ class DiscordBinding:
 
 
 class DiscordAdapter:
-    def __init__(self,sessions,*,owner,http=None):self.sessions=sessions;self.owner=owner;self.http=http or DiscordHttpTransport()
+    def __init__(self,sessions,*,owner,http=None,socket=None):
+        from app.services.channel_connection_discord_gateway import DiscordSocketTransport
+        self.sessions=sessions;self.owner=owner;self.http=http or DiscordHttpTransport();self.socket=socket or DiscordSocketTransport();self.open_not_before={}
     async def verify(self,spec,credentials):
         try:
             token=_token(credentials.get('bot_token'))
@@ -144,3 +153,19 @@ class DiscordAdapter:
                 if permissions&needed!=needed:raise ValueError()
             return VerifiedTarget(spec,spec.installation_id,bot,'discord-app:'+appid,DiscordBinding(dict(credentials),appid,bot,guild_id,cid,kind,permissions),True)
         except (ValueError,TypeError,KeyError,AttributeError,DiscordApiRejected):raise HTTPException(403,'DISCORD_IDENTITY_VERIFICATION_FAILED') from None
+
+
+    async def open(self,targets):
+        from sqlalchemy import select
+        from app.models import ChannelInstallationLease
+        from app.services import channel_connection_state as state
+        from app.services.channel_connection_discord_gateway import DiscordState,open_gateway
+        if not targets:raise HTTPException(422,'DISCORD_TARGET_MISSING')
+        first=targets[0]
+        def current():
+            with self.sessions() as db:
+                lease=db.scalar(select(ChannelInstallationLease).where(ChannelInstallationLease.organization_id==first.spec.organization_id,ChannelInstallationLease.provider=='discord',ChannelInstallationLease.listener_scope_hash==state.scoped_hash('verified-listener:discord:'+first.listener_scope)))
+                if lease is None:raise HTTPException(409,'INSTALLATION_LEASE_LOST')
+                state._installation(db,lease.id,self.owner,lease.fence);return lease.id,lease.fence
+        lid,fence=await asyncio.to_thread(current)
+        return await open_gateway(self,targets,DiscordState(self.sessions,lease_id=lid,owner=self.owner,fence=fence))

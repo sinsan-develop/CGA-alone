@@ -149,7 +149,7 @@ def accept_delivery(db, connection_id, installation_id, owner, fence, event: dic
     db.add(delivery);db.flush();return delivery
 
 
-def claim_delivery(db, connection_id, installation_id, owner, fence, *, deadline_seconds: int):
+def claim_delivery(db, connection_id, installation_id, owner, fence, *, deadline_seconds: int, can_execute=None):
     if not 5<=deadline_seconds<=7200:raise HTTPException(422,"INVALID_EXECUTION_DEADLINE")
     row=_live(db,connection_id,installation_id,owner,fence)
     deliveries=db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.status.in_(["received","executing","ready","sending","unknown"])).order_by(ChannelConnectionDelivery.created_at,ChannelConnectionDelivery.id).with_for_update(skip_locked=True).execution_options(populate_existing=True)).all()
@@ -159,6 +159,8 @@ def claim_delivery(db, connection_id, installation_id, owner, fence, *, deadline
         if item.generation!=row.generation:
             item.status="cancelled";item.last_error_code="CONNECTION_CHANGED";continue
         if item.native_room_hash in blocked:continue
+        if can_execute is not None and can_execute(item) is not True:
+            blocked.add(item.native_room_hash);continue
         item.installation_fence=fence;item.status="executing";item.execution_claim_id=str(uuid4());item.deadline_at=clock(db)+timedelta(seconds=deadline_seconds)
         db.flush();return item
     db.flush();return None

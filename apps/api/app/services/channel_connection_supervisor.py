@@ -132,7 +132,7 @@ class ConnectionSupervisor:
             if lease is None:db.commit();return None
             value=(lease.id,lease.fence);db.commit();return value
 
-    def _activate(self,lease_id,fence,targets):
+    def _activate(self,lease_id,fence,targets,resumed=False):
         with self.sessions() as db:
             state._installation(db,lease_id,self.owner,fence)
             live=[]
@@ -141,6 +141,8 @@ class ConnectionSupervisor:
                 if row.generation!=target.spec.generation:continue
                 try:state._target_active(db,row)
                 except HTTPException:continue
+                if resumed and row.provider=='discord' and row.accept_after is not None:
+                    row.observed_state='connecting';row.lease_owner=self.owner
                 state.activate_connection(db,row.id,lease_id,self.owner,fence,{'installation_id':target.installation_id,'account_id':target.account_id,'listener_scope':target.listener_scope})
                 live.append(target)
             db.commit();return live
@@ -156,11 +158,17 @@ class ConnectionSupervisor:
             lease=db.scalar(select(ChannelInstallationLease).where(ChannelInstallationLease.id==run.lease_id).with_for_update())
             if lease and lease.owner==self.owner and lease.fence==run.fence:
                 lease.lease_expires_at=state.clock(db)
+                resumable=False
                 for target in run.targets.values():
                     row=state._connection(db,target.spec.id)
+                    if row.generation==target.spec.generation and row.desired_state=='connected':resumable=True
                     if row.generation==target.spec.generation and row.lease_owner==self.owner:
                         row.lease_expires_at=lease.lease_expires_at
-                        if row.desired_state=='connected':row.observed_state='connecting';row.accept_after=None
+                        if row.desired_state=='connected':
+                            row.observed_state='connecting'
+                            if row.provider!='discord':row.accept_after=None
+                if lease.provider=='discord' and not resumable:
+                    cursor=dict(lease.cursor_json or {});cursor.pop('discord_gateway',None);lease.cursor_json=cursor
                 db.commit()
 
     async def heartbeat_once(self,run):
@@ -252,7 +260,7 @@ class ConnectionSupervisor:
                         if accepts(target):eligible.append(target)
                         else:await asyncio.to_thread(self._error,target.spec,'CONNECTION_CREDENTIALS_MISMATCH')
                     targets=eligible
-                live=await asyncio.to_thread(self._activate,lease_id,fence,targets)
+                live=await asyncio.to_thread(self._activate,lease_id,fence,targets,getattr(run.listener,'resumed',False))
                 if not live:
                     await self._close(key,run);continue
                 run.targets={t.spec.id:t for t in live}
@@ -275,9 +283,9 @@ class ConnectionSupervisor:
                     if not isinstance(envelope,InboundEnvelope) or envelope.connection_id not in targets:raise HTTPException(403,'CONNECTION_RECEIVER_SCOPE_MISMATCH')
                     target=targets[envelope.connection_id];row=state._live(db,target.spec.id,run.lease_id,self.owner,run.fence)
                     if row.generation!=target.spec.generation:raise HTTPException(409,'CONNECTION_CHANGED')
-                    existing=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.event_key==state.scoped_hash(envelope.event['eventId']))) if row.provider=='slack' else None
+                    existing=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.event_key==state.scoped_hash(envelope.event['eventId']))) if row.provider in {'slack','discord'} else None
                     item=state.accept_delivery(db,row.id,run.lease_id,self.owner,run.fence,envelope.event)
-                    if row.provider=='slack' and existing is None and item.status=='received' and envelope.event['addressed']:
+                    if row.provider in {'slack','discord'} and existing is None and item.status=='received' and envelope.event['addressed']:
                         busy=db.scalar(select(ChannelConnectionDelivery.id).where(ChannelConnectionDelivery.connection_id==row.id,ChannelConnectionDelivery.id!=item.id,
                             ChannelConnectionDelivery.generation==row.generation,ChannelConnectionDelivery.native_room_hash==item.native_room_hash,
                             ChannelConnectionDelivery.status.in_(['received','executing','ready','sending','unknown']),ChannelConnectionDelivery.event_json['addressed'].astext=='true').limit(1))
@@ -301,7 +309,7 @@ class ConnectionSupervisor:
             if ready:
                 value=('send',ready.id,None)
             else:
-                item=state.claim_delivery(db,row.id,run.lease_id,self.owner,run.fence,deadline_seconds=300)
+                item=state.claim_delivery(db,row.id,run.lease_id,self.owner,run.fence,deadline_seconds=300,can_execute=getattr(run.listener,'can_execute',None))
                 value=('execute',item.id,item.execution_claim_id) if item else None
             db.commit();return value
 
