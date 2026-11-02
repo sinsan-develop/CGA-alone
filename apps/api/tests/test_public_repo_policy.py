@@ -142,3 +142,10 @@ def test_public_google_issuer_does_not_hide_mixed_private_email(tmp_path):
     sample=tmp_path/'sample.py';local='private';domain='unapproved.test'
     sample.write_text(f'issuer = "chat@system.gserviceaccount.com"; email = "{local}@{domain}"',encoding='utf-8')
     assert find_content_violations(tmp_path,['sample.py'])==['sample.py:1:personal-email']
+
+
+
+def test_public_google_issuer_in_python_constant_is_allowed(tmp_path):
+    sample=tmp_path/'sample.py'
+    sample.write_text("ISSUER = 'chat@system.gserviceaccount.com'",encoding='utf-8')
+    assert find_content_violations(tmp_path,['sample.py'])==[]

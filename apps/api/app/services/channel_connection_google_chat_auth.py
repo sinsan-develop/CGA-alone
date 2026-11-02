@@ -8,7 +8,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from fastapi import HTTPException
 
-ISSUER='chat@system.gserviceaccount.com'
+ISSUER = 'chat@system.gserviceaccount.com'
 CERTS_URL='https://www.googleapis.com/service_accounts/v1/metadata/x509/'+ISSUER
 
 
