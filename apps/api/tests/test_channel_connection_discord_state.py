@@ -123,3 +123,15 @@ def test_busy_rejected_button_removes_callback_token_without_submitting(native_c
         item=db.get(ChannelConnectionDelivery,did);item.status='failed';item.last_error_code='ROOM_BUSY';db.commit()
     assert gate.reserve_ack(did) is None
     with c.sessions() as db:assert 'callback_token' not in gate.context(db.get(ChannelConnectionDelivery,did))
+
+@pytest.mark.parametrize('native_context',['discord'],indirect=True)
+def test_callback_inflight_crash_becomes_unknown_without_reclaim(native_context):
+    from app.models import ChannelConnectionDelivery
+    c=native_context;did=pending(c);gate=gateway_state(c);reservation=gate.reserve_ack(did)
+    with c.sessions() as db:
+        item=db.get(ChannelConnectionDelivery,did);ctx=gate.context(item);ctx['discord_ack']['expires_at']=0;gate._write(item,ctx);db.commit()
+    with c.sessions() as db:
+        item=db.get(ChannelConnectionDelivery,did);assert not gate.can_execute(item);db.commit()
+    assert gate.reserve_ack(did) is None and not gate.finish_ack(did,reservation.claim_id,'confirmed')
+    with c.sessions() as db:
+        item=db.get(ChannelConnectionDelivery,did);assert item.status=='unknown' and 'callback_token' not in gate.context(item)

@@ -196,3 +196,39 @@ def test_discord_same_app_cannot_be_opened_by_second_worker(native_context):
             await a.step();await b.step();assert len(a.runs)==1 and not b.runs and not socket.urls
         finally:await b.stop();await a.stop()
     asyncio.run(run())
+
+@pytest.mark.parametrize('native_context',['discord'],indirect=True)
+def test_discord_general_chat_self_and_other_bot_are_distinct(native_context):
+    async def run():
+        from app.models import ChannelConnectionDelivery
+        c=native_context;a,adapter,h,ws=setup(c)
+        try:
+            await a.step();await delivered(a,ws,message(addressed=False));await finish(a);assert not h.posts
+            me=message(actor='200',offset=1);me['d']['author']['bot']=True;await delivered(a,ws,me);await finish(a);assert not h.posts
+            other=message(actor='501',offset=2);other['d']['author']['bot']=True;await delivered(a,ws,other);await finish(a);assert len(h.posts)==1
+            with c.sessions() as db:
+                rows=list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id==c.ids['connections'][0])));assert len(rows)==2
+                assert any(x.event_json['participantKind']=='bot' for x in rows)
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['discord'],indirect=True)
+def test_discord_supported_thread_and_private_dm_keep_separate_existing_rooms(native_context):
+    async def run():
+        from app.models import ChannelConnection,ChannelConnectionDelivery
+        c=native_context;a,adapter,h,ws=setup(c);original=h.call
+        def call(method,path,token,payload=None):
+            if method=='GET' and path=='/channels/400':return {'id':'400','guild_id':'300','type':11,'parent_id':'402','thread_metadata':{'archived':False,'locked':False}}
+            if method=='GET' and path=='/channels/401':return {'id':'401','type':1,'recipients':[{'id':'502'}]}
+            return original(method,path,token,payload)
+        h.call=call;h.responses['/guilds/300']['roles'][0]['permissions']=str(3072+(1<<38))
+        with c.sessions() as db:db.get(ChannelConnection,c.ids['connections'][1]).installation_id='DM';db.commit()
+        try:
+            await a.step();await delivered(a,ws,message());await finish(a)
+            dm=message(channel='401',actor='502',offset=1,addressed=False);dm['d'].pop('guild_id');await delivered(a,ws,dm);await finish(a)
+            assert len(h.posts)==2
+            with c.sessions() as db:
+                rows=list(db.scalars(select(ChannelConnectionDelivery).where(ChannelConnectionDelivery.connection_id.in_(c.ids['connections']))));assert len(rows)==2 and rows[0].room_id!=rows[1].room_id and {x.event_json['roomMode'] for x in rows}=={'private','shared'}
+        finally:await a.stop()
+    asyncio.run(run())
