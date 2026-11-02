@@ -673,5 +673,15 @@
     "path": "apps/api/tests/test_channel_connection_slack_runtime.py",
     "stage": "C04",
     "reason": "승인 Slack Socket→기존방/큐→SDK→대역게시·중복/공유/카드/복구/격리 실제QA DB회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_discord.py",
+    "stage": "C05",
+    "reason": "승인 Discord 고정 Bot API·앱/서버/채널·부모스레드/멤버/권한 검증과 합성회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_discord.py",
+    "stage": "C05",
+    "reason": "승인 Discord 고정 Bot API·앱/서버/채널·부모스레드/멤버/권한 검증과 합성회귀"
   }
 ]
