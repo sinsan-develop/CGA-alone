@@ -232,3 +232,36 @@ A의 [연결 해제]는 B를 유지한다. 수정·삭제는 해제 후 진행�
 개발 검증은 합성 Google JWT/인증서·OAuth/HTTP 대역, 실제 QA PostgreSQL, 기존 고정 Q/A·카드·SDK를 사용한다. 실제 Google 계정·앱 설치·서비스계정 키 등록·Google Chat 인증/메시지 왕복은 **NOT_RUN / 인수 필수**다. 지속 LLM 개발은 보류 상태다.
 
 근거: [Google 요청 검증](https://developers.google.com/workspace/chat/verify-requests-from-chat), [프로젝트 읽기 검증](https://docs.cloud.google.com/resource-manager/reference/rest/v1/projects/get), [자기 메시지 조회](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/get), [메시지 게시·스레드 옵션](https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/create).
+
+
+## LINE — C08
+
+### 준비와 설정
+
+LINE Official Account의 Messaging API를 사용한다. 실제 계정·채널 준비, 키·토큰 등록, 공개 HTTPS와 webhook 설정은 별도 승인 후 진행한다. 기존 채널 `LINE`, Provider·렌더러 `line`을 사용하고 CGA 운영 버전·봇스테이션을 준비한다.
+
+1. 시스템 연계→채널 관리→연결 대상에서 답변봇과 연결 이름을 정한다.
+2. **설치·워크스페이스 ID**와 **외부 봇 계정 ID**에는 모두 봇의 canonical `U...` ID를 넣는다. LINE Developers의 숫자 Channel ID나 표시 이름과 구분한다. 서버는 access token으로 Bot info의 userId를 확인한다.
+3. **대상 방·채널 ID**는 개인 대화의 사용자 `U...`, 그룹 `C...`, 다인방 `R...`다. 같은 봇으로 대상별 여러 연결을 등록·연결·해제할 수 있다. 다른 CGA 조직에서 같은 실제 봇의 동시 수신은 거부한다.
+4. 기존 보호 입력 **access_token**, **channel_secret**을 사용한다. Secret은 채팅·Git·스크린샷에 넣지 않는다. 공란은 기존 값을 유지하며 서버 암호화 키가 없으면 인증정보 저장을 거부한다.
+5. 승인된 공개 HTTPS 주소의 `/api/v1/channel-connections/line/events`를 webhook URL로 사용한다. WSL 사설 주소는 LINE이 호출하는 공개 주소가 아니다. 서버는 Console의 URL·webhook을 자동 등록·교체하지 않는다.
+
+### 연결·연결 해제
+
+[설정 저장]·[설정 검사]는 외부 접속 성공이 아니다. [연결] 후 access token의 실제 봇 ID를 검증하고, 설정한 대상의 첫 유효 서명 질문까지 **연결 중**으로 둔다. 빈 events의 URL 검증 요청은 대상방 연결 성공으로 승격하지 않는다. 개인 대화에서는 질문에, 공유방에서는 봇을 명시한 질문과 기존 카드 선택에만 응답한다. 사용자 ID가 없는 입력을 다른 질문자와 합치지 않는다.
+
+[연결 해제]는 해당 대상의 새 처리·새 발송을 차단한다. 같은 봇의 다른 대상은 유지한다. 재연결은 새 세대·새 접수 시각으로 검증하며 기존 방·기록은 보존한다. 자동 재시작에서는 같은 세대의 기록·증명을 재사용하되 결과불명 회신을 반복하지 않는다.
+
+### 회신 기한과 중복
+
+기존 6종 text/Flex 표현·postback을 사용하며 답변은 최대5개 메시지를 한 번의 reply로 보낸다. 카드의 원본·질문자·변수 복원은 기존 CGA 검증을 거친다.
+
+reply token은 일회용이다. 서버의 **최초 수신부터55초** 안에 사용하고 재수신으로 기한을 늘리지 않는다. 같은 token은 다른 이벤트·대상에도 재사용하지 않도록 기존 PostgreSQL 설치 원장에 해시를 예약한다. 원문 token은 기존 암호화 context에만 보관하며 SDK·로그에는 보내지 않는다.
+
+기한 안에 답변이 완성되지 않으면 외부 회신이 불가능할 수 있다. 만료·이미 사용·결과불명은 자동 재시도하거나 push로 바꾸지 않는다. 재전송 event에는 발생20분 기한도 적용한다. timeout 뒤 답변을 못 받았다는 이유만으로 같은 질문·유료 처리를 자동 재실행하지 않는다. 새로운 질문은 새 이벤트로 입력한다.
+
+### 검증 상태
+
+현재는 합성 HMAC·고정 HTTP 대역·실제 QA PostgreSQL·기존 Q/A와 SDK로 개발 검증 중이다. 실제 LINE 계정·키·webhook·인증·게시 왕복은 **NOT_RUN / 인수 필수**다. 실제 연결 준비와 배포는 별도 승인이다. 지속 LLM 개발은 보류 상태다.
+
+근거: [원문 서명](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/), [Bot info](https://developers.line.biz/en/reference/messaging-api/nojs/#get-bot-info), [reply token·회신 기한](https://developers.line.biz/en/reference/messaging-api/nojs/#send-reply-message), [재전송과 중복](https://developers.line.biz/en/docs/messaging-api/receiving-messages/).

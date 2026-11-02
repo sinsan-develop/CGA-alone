@@ -117,7 +117,7 @@ class ConnectionSupervisor:
             # 다른 프로세스의 유효한 소유권/새 명령에 오류를 덮어쓰지 않는다.
             if row and row.generation==spec.generation and row.desired_state=='connected' and (row.lease_owner in {None,self.owner} or row.lease_expires_at is None or row.lease_expires_at<=state.clock(db)):
                 row.observed_state='error';row.last_error_code=code;row.lease_owner=None;row.lease_expires_at=None
-                if row.provider!='google_chat':row.accept_after=None
+                if row.provider not in {'google_chat','line'}:row.accept_after=None
                 db.commit()
 
     def _pending(self,spec):
@@ -168,7 +168,7 @@ class ConnectionSupervisor:
                         row.lease_expires_at=lease.lease_expires_at
                         if row.desired_state=='connected':
                             row.observed_state='connecting'
-                            if row.provider not in {'discord','telegram','google_chat'}:row.accept_after=None
+                            if row.provider not in {'discord','telegram','google_chat','line'}:row.accept_after=None
                 if lease.provider=='discord' and not resumable:
                     cursor=dict(lease.cursor_json or {});cursor.pop('discord_gateway',None);lease.cursor_json=cursor
                 db.commit()

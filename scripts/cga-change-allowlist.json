@@ -242,7 +242,7 @@
   {
     "path": "apps/api/app/main.py",
     "stage": "P03",
-    "reason": "승인된 기존 queue worker에 persistent operation 전용 처리 연결, 일반 worker 분리 유지; C07 별도승인 Google Chat startup등록/단일수신주소·Google인증/원장commit뒤ACK, 기존기본값false/기존Teams경로유지"
+    "reason": "승인된 기존 queue worker에 persistent operation 전용 처리 연결, 일반 worker 분리 유지; C07 별도승인 Google Chat startup등록/단일수신주소·Google인증/원장commit뒤ACK, 기존기본값false/기존Teams경로유지·C08 승인 LINE 단일수신/기존worker등록·동일세대접수시각보존"
   },
   {
     "path": "apps/web/components/simulator-page.tsx",
@@ -607,7 +607,7 @@
   {
     "path": "apps/api/app/services/channel_connection_supervisor.py",
     "stage": "C02",
-    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀; C07 Google Chat만동일generation 검증지연/재시작접수기준유지·기존타provider불변"
+    "reason": "승인된 공통 수신 작업자·실행 수명주기·검증된 listener scope·Node SDK 실행기와 직접 회귀; C07 Google Chat만동일generation 검증지연/재시작접수기준유지·기존타provider불변·C08 승인 LINE 단일수신/기존worker등록·동일세대접수시각보존"
   },
   {
     "path": "apps/api/tests/test_channel_connection_supervisor.py",
@@ -642,7 +642,7 @@
   {
     "path": "apps/api/app/api/routes/channel_connection_events.py",
     "stage": "C03",
-    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀; C07 별도승인 Google Chat startup등록/단일수신주소·Google인증/원장commit뒤ACK, 기존기본값false/기존Teams경로유지"
+    "reason": "승인된 Teams OAuth·JWT단일수신·영속첫Activity증명·기존원장/방연계·고정REST전송 및 대역통합회귀; C07 별도승인 Google Chat startup등록/단일수신주소·Google인증/원장commit뒤ACK, 기존기본값false/기존Teams경로유지·C08 승인 LINE 단일수신/기존worker등록·동일세대접수시각보존"
   },
   {
     "path": "apps/api/tests/test_channel_connection_teams_adapter.py",
@@ -783,5 +783,25 @@
     "path": "apps/api/tests/test_channel_connection_line_auth.py",
     "stage": "C08",
     "reason": "승인계획 LINE 독립순수 HMAC 원문 서명검증·변조/오서명/입력한도 거부시험; 공개route/실키/외부호출 없음"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_line.py",
+    "stage": "C08",
+    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_line.py",
+    "stage": "C08",
+    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_line_route.py",
+    "stage": "C08",
+    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_line_runtime.py",
+    "stage": "C08",
+    "reason": "별도승인 LINE 고정Bot info/원문서명·대상proof·원장commit ACK·기존방/큐/Q&A·암호화reply 단일회신/기한/중복/UNKNOWN·회귀"
   }
 ]

@@ -57,3 +57,23 @@ async def google_chat_event(request:Request):
     await adapter.receive(request.headers.get('authorization',''),value)
     # 질문 원장을 commit한 뒤 빈 ACK만 반환한다. 답변은 기존 작업자가 별도로 게시한다.
     return Response(content='{}',status_code=200,media_type='application/json')
+
+
+@router.post('/line/events')
+async def line_event(request:Request):
+    adapter=ADAPTERS.get('line')
+    if not settings.channel_connection_worker_enabled or not settings.channel_connection_encryption_key or adapter is None:
+        raise HTTPException(503,'LINE_RECEIVER_DISABLED')
+    limit=256*1024
+    try:
+        declared=request.headers.get('content-length')
+        if declared is not None:
+            if int(declared)<0:raise ValueError()
+            if int(declared)>limit:raise HTTPException(413,'LINE_EVENT_TOO_LARGE')
+    except ValueError:raise HTTPException(400,'LINE_BODY_INVALID') from None
+    body=bytearray()
+    async for chunk in request.stream():
+        if len(body)+len(chunk)>limit:raise HTTPException(413,'LINE_EVENT_TOO_LARGE')
+        body.extend(chunk)
+    await adapter.receive(request.headers.get('x-line-signature',''),bytes(body))
+    return Response(content='{}',status_code=200,media_type='application/json')
