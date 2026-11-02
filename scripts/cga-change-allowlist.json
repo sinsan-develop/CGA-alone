@@ -773,5 +773,15 @@
     "path": "apps/api/tests/test_channel_connection_google_chat_identity.py",
     "stage": "C07",
     "reason": "별도승인 프로젝트읽기 신원검증·지원불가 자기멤버십 대체/권한없음·프로젝트ID번호혼용·고정주소/최소scope 회귀"
+  },
+  {
+    "path": "apps/api/app/services/channel_connection_line_auth.py",
+    "stage": "C08",
+    "reason": "승인계획 LINE 독립순수 HMAC 원문 서명검증·변조/오서명/입력한도 거부시험; 공개route/실키/외부호출 없음"
+  },
+  {
+    "path": "apps/api/tests/test_channel_connection_line_auth.py",
+    "stage": "C08",
+    "reason": "승인계획 LINE 독립순수 HMAC 원문 서명검증·변조/오서명/입력한도 거부시험; 공개route/실키/외부호출 없음"
   }
 ]
