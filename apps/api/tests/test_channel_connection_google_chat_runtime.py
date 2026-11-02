@@ -14,13 +14,15 @@ from tests.test_channel_connection_google_chat import credentials
 class Http:
     def __init__(self):self.posts=[];self.fail=False
     def oauth(self,identity):return {'access_token':'synthetic-access','token_type':'Bearer','expires_in':3600}
+    def get_project(self,project_id,token):return {'projectId':project_id,'projectNumber':'1234567890','lifecycleState':'ACTIVE'}
+    def get_message(self,name,token):return {'name':name,'sender':{'name':'users/100','type':'BOT'}}
     def get(self,path,token):
-        if path.endswith('/members/app'):return {'name':path[:-3]+'100','state':'JOINED','member':{'name':'users/100','type':'BOT'}}
+        if '/members/' in path:raise AssertionError('app-auth self membership is unsupported')
         return {'name':path,'spaceType':'SPACE'}
     def send(self,space,token,body,request_id,reply_option):
         self.posts.append((space,body,request_id,reply_option))
         if self.fail:raise TimeoutError('synthetic uncertain post')
-        return {'name':space+'/messages/out'+str(len(self.posts))}
+        return {'name':space+'/messages/out'+str(len(self.posts)),'sender':{'name':'users/100','type':'BOT'}}
 
 
 def setup(c,signing,credentials):
@@ -247,7 +249,7 @@ def test_same_project_cannot_be_claimed_by_another_organization(native_context,s
                 row=ChannelConnection(organization_id=org.id,channel_id=parent.id,bot_id=bot.id,name='C07 other',provider='google_chat',installation_id=project,account_id='users/100',target_id='spaces/OTHER',desired_state='connected',observed_state='connecting');db.add(row);db.commit()
                 ids=(org.id,group.id,bot.id,parent.id,row.id);spec=ConnectionSpec(row.id,org.id,'google_chat',row.generation,row.installation_id,row.account_id,row.target_id)
             other=GoogleChatAdapter(c.sessions,owner='c07-other-worker',http=Http(),authenticator=adapter.authenticator)
-            with pytest.raises(HTTPException,match='GOOGLE_CHAT_APP_SCOPE_IN_USE'):await other.verify(spec,credentials)
+            with pytest.raises(HTTPException,match='GOOGLE_CHAT_APP_SCOPE_IN_USE' if project=='1234567890' else 'GOOGLE_CHAT_PROJECT_VERIFICATION_FAILED'):await other.verify(spec,credentials)
             assert not h.posts
         finally:
             await a.stop()
@@ -340,5 +342,100 @@ def test_direct_message_uses_private_room_without_named_space_reply_option(nativ
             assert len(h.posts)==2 and h.posts[-1][0]=='spaces/QA1' and h.posts[-1][3] is None
             with c.sessions() as db:
                 one=db.get(ChannelConnectionDelivery,UUID(shared['delivery_id']));two=db.get(ChannelConnectionDelivery,UUID(private['delivery_id']));assert one.room_id!=two.room_id and two.event_json['roomMode']=='private'
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+
+@pytest.mark.parametrize('native_context',['google_chat'],indirect=True)
+def test_existing_proof_restart_error_recovery_preserves_generation_cutoff(native_context,signing,credentials):
+    async def run():
+        from app.models import ChannelConnection,ChannelConnectionDelivery
+        from app.services.channel_connection_supervisor import ConnectionSupervisor
+        c=native_context;a,adapter,h,header=setup(c,signing,credentials);get=h.get
+        try:
+            await a.step();await handshake(a,adapter,header,event());await finish(a);assert len(h.posts)==1
+            with c.sessions() as db:cutoff=db.get(ChannelConnection,c.ids['connections'][0]).accept_after
+            await a.stop();a=ConnectionSupervisor(c.sessions,{'google_chat':adapter},owner=c.owner)
+            def fail(*_):raise HTTPException(503,'SYNTHETIC_RESTART_READ_FAILED')
+            h.get=fail;await a.step();body=event(identifier='after-error');await asyncio.sleep(.02);h.get=get;await a.step()
+            with c.sessions() as db:assert db.get(ChannelConnection,c.ids['connections'][0]).accept_after==cutoff
+            accepted=await adapter.receive(header,body);await finish(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(accepted['delivery_id'])).status=='sent'
+            assert len(h.posts)==2
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+
+@pytest.mark.parametrize('native_context',['google_chat'],indirect=True)
+def test_explicit_new_generation_rejects_old_event_and_accepts_new_question(native_context,signing,credentials):
+    async def run():
+        from app.models import ChannelConnection,ChannelConnectionDelivery
+        from app.services import channel_connection_state as state
+        from app.services.channel_connections import disconnect_connection
+        c=native_context;a,adapter,h,header=setup(c,signing,credentials)
+        try:
+            await a.step();old=event();await handshake(a,adapter,header,old);await finish(a)
+            with c.sessions() as db:row=db.get(ChannelConnection,c.ids['connections'][0]);disconnect_connection(row);db.commit()
+            await a.step()
+            with c.sessions() as db:
+                row=db.get(ChannelConnection,c.ids['connections'][0]);row.generation+=1;row.desired_state='connected';row.observed_state='connecting';row.lease_owner=None;row.lease_expires_at=None;row.listener_scope_hash=None;row.accept_after=state.clock(db);db.commit();cutoff=row.accept_after
+            await a.step();replayed=event(identifier='old-after-reconnect');replayed['eventTime']=old['eventTime']
+            stale=await handshake(a,adapter,header,replayed);await finish(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(stale['delivery_id'])).status=='cancelled' and db.get(ChannelConnection,c.ids['connections'][0]).accept_after==cutoff
+            fresh=await adapter.receive(header,event(identifier='fresh-after-reconnect'));await finish(a)
+            with c.sessions() as db:assert db.get(ChannelConnectionDelivery,UUID(fresh['delivery_id'])).status=='sent'
+            assert len(h.posts)==2
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+
+@pytest.mark.parametrize('native_context',['google_chat'],indirect=True)
+def test_post_sender_mismatch_blocks_only_that_generation_without_reposting(native_context,signing,credentials):
+    async def run():
+        from app.models import ChannelConnection,ChannelConnectionDelivery
+        c=native_context;a,adapter,h,header=setup(c,signing,credentials);get=h.get;send=h.send
+        with c.sessions() as db:db.get(ChannelConnection,c.ids['connections'][1]).account_id='users/OTHER';db.commit()
+        def access(path,token):
+            value=get(path,token)
+            if path=='spaces/QA0':value['spaceType']='DIRECT_MESSAGE'
+            return value
+        def actual_sender(*args):value=send(*args);value['sender']={'name':'users/OTHER','type':'BOT'};return value
+        h.get=access;h.send=actual_sender
+        try:
+            await a.step();body=event(addressed=False);body['space']['spaceType']='DIRECT_MESSAGE'
+            first=await handshake(a,adapter,header,body);await finish(a)
+            with c.sessions() as db:
+                assert db.get(ChannelConnectionDelivery,UUID(first['delivery_id'])).status=='unknown'
+                assert db.get(ChannelConnection,c.ids['connections'][0]).observed_state=='error'
+            with pytest.raises(HTTPException):await adapter.receive(header,body)
+            await finish(a);assert len(h.posts)==1
+            # 같은 세대의 신원 오류는 재시작 뒤에도 재활성화하지 않는다.
+            await a.stop()
+            from app.services.channel_connection_supervisor import ConnectionSupervisor
+            from app.services.channel_connection_google_chat import GoogleChatAdapter
+            adapter=GoogleChatAdapter(c.sessions,owner=c.owner,http=h,authenticator=adapter.authenticator)
+            a=ConnectionSupervisor(c.sessions,{'google_chat':adapter},owner=c.owner)
+            await a.step()
+            with pytest.raises(HTTPException):await adapter.receive(header,body)
+            assert len(h.posts)==1
+            other=event(1);other['message']['annotations'][0]['userMention']['user']['name']='users/OTHER'
+            await handshake(a,adapter,header,other);await finish(a);assert len(h.posts)==2 and h.posts[-1][0]=='spaces/QA1'
+        finally:await a.stop()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('native_context',['google_chat'],indirect=True)
+def test_sparse_post_receipt_checks_own_message_sender_without_second_post(native_context,signing,credentials):
+    async def run():
+        c=native_context;a,adapter,h,header=setup(c,signing,credentials);send=h.send;reads=[]
+        def sparse(*args):value=send(*args);value.pop('sender');return value
+        def own(name,token):reads.append(name);return {'name':name,'sender':{'name':'users/100','type':'BOT'}}
+        h.send=sparse;h.get_message=own
+        try:
+            await a.step();await handshake(a,adapter,header,event());await finish(a)
+            assert len(h.posts)==1 and reads==['spaces/QA0/messages/out1']
         finally:await a.stop()
     asyncio.run(run())

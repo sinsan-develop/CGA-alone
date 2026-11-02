@@ -25,7 +25,7 @@ def test_service_assertion_uses_fixed_token_url_and_minimal_scope(credentials,si
     assert method=='POST' and url==m.OAUTH_URL and token is None
     form=parse_qs(body.decode());assert form['grant_type']==['urn:ietf:params:oauth:grant-type:jwt-bearer']
     decoded=jwt.decode(form['assertion'][0],signing[0].public_key(),algorithms=['RS256'],audience=m.OAUTH_URL)
-    assert decoded['iss']==identity.client_email and decoded['scope']=='https://www.googleapis.com/auth/chat.bot'
+    assert decoded['iss']==identity.client_email and set(decoded['scope'].split())=={'https://www.googleapis.com/auth/chat.bot','https://www.googleapis.com/auth/cloudplatformprojects.readonly'}
     assert decoded['exp']-decoded['iat']==3600 and 'PRIVATE KEY' not in repr(identity)
 
 
@@ -42,12 +42,12 @@ def test_service_account_configuration_rejects_untrusted_mapping(credentials,bad
 
 
 @pytest.mark.parametrize('bad',[False,True])
-def test_space_and_calling_app_membership_are_verified(bad):
+def test_space_access_is_verified_without_unsupported_app_membership(bad):
     m=subject()
     class Http:
         def get(self,path,token):
-            if path=='spaces/QA':return {'name':'spaces/QA','spaceType':'SPACE'}
-            assert path=='spaces/QA/members/app';return {'name':'spaces/QA/members/100','state':'JOINED','member':{'name':'users/other' if bad else 'users/100','type':'BOT'}}
+            assert path=='spaces/QA'
+            return {'name':'spaces/OTHER' if bad else 'spaces/QA','spaceType':'SPACE'}
     if bad:
         with pytest.raises(HTTPException):m.verify_space(Http(),'synthetic-access','spaces/QA','users/100')
     else:assert m.verify_space(Http(),'synthetic-access','spaces/QA','users/100')=='SPACE'
