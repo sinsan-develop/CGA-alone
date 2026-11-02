@@ -848,5 +848,15 @@
     "path": "apps/web/public/manuals/channel-connections-ko.html",
     "stage": "HELP_MANUALS",
     "reason": "신산님 직접 요청: 기존 도움말/3 PDF·체험 보존, CGA-alone 보충 매뉴얼 2종 웹 열람과 원문 일치 검증"
+  },
+  {
+    "path": "apps/web/components/bot-create-limit.test.mjs",
+    "stage": "BOT_CREATE_LIMIT",
+    "reason": "신산님 직접 요청: 기존봇 자동이동 제거·생성화면 제한안내 및 기존 생성차단 회귀시험"
+  },
+  {
+    "path": "apps/web/lib/i18n/bot-create.ts",
+    "stage": "BOT_CREATE_LIMIT",
+    "reason": "신산님 승인: 생성 화면을 유지하며 사용자당1봇 추가생성 제한 사유를 기존7언어로 안내"
   }
 ]

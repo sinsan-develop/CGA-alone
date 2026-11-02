@@ -106,9 +106,13 @@ export function BotCreateDialog() {
   const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [creationAllowed, setCreationAllowed] = useState(false);
+  const [hasExistingBot, setHasExistingBot] = useState(false);
 
   useEffect(() => {
     let disposed = false;
+    setCreationAllowed(false);
+    setHasExistingBot(false);
+    setErrorMessage("");
     const session = loadAuthSession();
     if (!session) {
       setErrorMessage(copy.loginRequired);
@@ -118,8 +122,7 @@ export function BotCreateDialog() {
       .then((bots) => {
         if (disposed) return;
         if (bots.length > 0) {
-          const bot = bots[0];
-          router.replace(bot.data_json?.bot_kind === "hub" ? `/studio/hubs/${bot.id}` : `/studio/bots/${bot.id}`);
+          setHasExistingBot(true);
           return;
         }
         setCreationAllowed(true);
@@ -266,7 +269,7 @@ export function BotCreateDialog() {
             <div><dt>LLM</dt><dd>{usesLlmEngine ? llmModel : "-"}</dd></div>
             <div><dt>{copy.version}</dt><dd>v1</dd></div>
           </dl>
-          <p>{translateAiOptionText(uiLanguage, "Next: configure using the selected input structure.")}</p>
+          <p id="bot-creation-notice" role="status">{hasExistingBot ? copy.singleBotLimit : translateAiOptionText(uiLanguage, "Next: configure using the selected input structure.")}</p>
         </aside>
         <div className="bot-create-dialog__field cga-bot-create-page__field--type">
           <span className="bot-create-dialog__label">{copy.botType} <em>*</em></span>
@@ -713,6 +716,7 @@ export function BotCreateDialog() {
           type="button"
           className="bot-create-dialog__primary"
           disabled={isSubmitting || !creationAllowed}
+          aria-describedby={hasExistingBot ? "bot-creation-notice" : undefined}
           onClick={handleSubmit}
         >
           {isSubmitting ? copy.creating : copy.confirm}
