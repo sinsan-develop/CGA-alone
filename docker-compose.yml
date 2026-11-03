@@ -158,7 +158,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "5172:4173"
+      - "5172:5173"
     networks:
       - proxy_net
     healthcheck:
@@ -166,7 +166,7 @@ services:
         - CMD
         - node
         - -e
-        - "fetch('http://127.0.0.1:4173/health/ready').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        - "fetch('http://127.0.0.1:5173/health/ready').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 15s
       timeout: 7s
       retries: 10

@@ -893,5 +893,10 @@
     "path": "README.zh-CN.md",
     "stage": "STUDIO_PORT_5173",
     "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "apps/web/Dockerfile",
+    "stage": "DAON_SERVER_DEPLOY",
+    "reason": "신산님 직접 지시: studio 내부포트5173으로 EXPOSE/CMD 최소 변경"
   }
 ]

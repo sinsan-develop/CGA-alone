@@ -32,8 +32,12 @@ def test_compose_exposes_cga_api_only_through_proxy_network() -> None:
     assert "container_name: cga-alone-studio" in compose
     assert "container_name: cga-alone-api" in compose
     assert "CGA_INTERNAL_API_BASE_URL: http://cga-alone-api:8000" in compose
-    assert '"5172:4173"' in compose
+    assert '"5172:5173"' in compose
     assert '"4173:4173"' not in compose
+    assert "http://127.0.0.1:5173/health/ready" in compose
+    dockerfile = _read("apps/web/Dockerfile")
+    assert "EXPOSE 5173" in dockerfile
+    assert '"--port", "5173"' in dockerfile
     assert '"8000:8000"' not in compose
     assert "- .:/workspace" not in compose
     private_checkout = "/home/" + "ubuntu/deploy/cga:/workspace"

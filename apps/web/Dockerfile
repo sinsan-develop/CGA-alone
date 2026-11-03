@@ -20,6 +20,6 @@ COPY packages/shared /workspace/packages/shared
 
 RUN npm run build
 
-EXPOSE 4173
+EXPOSE 5173
 
-CMD ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "4173"]
+CMD ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "5173"]
