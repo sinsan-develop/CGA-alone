@@ -55,7 +55,7 @@ CGA_DATABASE_URL=postgresql+psycopg://cga_user:replace-with-password@shared-db:5
 CGA_JWT_SECRET=replace-with-a-random-secret-of-at-least-32-characters
 CGA_INITIAL_ADMIN_PASSWORD=replace-with-a-strong-password
 CGA_LICENSE_PUBLIC_KEY=base64-encoded-public-pem
-CORS_ORIGINS=http://localhost:5173
+CORS_ORIGINS=http://localhost:5172
 ```
 `CGA_LICENSE_PUBLIC_KEY` 必须是**完整公钥 PEM 文件**的 Base64 编码，而不是 SHA-256 指纹。切勿提交私钥或真实 `.env`。
 
@@ -89,9 +89,9 @@ GPU overlay 会为 `api`、`nlu-training-worker` 和 `vector-worker` 分配 GPU�
 
 ```bash
 docker compose ps
-curl http://localhost:5173/health/ready
+curl http://localhost:5172/health/ready
 ```
-打开 `http://localhost:5173`。初始管理员 ID 为 `master`，密码是 `CGA_INITIAL_ADMIN_PASSWORD` 的值。登录后在 **Admin > 许可证** 上传已签发的许可证文件。
+打开 `http://localhost:5172`。初始管理员 ID 为 `master`，密码是 `CGA_INITIAL_ADMIN_PASSWORD` 的值。登录后在 **Admin > 许可证** 上传已签发的许可证文件。
 
 ## 更新与停止
 

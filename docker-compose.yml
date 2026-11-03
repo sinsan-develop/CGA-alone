@@ -158,7 +158,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "5173:4173"
+      - "5172:4173"
     networks:
       - proxy_net
     healthcheck:

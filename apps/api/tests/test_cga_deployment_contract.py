@@ -32,7 +32,7 @@ def test_compose_exposes_cga_api_only_through_proxy_network() -> None:
     assert "container_name: cga-alone-studio" in compose
     assert "container_name: cga-alone-api" in compose
     assert "CGA_INTERNAL_API_BASE_URL: http://cga-alone-api:8000" in compose
-    assert '"5173:4173"' in compose
+    assert '"5172:4173"' in compose
     assert '"4173:4173"' not in compose
     assert '"8000:8000"' not in compose
     assert "- .:/workspace" not in compose
