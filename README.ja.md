@@ -55,7 +55,7 @@ CGA_DATABASE_URL=postgresql+psycopg://cga_user:replace-with-password@shared-db:5
 CGA_JWT_SECRET=replace-with-a-random-secret-of-at-least-32-characters
 CGA_INITIAL_ADMIN_PASSWORD=replace-with-a-strong-password
 CGA_LICENSE_PUBLIC_KEY=base64-encoded-public-pem
-CORS_ORIGINS=http://localhost:4173
+CORS_ORIGINS=http://localhost:5173
 ```
 `CGA_LICENSE_PUBLIC_KEY`にはSHA-256フィンガープリントではなく、**公開鍵PEMファイル全体をBase64化した値**を設定します。秘密鍵と実際の`.env`はコミットしないでください。
 
@@ -89,9 +89,9 @@ GPU overlayは`api`、`nlu-training-worker`、`vector-worker`へGPUを割り当�
 
 ```bash
 docker compose ps
-curl http://localhost:4173/health/ready
+curl http://localhost:5173/health/ready
 ```
-`http://localhost:4173`を開きます。初期管理者IDは`master`、パスワードは`CGA_INITIAL_ADMIN_PASSWORD`の値です。ログイン後、**Admin > ライセンス**から発行済みライセンスをアップロードします。
+`http://localhost:5173`を開きます。初期管理者IDは`master`、パスワードは`CGA_INITIAL_ADMIN_PASSWORD`の値です。ログイン後、**Admin > ライセンス**から発行済みライセンスをアップロードします。
 
 ## 更新と停止
 

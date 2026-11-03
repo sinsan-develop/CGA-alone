@@ -858,5 +858,40 @@
     "path": "apps/web/lib/i18n/bot-create.ts",
     "stage": "BOT_CREATE_LIMIT",
     "reason": "신산님 승인: 생성 화면을 유지하며 사용자당1봇 추가생성 제한 사유를 기존7언어로 안내"
+  },
+  {
+    "path": "README.de.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "README.en.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "README.fr.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "README.ja.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "README.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "README.vi.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
+  },
+  {
+    "path": "README.zh-CN.md",
+    "stage": "STUDIO_PORT_5173",
+    "reason": "사용자요청외부포트5173에맞춰기존설치/health/접속URL안내수정"
   }
 ]

@@ -55,7 +55,7 @@ CGA_DATABASE_URL=postgresql+psycopg://cga_user:replace-with-password@shared-db:5
 CGA_JWT_SECRET=replace-with-a-random-secret-of-at-least-32-characters
 CGA_INITIAL_ADMIN_PASSWORD=replace-with-a-strong-password
 CGA_LICENSE_PUBLIC_KEY=base64-encoded-public-pem
-CORS_ORIGINS=http://localhost:4173
+CORS_ORIGINS=http://localhost:5173
 ```
 `CGA_LICENSE_PUBLIC_KEY` phải là Base64 của **toàn bộ tệp public-key PEM**, không phải dấu vân tay SHA-256. Không commit private key hoặc tệp `.env` thật.
 
@@ -89,9 +89,9 @@ GPU overlay gán GPU cho `api`, `nlu-training-worker` và `vector-worker`. Khôn
 
 ```bash
 docker compose ps
-curl http://localhost:4173/health/ready
+curl http://localhost:5173/health/ready
 ```
-Mở `http://localhost:4173`. ID quản trị ban đầu là `master`; mật khẩu là giá trị `CGA_INITIAL_ADMIN_PASSWORD`. Sau khi đăng nhập, tải giấy phép đã cấp tại **Admin > Giấy phép**.
+Mở `http://localhost:5173`. ID quản trị ban đầu là `master`; mật khẩu là giá trị `CGA_INITIAL_ADMIN_PASSWORD`. Sau khi đăng nhập, tải giấy phép đã cấp tại **Admin > Giấy phép**.
 
 ## Cập nhật và dừng
 

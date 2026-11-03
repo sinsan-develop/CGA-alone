@@ -58,7 +58,7 @@ CGA_DATABASE_URL=postgresql+psycopg://cga_user:replace-with-password@shared-db:5
 CGA_JWT_SECRET=replace-with-a-random-secret-of-at-least-32-characters
 CGA_INITIAL_ADMIN_PASSWORD=replace-with-a-strong-password
 CGA_LICENSE_PUBLIC_KEY=base64-encoded-public-pem
-CORS_ORIGINS=http://localhost:4173
+CORS_ORIGINS=http://localhost:5173
 ```
 
 `CGA_LICENSE_PUBLIC_KEY`에는 공개키 SHA-256 지문이 아니라 **공개키 PEM 파일 전체를 Base64로 인코딩한 값**을 넣습니다. 개인키와 실제 `.env`는 절대로 Git에 커밋하지 마십시오.
@@ -96,10 +96,10 @@ GPU 오버레이는 `api`, `nlu-training-worker`, `vector-worker`에 GPU 장치�
 
 ```bash
 docker compose ps
-curl http://localhost:4173/health/ready
+curl http://localhost:5173/health/ready
 ```
 
-브라우저에서 `http://localhost:4173`을 엽니다. 최초 관리자 ID는 `master`, 암호는 `CGA_INITIAL_ADMIN_PASSWORD` 값입니다. 로그인 후 **Admin > 라이선스**에서 발급받은 라이선스 파일을 업로드합니다.
+브라우저에서 `http://localhost:5173`을 엽니다. 최초 관리자 ID는 `master`, 암호는 `CGA_INITIAL_ADMIN_PASSWORD` 값입니다. 로그인 후 **Admin > 라이선스**에서 발급받은 라이선스 파일을 업로드합니다.
 
 ## 업데이트와 중지
 
